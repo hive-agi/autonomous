@@ -10,7 +10,8 @@
             [autonomous.bridge.port :as port]
             [autonomous.bridge.session :as s]
             [autonomous.mcp.server :as server]
-            [clojure.test :refer [deftest is testing]]))
+            [clojure.test :refer [deftest is testing]]
+            [autonomous.mcp.stdio :as stdio]))
 
 (defrecord StubChannel [respond sent]
   port/IRuntimeChannel
@@ -135,3 +136,22 @@
     (is (not (contains? names "autonomous_apps")))
     (is (= {:ok {:app "todo" :tool "todo_add" :runtime nil}} (:answer (call srv rw "todo_add" {}))))
     (is (= [1 ["todo_add"]] (server/tools-fingerprint srv rw)))))
+
+(deftest a-target-coming-back-fires-list-changed
+  (let [state  (atom :down)
+        api    (app-responder "api" ["refund"])
+        flaky  (fn [req rt] (if (= :down @state) (down req rt) (api req rt)))
+        srv    (fleet-srv [["todo" (app-responder "todo" ["todo_add"])] ["api" flaky]])
+        out    (atom [])
+        done   (promise)
+        runner (future (stdio/serve! srv {:watch-ms 30}
+                                     (fn [] (deref done 2000 nil) nil)
+                                     (fn [l] (swap! out conj l))))
+        changed? (fn [] (some #(clojure.string/includes? % "list_changed") @out))
+        wait-for (fn [p] (loop [n 100] (cond (p) true (zero? n) false :else (do (Thread/sleep 20) (recur (dec n))))))]
+    (Thread/sleep 150)
+    (is (not (changed?)) "nothing changes while the fleet is steady")
+    (reset! state :up)
+    (is (wait-for changed?) "the app coming back moves the fleet fingerprint")
+    (deliver done true)
+    (deref runner 3000 nil)))
