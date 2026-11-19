@@ -8,6 +8,7 @@
    one defmethod and nothing here changes."
   (:require [autonomous.domain.answer :as answer]
             [autonomous.domain.decision :as decision]
+            [autonomous.domain.journal :as journal]
             [autonomous.domain.wire :as wire]
             [autonomous.runtime.registry :as registry]
             [clojure.string :as str]))
@@ -90,11 +91,8 @@
         ans  (case (:plan/action plan)
                :invoke (run-invoke plan grant (:middleware snap))
                :refuse (:refusal plan))]
-    (registry/record! {:kind    :autonomous/call
-                       :actor   (:actor grant)
-                       :tool    tool-name
-                       :outcome (answer/outcome ans)
-                       :ms      (- (registry/now-ms) t0)})
+    (registry/record! (journal/call-entry tool-name args grant ans (- (registry/now-ms) t0)
+                                          (:call-detail snap)))
     ans))
 
 (defn read!

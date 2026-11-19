@@ -1,0 +1,57 @@
+{:args-redacted
+ {:kind :autonomous/call,
+  :actor "a",
+  :tool "todo_add",
+  :outcome :ok,
+  :ms 3,
+  :args {:text "x", :token "<redacted>"}},
+ :nested-redact
+ {:kind :autonomous/call,
+  :actor "a",
+  :tool "pay",
+  :outcome :ok,
+  :ms 0,
+  :args {:card {:pan "<redacted>", :name "n"}}},
+ :no-args
+ {:kind :autonomous/call,
+  :actor "a",
+  :tool "ping",
+  :outcome :ok,
+  :ms 0,
+  :args {}},
+ :no-detail
+ {:kind :autonomous/call,
+  :actor "a",
+  :tool "todo_add",
+  :outcome :ok,
+  :ms 3},
+ :ok-no-error
+ {:kind :autonomous/call,
+  :actor "a",
+  :tool "todo_add",
+  :outcome :ok,
+  :ms 1},
+ :refusal-kept
+ {:kind :autonomous/call,
+  :actor "a",
+  :tool "todo_add",
+  :outcome :invalid-args,
+  :ms 1,
+  :error
+  {:type :invalid-args,
+   :message "bad",
+   :data {:text ["missing required key"]}}},
+ :refusal-quiet
+ {:kind :autonomous/call,
+  :actor "a",
+  :tool "todo_add",
+  :outcome :invalid-args,
+  :ms 1,
+  :args {}},
+ :session-only
+ {:kind :autonomous/call,
+  :actor "a",
+  :tool "todo_add",
+  :outcome :ok,
+  :ms 3,
+  :session "s"}}

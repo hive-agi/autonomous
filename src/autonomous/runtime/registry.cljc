@@ -31,6 +31,7 @@
    :middleware []
    :version    0
    :journal    journal/empty-journal
+   :call-detail nil
    :lease      nil
    :pending    {}
    :next-id    0})
@@ -151,6 +152,16 @@
 ;; =============================================================================
 ;; Journal and lease
 ;; =============================================================================
+
+(defn set-call-detail!
+  "Set the CallDetail the journal keeps about each tool call (nil: none).
+   Throws on an invalid one."
+  [detail]
+  (when-let [e (and (some? detail) (m/explain s/CallDetail detail))]
+    (throw (ex-info "invalid call detail" {:autonomous/error :invalid-call-detail
+                                           :problems (me/humanize e)})))
+  (swap! !state assoc :call-detail detail)
+  nil)
 
 (defn record!
   "Append `entry` to the journal; answers its sequence number."
