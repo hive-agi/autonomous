@@ -1,13 +1,16 @@
 (ns autonomous.bb-test-runner
-  "`bb test`: the suites that run on babashka (everything but the datahike
-   ledger, the JDK HTTP socket and the live e2e). Exit code is the number of
-   failures and errors, capped at 1."
+  "`bb test`: the unit suites on babashka, the same namespaces the JVM
+   kaocha :unit suite runs. Exits 0 when every test passes, else 1."
   (:require [clojure.test :as t]))
 
 (def suites
-  "primitives-trifecta-test needs hive-schemas.test, not yet proven on bb
-   (kanban follow-up)."
+  "Every unit suite. The datahike ledger contract is gated to the JVM
+   inside bridge-trifecta-test; the live e2e runs as `bb e2e`."
   '[autonomous.domain.decision-trifecta-test
+    autonomous.domain.primitives-trifecta-test
+    autonomous.bridge.bridge-trifecta-test
+    autonomous.mcp.transport-test
+    autonomous.e2e.check-trifecta-test
     autonomous.runtime.rpc-test
     autonomous.re-frame.model-trifecta-test])
 

@@ -1,0 +1,4 @@
+{:empty {:value nil, :error? false},
+ :ok {:value {:added "milk"}, :error? false},
+ :rpc-err {:value nil, :error? true},
+ :tool-err {:value nil, :error? true}}

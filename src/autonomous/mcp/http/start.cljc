@@ -14,3 +14,12 @@
   #?(:cljw (answer/refusal :http/unsupported
                            "no HTTP server on ClojureWasm yet: serve over stdio, or run the bridge on bb or the JVM")
      :default (adapter/start! srv cfg)))
+
+(defn stop-on-exit!
+  "Run `stop!` when the process is asked to end (SIGINT, SIGTERM), so a
+   server stops accepting and finishes in-flight requests before exit.
+   A no-op where there is no HTTP server."
+  [stop!]
+  #?(:cljw nil
+     :default (.addShutdownHook (Runtime/getRuntime)
+                                (Thread. ^Runnable (fn [] (stop!))))))

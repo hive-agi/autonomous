@@ -172,8 +172,10 @@
 (deftest memory-ledger-honours-the-contract
   (ledger-contract (ledger/open {:ledger/kind :memory})))
 
-(deftest datahike-ledger-honours-the-contract
-  (ledger-contract (ledger/open {:ledger/kind :datahike})))
+;; datahike runs on the JVM only (babashka cannot load it).
+#?(:bb nil
+   :clj (deftest datahike-ledger-honours-the-contract
+          (ledger-contract (ledger/open {:ledger/kind :datahike}))))
 
 ;; -----------------------------------------------------------------------------
 ;; client pipeline against a stub channel (no REPL)

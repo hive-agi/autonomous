@@ -26,6 +26,7 @@
 ;; HTTP and token minting load on demand: they need hashing and an HTTP
 ;; server, which ClojureWasm does not have, while stdio serving needs neither.
 (defn- http-start! [srv cfg] ((requiring-resolve 'autonomous.mcp.http.start/start!) srv cfg))
+(defn- stop-on-exit! [stop!] ((requiring-resolve 'autonomous.mcp.http.start/stop-on-exit!) stop!))
 (defn- mint [] ((requiring-resolve 'autonomous.bridge.auth/mint)))
 (defn- token-entry [t actor scopes] ((requiring-resolve 'autonomous.bridge.auth/token-entry) t actor scopes))
 
@@ -40,6 +41,19 @@
                              :call-timeout-ms (:call-timeout-ms cfg)})]
     (server/server ctx)))
 
+(defn- serve-http!
+  "Start HTTP for `cfg`, announce it on stderr and block until the process
+   is told to end. Answers the exit code when it cannot start."
+  [srv cfg]
+  (let [h (http-start! srv (merge (:http cfg) {:tokens (:tokens cfg)}))]
+    (if (answer/refused? h)
+      (do (err "autonomous serve:" (get-in h [:error :message])) 3)
+      (do (stop-on-exit! (get-in h [:ok :stop!]))
+          (err (str "autonomous: MCP on http://" (get-in cfg [:http :bind] "127.0.0.1")
+                    ":" (get-in h [:ok :port]) "/mcp"
+                    (if (seq (:tokens cfg)) " (bearer tokens required)" " (loopback, no tokens)")))
+          @(promise)))))
+
 (defn- serve [args]
   (let [{:keys [opts errors]} (config/parse-args args)]
     (if (seq errors)
@@ -51,30 +65,39 @@
         (if-let [e (:error res)]
           (do (err "autonomous serve:" (:message e) (pr-str (:problems e))) 2)
           (let [cfg (:ok res)
-                srv (build-server cfg)]
-            (err "autonomous: target" (pr-str (:target cfg)))
-            (case (:transport cfg)
-              :stdio (do (stdio/serve! srv {:actor (:stdio/actor cfg) :scopes (:stdio/scopes cfg)})
-                         0)
-              :http  (let [h (http-start! srv (merge (:http cfg) {:tokens (:tokens cfg)}))]
-                       (if (answer/refused? h)
-                         (do (err "autonomous serve:" (get-in h [:error :message])) 3)
-                         (do (err (str "autonomous: MCP on http://" (get-in cfg [:http :bind] "127.0.0.1")
-                                       ":" (get-in h [:ok :port]) "/mcp"
-                                       (if (seq (:tokens cfg)) " (bearer tokens required)" " (loopback, no tokens)")))
-                             @(promise)))))))))))
+                srv (try (build-server cfg)
+                         (catch Exception start-failure
+                           (err "autonomous serve:" (ex-message start-failure))
+                           nil))]
+            (cond
+              (nil? srv) 2
+              (= :stdio (:transport cfg))
+              (do (err "autonomous: target" (pr-str (:target cfg)))
+                  (stdio/serve! srv {:actor (:stdio/actor cfg) :scopes (:stdio/scopes cfg)})
+                  0)
+              :else
+              (do (err "autonomous: target" (pr-str (:target cfg)))
+                  (serve-http! srv cfg)))))))))
 
 (defn- token [args]
   (let [{:keys [opts errors]} (config/parse-args args)]
     (if (or (seq errors) (nil? (:actor opts)))
       (do (err "autonomous token --actor NAME [--scopes read,write]") 2)
-      (let [t     (mint)
-            entry (token-entry t (:actor opts) (config/split-on (or (:scopes opts) "read,write") ","))]
-        (println "token (give it to the agent, store it like a password; shown once):")
-        (println t)
-        (println "config entry (put it in :tokens of autonomous.edn or AUTONOMOUS_TOKENS):")
-        (println (wire/print-edn entry))
-        0))))
+      (let [minted (try (let [t (mint)]
+                          {:token t
+                           :entry (token-entry t (:actor opts)
+                                               (config/split-on (or (:scopes opts) "read,write") ","))})
+                        (catch Exception no-crypto
+                          {:failure (ex-message no-crypto)}))]
+        (if-let [why (:failure minted)]
+          (do (err "autonomous token: this runtime cannot mint tokens (it needs SecureRandom, base64 and"
+                   "SHA-256; ClojureWasm has none yet). Run `bb token` or `clojure -M:token`." why)
+              3)
+          (do (println "token (give it to the agent, store it like a password; shown once):")
+              (println (:token minted))
+              (println "config entry (put it in :tokens of autonomous.edn or AUTONOMOUS_TOKENS):")
+              (println (wire/print-edn (:entry minted)))
+              0))))))
 
 (defn -main [& [command & args]]
   (let [code (case command

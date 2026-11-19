@@ -72,8 +72,18 @@
 
 (defn open
   "Load the adapter namespace this library ships for `cfg`'s kind (a third
-   party loads its own), then `make` it."
+   party loads its own), then `make` it. An adapter this runtime cannot
+   load (datahike on babashka or ClojureWasm) throws ex-info with
+   :autonomous/error :ledger/unavailable and a message that says where it
+   runs."
   [cfg]
   (when-let [ns-sym (adapter-ns (:ledger/kind cfg))]
-    (require ns-sym))
+    (try
+      (require ns-sym)
+      (catch Exception load-failure
+        (throw (ex-info (str "ledger " (name (:ledger/kind cfg)) " cannot load on this runtime ("
+                             (ex-message load-failure) "); use --ledger memory, or run the bridge "
+                             "on the JVM with the adapter's alias (clojure -M:datahike:serve)")
+                        {:autonomous/error :ledger/unavailable :ledger/kind (:ledger/kind cfg)}
+                        load-failure)))))
   (make cfg))
