@@ -8,3 +8,4 @@ out/
 .clj-kondo/
 *.log
 local.deps.edn
+example/public/js/

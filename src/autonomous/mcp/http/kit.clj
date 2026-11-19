@@ -17,15 +17,27 @@
 (defn- ->ring [{:keys [status headers body]}]
   {:status status :headers (or headers {}) :body body})
 
+(def worker-threads
+  "Request threads. A call blocks its thread for up to the call timeout
+   while the runtime answers, so this matches the JDK adapter's pool."
+  16)
+
 (defn start!
   "Listen on `bind`:`port` (port 0 picks one). Answers Ok {:port :state
-   :stop!} or the exposure refusal."
+   :stop!} or the exposure refusal. http-kit itself refuses a body larger
+   than one byte past the limit, so an oversized request is never buffered
+   whole; handle-request answers 413 for the rest."
   [srv {:keys [bind port tokens] :or {bind "127.0.0.1"} :as cfg}]
   (if-let [r (http/exposure-refusal bind tokens)]
     r
-    (let [state  (atom {:sessions {}})
-          server (kit/run-server (fn [req] (->ring (http/handle-request srv state cfg (ring->request req))))
-                                 {:ip bind :port port :legacy-return-value? false})]
-      (answer/ok {:port  (kit/server-port server)
-                  :state state
-                  :stop! (fn [] @(kit/server-stop! server))}))))
+    (try
+      (let [state  (atom {:sessions {}})
+            server (kit/run-server (fn [req] (->ring (http/handle-request srv state cfg (ring->request req))))
+                                   {:ip bind :port port :legacy-return-value? false
+                                    :thread worker-threads
+                                    :max-body (inc http/max-body-bytes)})]
+        (answer/ok {:port  (kit/server-port server)
+                    :state state
+                    :stop! (fn [] @(kit/server-stop! server {:timeout 5000}))}))
+      (catch Exception bind-failure
+        (http/bind-refusal bind port bind-failure)))))

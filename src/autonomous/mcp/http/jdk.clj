@@ -30,14 +30,17 @@
   [srv {:keys [bind port tokens] :or {bind "127.0.0.1"} :as cfg}]
   (if-let [r (http/exposure-refusal bind tokens)]
     r
-    (let [state   (atom {:sessions {}})
-          server  (HttpServer/create (InetSocketAddress. ^String bind (int port)) 0)
-          handler (reify HttpHandler
-                    (handle [_ ex]
-                      (send! ex (http/handle-request srv state cfg (exchange->request ex)))))]
-      (.createContext server "/" handler)
-      (.setExecutor server (Executors/newFixedThreadPool 16))
-      (.start server)
-      (answer/ok {:port  (.getPort (.getAddress server))
-                  :state state
-                  :stop! (fn [] (.stop server 0))}))))
+    (try
+      (let [state   (atom {:sessions {}})
+            server  (HttpServer/create (InetSocketAddress. ^String bind (int port)) 0)
+            handler (reify HttpHandler
+                      (handle [_ ex]
+                        (send! ex (http/handle-request srv state cfg (exchange->request ex)))))]
+        (.createContext server "/" handler)
+        (.setExecutor server (Executors/newFixedThreadPool 16))
+        (.start server)
+        (answer/ok {:port  (.getPort (.getAddress server))
+                    :state state
+                    :stop! (fn [] (.stop server 1))}))
+      (catch java.io.IOException bind-failure
+        (http/bind-refusal bind port bind-failure)))))

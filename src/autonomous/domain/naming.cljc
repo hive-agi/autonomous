@@ -22,3 +22,14 @@
   (let [s   (if (keyword? id) (subs (str id) 1) (str id))
         out (apply str (map #(if (name-chars %) % "_") (take max-length s)))]
     (if (= "" out) "_" out)))
+
+(def max-target-id-length 48)
+
+(def ^:private target-id-chars (conj name-chars \.))
+
+(defn valid-target-id?
+  "True when `s` can name a target of a fleet: 1..48 of [A-Za-z0-9._-]."
+  [s]
+  (and (string? s)
+       (<= 1 (count s) max-target-id-length)
+       (every? target-id-chars (seq s))))

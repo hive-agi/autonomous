@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-labelledby="t">
+  <title id="t">autonomous</title>
+  <!-- An app window holding its tool graph, with an agent cursor on the
+       active node. Built on u = 64/phi^6; see doc/logo-construction.md. -->
+  <rect x="1.78" y="1.78" width="60.43" height="60.43" rx="13.33" fill="#0f1f33" stroke="#20dac9" stroke-width="3.57"/>
+  <circle cx="15.11" cy="9.34" r="2.2" fill="#20dac9"/>
+  <circle cx="24.45" cy="9.34" r="2.2" fill="#1e7c72"/>
+  <path d="M15.11 48.89 L48.89 15.11" stroke="#20dac9" stroke-width="3.57" stroke-linecap="round"/>
+  <circle cx="15.11" cy="48.89" r="5.77" fill="#20dac9"/>
+  <circle cx="48.89" cy="15.11" r="5.77" fill="#20dac9"/>
+  <circle cx="32" cy="32" r="9.34" fill="#0f1f33" stroke="#faac1b" stroke-width="3.57"/>
+  <circle cx="32" cy="32" r="3.57" fill="#20dac9"/>
+  <path d="M39.55 39.55 L39.55 51.64 L42.58 49 L44.92 54.36 L47.11 53.38 L44.77 48.24 L48.89 48.24 Z" fill="#faac1b" stroke="#0f1f33" stroke-width="2.72" stroke-linejoin="round" paint-order="stroke"/>
+</svg>

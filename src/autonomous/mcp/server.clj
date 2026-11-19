@@ -6,7 +6,7 @@
    Built-in tools are compiled by the domain exactly like app tools, and a
    call to one is planned by autonomous.domain.decision/plan-call, so scope
    checks and argument validation are the same code for both."
-  (:require [autonomous.bridge.client :as client]
+  (:require [autonomous.bridge.fleet :as fleet]
             [autonomous.bridge.session :as s]
             [autonomous.domain.affordance :as affordance]
             [autonomous.domain.answer :as answer]
@@ -23,38 +23,51 @@
       (throw (ex-info (str "invalid builtin " id) {:refusal a})))
     (assoc (:ok a) :run run)))
 
+(defn fleet-server
+  "An MCP server over fleet `f` (autonomous.bridge.fleet). `extra-builtins`
+   are more entries shaped like autonomous.mcp.builtins/all; their run fn
+   receives the fleet."
+  ([f] (fleet-server f []))
+  ([f extra-builtins]
+   {:fleet    f
+    :ctx      (fleet/member f (first (:order f)))
+    :builtins (into {} (map (juxt :name identity))
+                    (map compile-builtin (concat (builtins/for-mode (:mode f)) extra-builtins)))}))
+
 (defn server
-  "An MCP server over client context `ctx`. `extra-builtins` are more
-   entries shaped like autonomous.mcp.builtins/all."
+  "An MCP server over client context `ctx`: a fleet of one target in single
+   mode, names exactly as the app gives them."
   ([ctx] (server ctx []))
   ([ctx extra-builtins]
-   {:ctx      ctx
-    :builtins (into {} (map (juxt :name identity))
-                    (map compile-builtin (concat builtins/all extra-builtins)))}))
+   (fleet-server (fleet/from-context ctx) extra-builtins)))
 
 (defn- builtin-snapshot [srv] {:tools (:builtins srv) :lease nil})
 
-(defn- app-manifest [srv session]
-  (let [a (client/manifest (:ctx srv) session)]
-    (when (answer/ok? a) (:ok a))))
+(defn- app-surface
+  "What `session` sees of the app (or the fleet's apps): {:app :tools
+   :resources :apps :fingerprint}."
+  [srv session]
+  (fleet/surface (:fleet srv) session))
 
 (defn list-tools
   "MCP tool definitions `session` may call: built-ins its scopes allow, then
-   the app's (an app tool cannot shadow a built-in name)."
+   the app's (an app tool cannot shadow a built-in name). In a fleet, the
+   tools of every app that is up, prefixed by app."
   [srv session]
   (let [own  (:tools (manifest/project (builtin-snapshot srv) (s/grant session)))
-        app  (remove #(contains? (:builtins srv) (:name %)) (:tools (app-manifest srv session)))]
+        app  (remove #(contains? (:builtins srv) (:name %)) (:tools (app-surface srv session)))]
     (mapv p/->mcp-tool (concat own app))))
 
 (defn call-tool
-  "Answer and next session of calling `tool-name` with `args`."
+  "Answer and next session of calling `tool-name` with `args`: a built-in,
+   or the app tool of the target that owns the name."
   [srv session tool-name args]
   (if (contains? (:builtins srv) tool-name)
     (let [plan (decision/plan-call (builtin-snapshot srv) tool-name args (s/grant session) 0)]
       (case (:plan/action plan)
         :refuse {:answer (:refusal plan) :session session}
-        :invoke ((get-in plan [:tool :run]) (:ctx srv) session (:args plan))))
-    {:answer (client/call! (:ctx srv) session tool-name args) :session session}))
+        :invoke ((get-in plan [:tool :run]) (:fleet srv) session (:args plan))))
+    {:answer (fleet/call! (:fleet srv) session tool-name args) :session session}))
 
 ;; =============================================================================
 ;; JSON-RPC methods
@@ -68,7 +81,7 @@
 
 (defmethod handle-method "initialize" [srv session {:keys [id params]}]
   (reply session id (p/initialize-result (p/negotiate (:protocolVersion params))
-                                         (:app (app-manifest srv session))
+                                         (:app (app-surface srv session))
                                          version)))
 
 (defmethod handle-method "ping" [_ session {:keys [id]}]
@@ -85,10 +98,10 @@
       (reply session id (p/tool-result answer)))))
 
 (defmethod handle-method "resources/list" [srv session {:keys [id]}]
-  (reply session id {:resources (mapv p/->mcp-resource (:resources (app-manifest srv session)))}))
+  (reply session id {:resources (mapv p/->mcp-resource (:resources (app-surface srv session)))}))
 
 (defmethod handle-method "resources/read" [srv session {:keys [id params]}]
-  (let [a (client/read-resource (:ctx srv) session (:uri params))]
+  (let [a (fleet/read-resource (:fleet srv) session (:uri params))]
     (if (answer/ok? a)
       (reply session id (p/resource-contents (:uri params) a))
       {:response (p/error id :invalid-params (get-in a [:error :message]) (:error a)) :session session})))
@@ -117,8 +130,13 @@
             :session session}))))
 
 (defn tools-fingerprint
-  "What changes when the tool list a session sees changes: the app's
-   manifest version and its tool names."
+  "What changes when the tool list a session sees changes. Single mode: the
+   app's manifest version and tool names, as always. Fleet: per target its
+   status and, when up, its version and tool names, so a target going down
+   or coming back moves it."
   [srv session]
-  (let [m (app-manifest srv session)]
-    [(:version m) (mapv :name (:tools m))]))
+  (let [{:keys [fingerprint]} (app-surface srv session)]
+    (if (= :single (get-in srv [:fleet :mode]))
+      (let [[[_ status version names]] fingerprint]
+        (if (= :up status) [version names] [nil []]))
+      fingerprint)))

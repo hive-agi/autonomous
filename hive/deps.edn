@@ -1,10 +1,10 @@
 {:paths ["src" "resources"]
 
  ;; The hive integration of autonomous: an IAddon for hive-mcp. The core
- ;; library never depends on hive; this module does. Until the core is
- ;; released, a development REPL injects the local checkout as an extra dep.
+ ;; library never depends on hive; this module does. Developing both at once,
+ ;; a gitignored local.deps.edn points autonomous at the local checkout.
  :deps
- {io.github.hive-agi/autonomous {:mvn/version "0.1.0-SNAPSHOT"}
+ {io.github.hive-agi/autonomous {:mvn/version "0.1.2"}
   io.github.hive-agi/hive-addon {:mvn/version "1.1.10"}}
 
  :aliases

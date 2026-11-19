@@ -1,0 +1,15 @@
+{:all-good [],
+ :no-app-answer ["todos_stats did not answer through the runtime"],
+ :no-attach ["autonomous_attach did not pin the runtime"],
+ :no-initialize ["initialize did not negotiate 2025-03-26"],
+ :no-tools ["tools/list lacks the session or the app tools"],
+ :nothing
+ ["initialize did not negotiate 2025-03-26"
+  "tools/list lacks the session or the app tools"
+  "autonomous_runtimes does not list runtime 7"
+  "autonomous_attach did not pin the runtime"
+  "todos_stats did not answer through the runtime"],
+ :other-runtime
+ ["autonomous_runtimes does not list runtime 8"
+  "autonomous_attach did not pin the runtime"],
+ :string-id []}

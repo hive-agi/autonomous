@@ -1,0 +1,9 @@
+{:duplicate [:error "invalid fleet"],
+ :file {:single nil, :fleet [["local" nil nil] ["x" :clj 7003]]},
+ :fleet-flag {:single nil, :fleet [["api" :clj nil]]},
+ :prefix-clash [:error "invalid fleet"],
+ :single {:single "todo", :fleet []},
+ :two-dirs
+ {:single nil, :fleet [["todo" :shadow nil] ["api" :clj nil]]},
+ :two-ports
+ {:single nil, :fleet [["app-7001" :clj 7001] ["orders" :clj 7002]]}}
