@@ -6,4 +6,6 @@
  :addon/capabilities #{:tools :health-reporting}
  :addon/config       {}
  :addon/description  "Operate running apps built with the autonomous library: list and call their tools, read their state, attach a session to one instance (tab or process), lease an instance for exclusive writes, and read the journal and ledger of what every agent and the human did (tool `autonomous`)."
- :addon/maturity     :experimental}
+ :addon/maturity     :experimental
+ :addon/license      "MIT"
+ :addon/trust-class  :foss}

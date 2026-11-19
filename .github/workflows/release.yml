@@ -1,0 +1,80 @@
+name: release
+
+# Every push to main that changes the library releases a patch: gate on the
+# suite, tag v<next patch>, deploy to Clojars. README-only commits mint nothing,
+# because a published pom is immutable.
+#
+# The version comes from the tags, not from a commit back to main. VERSION in
+# the tree is a FLOOR (raise it in a staging PR to open a new minor line); this
+# run releases patch+1 of max(VERSION, newest v* tag). A bump commit on main
+# would be one staging lacks and would make every staging->main PR conflict.
+#
+# Secrets (per-repo or hive-agi org-wide): CLOJARS_USERNAME, CLOJARS_DEPLOY_TOKEN.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'resources/**'
+      - 'deps.edn'
+      - 'version.edn'
+      - 'VERSION'
+      # The suite gates the release, so a test-only change must be able to
+      # trigger a run, or a test regression stays invisible until a src push.
+      - 'test/**'
+      - 'tests.edn'
+      - '.github/workflows/**'
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: DeLaGuardo/setup-clojure@13.0
+        with:
+          cli: latest
+
+      # Gate BEFORE the tag: a red suite must not mint a version.
+      # The :integration suite needs live app runtimes and stays local.
+      - name: Test (JVM unit suite)
+        run: clojure -M:test unit
+
+      - name: Resolve release base from tags
+        run: |
+          set -euo pipefail
+          FLOOR=$(tr -d '[:space:]' < VERSION)
+          LAST=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -n1 | sed 's/^v//')
+          BASE=$(printf '%s\n%s\n' "$FLOOR" "${LAST:-$FLOOR}" | sort -V | tail -n1)
+          echo "VERSION floor $FLOOR, newest tag ${LAST:-none}: base $BASE"
+          printf '%s\n' "$BASE" > VERSION
+
+      - name: Bump patch version
+        run: clojure -T:build bump :level :patch
+
+      - name: Tag
+        run: |
+          set -euo pipefail
+          VER=$(tr -d '[:space:]' < VERSION)
+          git config user.name  "hive-ci"
+          git config user.email "ci@hive-agi.local"
+          # Annotated, so the next run's tag scan and `git describe` see it.
+          git tag -a "v$VER" -m "release $VER"
+          git push origin "refs/tags/v$VER"
+
+      - name: Deploy
+        env:
+          # deps-deploy and hive-build read CLOJARS_PASSWORD; the org secret
+          # is CLOJARS_DEPLOY_TOKEN.
+          CLOJARS_USERNAME: ${{ secrets.CLOJARS_USERNAME }}
+          CLOJARS_PASSWORD: ${{ secrets.CLOJARS_DEPLOY_TOKEN }}
+        run: clojure -T:build deploy
