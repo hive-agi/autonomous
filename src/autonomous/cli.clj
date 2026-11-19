@@ -83,13 +83,21 @@
   (let [{:keys [opts errors]} (config/parse-args args)]
     (if (or (seq errors) (nil? (:actor opts)))
       (do (err "autonomous token --actor NAME [--scopes read,write]") 2)
-      (let [t     (mint)
-            entry (token-entry t (:actor opts) (config/split-on (or (:scopes opts) "read,write") ","))]
-        (println "token (give it to the agent, store it like a password; shown once):")
-        (println t)
-        (println "config entry (put it in :tokens of autonomous.edn or AUTONOMOUS_TOKENS):")
-        (println (wire/print-edn entry))
-        0))))
+      (let [minted (try (let [t (mint)]
+                          {:token t
+                           :entry (token-entry t (:actor opts)
+                                               (config/split-on (or (:scopes opts) "read,write") ","))})
+                        (catch Exception no-crypto
+                          {:failure (ex-message no-crypto)}))]
+        (if-let [why (:failure minted)]
+          (do (err "autonomous token: this runtime cannot mint tokens (it needs SecureRandom, base64 and"
+                   "SHA-256; ClojureWasm has none yet). Run `bb token` or `clojure -M:token`." why)
+              3)
+          (do (println "token (give it to the agent, store it like a password; shown once):")
+              (println (:token minted))
+              (println "config entry (put it in :tokens of autonomous.edn or AUTONOMOUS_TOKENS):")
+              (println (wire/print-edn (:entry minted)))
+              0))))))
 
 (defn -main [& [command & args]]
   (let [code (case command
