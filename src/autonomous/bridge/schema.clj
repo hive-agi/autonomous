@@ -87,7 +87,8 @@
    [:session/id :string]
    [:session/actor ds/Actor]
    [:session/scopes ds/Scopes]
-   [:session/runtime {:optional true} [:maybe :any]]])
+   [:session/runtime {:optional true} [:maybe :any]]
+   [:session/runtimes {:optional true} [:map-of :string :any]]])
 
 (def LedgerEntry
   [:map

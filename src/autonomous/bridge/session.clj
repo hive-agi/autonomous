@@ -17,6 +17,30 @@
   [session runtime-id]
   (assoc session :session/runtime runtime-id))
 
+(defn- mode-of [mode & _] mode)
+
+(defmulti attach-on
+  "`session` pinned to `runtime-id` of target `target-id` under fleet
+   `mode`. :single keeps the one pin it always had; :fleet keeps a pin per
+   target, so attaching on one app leaves the others alone."
+  mode-of)
+
+(defmethod attach-on :single [_ session _target-id runtime-id]
+  (attach session runtime-id))
+
+(defmethod attach-on :fleet [_ session target-id runtime-id]
+  (assoc-in session [:session/runtimes target-id] runtime-id))
+
+(defmulti on-target
+  "The session the bridge speaks to target `target-id` with: `session`
+   pinned to that target's runtime under fleet `mode`."
+  mode-of)
+
+(defmethod on-target :single [_ session _target-id] session)
+
+(defmethod on-target :fleet [_ session target-id]
+  (attach session (get-in session [:session/runtimes target-id])))
+
 (defn grant
   "The grant `session` speaks with."
   [session]
