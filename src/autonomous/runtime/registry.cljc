@@ -12,74 +12,121 @@
             [autonomous.domain.lease :as lease]
             [autonomous.domain.schema :as s]
             [malli.core :as m]
-            [malli.error :as me]))
+            [malli.error :as me]
+            [autonomous.surface :as surface]))
 
 (def pending-ttl-ms (* 10 60 1000))
 
 (defn now-ms []
   #?(:clj (System/currentTimeMillis) :cljs (js/Date.now)))
 
-(defn- empty-state
-  "A fresh registry. :epoch is when this runtime life began: a reload starts
-   a new epoch and restarts the journal sequence, so a reader keeps its
-   cursor per epoch."
+(defn- fresh-state
+  "Runtime-only state of a fresh instance: journal, lease, pending results
+   and their counters. The surface (what agents may do and see) is a
+   separate VALUE (autonomous.surface), never mixed in here. :epoch is
+   when this runtime life began: a reload starts a new epoch and restarts
+   the journal sequence, so a reader keeps its cursor per epoch."
   []
-  {:app        {:name "app"}
-   :epoch      (now-ms)
-   :tools      {}
-   :resources  {}
-   :middleware []
-   :version    0
-   :journal    journal/empty-journal
-   :lease      nil
-   :pending    {}
-   :next-id    0})
+  {:epoch   (now-ms)
+   :version 0
+   :journal journal/empty-journal
+   :lease   nil
+   :pending {}
+   :next-id 0})
 
-(defonce ^:private !state (atom (empty-state)))
+(defprotocol IRuntime
+  "L2 read seam: what an adapter may ask of a running instance. Reads
+   answer values; mutation stays with this namespace's `!` functions."
+  (-snapshot [rt] "One immutable value: the surface's keys beside the runtime's.")
+  (-surface [rt] "The Surface value the instance holds, no runtime state."))
+
+(defrecord ^{:doc "L2: one running instance. `state` is an atom of {:surface Surface
+   :epoch :version :journal :lease :pending :next-id}: the surface value
+   changes on deploy or reload, the rest on every call. Two runtimes
+   share nothing. Deref answers the snapshot."}
+  Runtime [state]
+  IRuntime
+  (-snapshot [_] (let [{:keys [surface] :as st} @state]
+                   (merge (dissoc st :surface) surface)))
+  (-surface [_] (:surface @state))
+  #?@(:clj  [clojure.lang.IDeref (deref [rt] (-snapshot rt))]
+      :cljs [IDeref (-deref [rt] (-snapshot rt))]))
+
+(defn runtime?
+  "L2: true when `x` is a Runtime instance (the record class is not
+   addressable through an alias on every host)."
+  [x]
+  (instance? Runtime x))
+
+(defn make-runtime
+  "A fresh Runtime holding surface value `surface`
+   (autonomous.surface/Surface; nil means the empty surface) with an
+   empty journal, no lease and no pending results. Throws on an invalid
+   surface: an author error fails loudly while the app loads, as
+   reg-tool does."
+  ([] (make-runtime nil))
+  ([surface]
+   (let [s (surface/->surface (or surface surface/empty-surface))]
+     (when (answer/refused? s)
+       (throw (ex-info (str "invalid surface: " (get-in s [:error :message]))
+                       {:autonomous/error (get-in s [:error :type])
+                        :problems (get-in s [:error :data])})))
+     (->Runtime (atom (assoc (fresh-state) :surface (:ok s)))))))
+
+(defonce ^{:doc "The ONE process-wide runtime the facade API (reg-tool, reg-resource,
+   use!, the re-frame adapter) acts on. Adapters that own their instance
+   (autonomous.ring) never touch it."} default-runtime
+  (make-runtime))
 
 ;; =============================================================================
 ;; State seam: the global is only the DEFAULT instance
 ;; =============================================================================
 
 (def ^:dynamic *state*
-  "The registry atom the `!` functions and `snapshot` act on when bound;
-   unbound, the process-wide default that reg-tool fills. An adapter that
-   owns its own surface and runtime state (autonomous.ring/wrap-autonomous)
-   binds it to an instance from `instance`, so two wrapped apps in one
-   process never share tools, journal, lease or pending results, and
-   removing the wrap removes all of it."
+  "The Runtime the `!` functions and `snapshot` act on when bound;
+   unbound, `default-runtime`, the process-wide instance reg-tool fills.
+   An adapter that owns its own surface and runtime state
+   (autonomous.ring/wrap-autonomous) binds it to its own Runtime, so two
+   wrapped apps in one process never share tools, journal, lease or
+   pending results, and removing the wrap removes all of it."
   nil)
 
-(defn- state-ref [] (or *state* !state))
+(defn- state-ref [] (:state (or *state* default-runtime)))
 
 (defn instance
-  "A fresh registry atom, private to its holder: the tools and resources
-   of `surface` ({:app :tools :resources}, already compiled by
+  "A fresh Runtime private to its holder: the affordances of `surface`
+   ({:app :tools :resources :interceptors}, already compiled by
    autonomous.domain.affordance) with an empty journal, no lease and no
-   pending results. Use it with `with-instance`."
+   pending results. Kept for callers of the pre-split API; new code uses
+   make-runtime. Use it with `with-instance`."
   ([] (instance nil))
-  ([{:keys [app tools resources]}]
-   (atom (cond-> (empty-state)
-           app       (assoc :app app)
-           tools     (assoc :tools tools)
-           resources (assoc :resources resources)))))
+  ([surface] (make-runtime surface)))
 
 (defn with-instance
-  "Run `f` with no arguments against registry atom `st` (see `instance`)."
-  [st f]
-  (binding [*state* st] (f)))
+  "Run `f` with no arguments against Runtime `rt` (see `instance`)."
+  [rt f]
+  (binding [*state* rt] (f)))
 
 (defn snapshot
-  "The registry as an immutable value."
+  "L2 read: the runtime as one immutable value (see IRuntime), of the
+   bound instance or the default. The shape the domain decides on,
+   unchanged by the split."
   []
-  @(state-ref))
+  (-snapshot (or *state* default-runtime)))
 
 (defn clear!
-  "Forget everything: tools, resources, middleware, journal, lease, pending
-   results. For tests and for a reload that registers from scratch."
+  "Forget everything: the surface (tools, resources, interceptors) and
+   the runtime state (journal, lease, pending results). For tests and
+   for a reload that registers from scratch."
   []
-  (reset! (state-ref) (empty-state))
+  (reset! (state-ref) (assoc (fresh-state) :surface surface/empty-surface))
   nil)
+
+(defn surface-value
+  "L2 read: the Surface value the bound (or default) runtime holds right
+   now. Pure data: no journal, lease or pending results travel with it."
+  []
+  (-surface (or *state* default-runtime)))
 
 (defn- unwrap!
   "The value of an Ok answer; a refusal becomes an ex-info carrying it."
@@ -98,7 +145,7 @@
 (defn- clashing-id
   "Id of a DIFFERENT tool already registered under `tool`'s name."
   [st tool]
-  (let [other (get-in st [:tools (:name tool)])]
+  (let [other (get-in st [:surface :tools (:name tool)])]
     (when (and other (not= (:id other) (:id tool))) (:id other))))
 
 (defn add-tool!
@@ -111,7 +158,7 @@
              (when-let [other (clashing-id st tool)]
                (throw (ex-info (str "tool name " (:name tool) " is already used by " other)
                                {:autonomous/error :name-clash :name (:name tool)})))
-             (bump (assoc-in st [:tools (:name tool)] tool))))
+             (bump (assoc-in st [:surface :tools (:name tool)] tool))))
     (:name tool)))
 
 (defn remove-tool!
@@ -119,19 +166,19 @@
   [x]
   (swap! (state-ref)
          (fn [st]
-           (let [names (for [[n t] (:tools st) :when (or (= n x) (= (:id t) x))] n)]
-             (bump (update st :tools #(apply dissoc % names))))))
+           (let [names (for [[n t] (get-in st [:surface :tools]) :when (or (= n x) (= (:id t) x))] n)]
+             (bump (update-in st [:surface :tools] #(apply dissoc % names))))))
   nil)
 
 (defn add-resource!
   "Register resource `uri` from author `spec`; answers the uri."
   [uri spec]
   (let [r (unwrap! (affordance/->resource uri spec))]
-    (swap! (state-ref) #(bump (assoc-in % [:resources uri] r)))
+    (swap! (state-ref) #(bump (assoc-in % [:surface :resources uri] r)))
     uri))
 
 (defn remove-resource! [uri]
-  (swap! (state-ref) #(bump (update % :resources dissoc uri)))
+  (swap! (state-ref) #(bump (update-in % [:surface :resources] dissoc uri)))
   nil)
 
 (defn set-app!
@@ -139,13 +186,13 @@
   [info]
   (when-let [e (m/explain s/AppInfo info)]
     (throw (ex-info "invalid app info" {:autonomous/error :invalid-app :problems (me/humanize e)})))
-  (swap! (state-ref) #(bump (assoc % :app info)))
+  (swap! (state-ref) #(bump (assoc-in % [:surface :app] info)))
   nil)
 
 (defn add-middleware!
   "Wrap every invocation: `mw` is (fn [handler] (fn [tool args grant] ...))."
   [mw]
-  (swap! (state-ref) update :middleware conj mw)
+  (swap! (state-ref) update-in [:surface :middleware] (fnil conj []) mw)
   nil)
 
 ;; =============================================================================

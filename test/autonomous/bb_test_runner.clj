@@ -19,6 +19,7 @@
     autonomous.e2e.check-trifecta-test
     autonomous.demo.plan-test
     autonomous.runtime.rpc-test
+    autonomous.runtime.registry-test
     autonomous.re-frame.model-trifecta-test
     autonomous.openapi-test
     autonomous.openapi-codec-test
