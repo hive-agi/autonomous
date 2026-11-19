@@ -1,0 +1,7 @@
+{:project-id  "autonomous"
+ :parent      "hive"
+ :description "Make applications agent-operable: an in-app registry of tools and resources (cljc, re-frame adapter), and a bridge (JVM, babashka, ClojureWasm) that serves a fleet of app nREPLs over MCP with sessions, leases and a ledger. Mounts in hive as the `autonomous` IAddon."
+ :type        :library
+ :language    :clojure
+ :tags        ["mcp" "agentic-ui" "re-frame" "babashka" "cljw" "nrepl"]
+ :carto       {:source-roots ["src" "test" "test-cljs" "example/src" "hive/src" "hive/test"]}}

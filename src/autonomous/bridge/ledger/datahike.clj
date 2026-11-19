@@ -67,9 +67,21 @@
    :schema-flexibility :write
    :keep-history? true})
 
+(defn store-config
+  "Datahike config for ledger `cfg`: an explicit :datahike/config, a file
+   store at :datahike/path (its id derived from the path, so a restart
+   reopens the same ledger), else a fresh in-memory store."
+  [cfg]
+  (cond
+    (:datahike/config cfg) (:datahike/config cfg)
+    (:datahike/path cfg)   (let [p (:datahike/path cfg)]
+                             (assoc default-config :store
+                                    {:backend :file :path p
+                                     :id (java.util.UUID/nameUUIDFromBytes (.getBytes ^String p "UTF-8"))}))
+    :else                  (assoc-in default-config [:store :id] (java.util.UUID/randomUUID))))
+
 (defmethod ledger/make :datahike [cfg]
-  (let [dcfg (or (:datahike/config cfg)
-                 (assoc-in default-config [:store :id] (java.util.UUID/randomUUID)))]
+  (let [dcfg (store-config cfg)]
     (when-not (d/database-exists? dcfg)
       (d/create-database dcfg))
     (let [conn (d/connect dcfg)]

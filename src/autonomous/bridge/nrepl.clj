@@ -13,30 +13,15 @@
   (:require [autonomous.bridge.eval-source :as src]
             [autonomous.bridge.port :as port]
             [autonomous.domain.answer :as answer]
-            [clojure.java.io :as io]
             [clojure.string :as str]
             [nrepl.core :as nrepl]
-            [autonomous.domain.wire :as wire]))
+            [autonomous.domain.wire :as wire]
+            [autonomous.bridge.endpoint :as endpoint]))
 
 (def default-timeout-ms 30000)
 
-(defn resolve-port
-  "The nREPL port of `target`: :nrepl/port, else the number in
-   :nrepl/port-file (shadow-cljs writes .shadow-cljs/nrepl.port, a deps
-   nREPL writes .nrepl-port). Answers Ok port or a :channel/no-port refusal."
-  [{:nrepl/keys [port port-file]}]
-  (cond
-    port (answer/ok port)
-    (and port-file (.exists (io/file port-file)))
-    (try (answer/ok (Long/parseLong (str/trim (slurp port-file))))
-         (catch Exception e
-           (answer/refusal :channel/no-port (str "unreadable port file " port-file) {:cause (ex-message e)})))
-    :else (answer/refusal :channel/no-port
-                          (str "no nREPL port: set :nrepl/port, or start the app so it writes "
-                               (or port-file "its port file")))))
-
 (defn- open! [target]
-  (let [p (resolve-port target)]
+  (let [p (endpoint/resolve-port target)]
     (if (answer/refused? p)
       p
       (try

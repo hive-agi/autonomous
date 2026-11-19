@@ -17,15 +17,7 @@
  :datahike
  {:ok
   {:transport :stdio,
-   :ledger
-   {:ledger/kind :datahike,
-    :datahike/config
-    {:store
-     {:backend :file,
-      :path "/tmp/l",
-      :id #uuid "35f5def8-dcfd-3360-8353-a4237185358a"},
-     :schema-flexibility :write,
-     :keep-history? true}},
+   :ledger {:ledger/kind :datahike, :datahike/path "/tmp/l"},
    :stdio/actor "local",
    :stdio/scopes #{:read :write},
    :target

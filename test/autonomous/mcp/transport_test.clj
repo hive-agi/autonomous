@@ -12,8 +12,9 @@
             [autonomous.mcp.server :as server]
             [autonomous.mcp.stdio :as stdio]
             [clojure.string :as str]
-            [clojure.test :refer [deftest is testing use-fixtures]])
-  (:import (java.io BufferedReader StringReader StringWriter)
+            [clojure.test :refer [deftest is testing use-fixtures]]
+            [autonomous.mcp.http.jdk :as jdk])
+  (:import (java.io StringReader StringWriter)
            (java.net URI)
            (java.net.http HttpClient HttpRequest HttpRequest$BodyPublishers HttpResponse$BodyHandlers)))
 
@@ -37,11 +38,12 @@
 ;; stdio
 
 (defn- run-stdio [opts msgs]
-  (let [out (StringWriter.)]
+  (let [in  (atom (map #(if (string? %) % (json/write %)) msgs))
+        out (atom [])]
     (stdio/serve! (srv) (merge {:watch-ms 0} opts)
-                  (BufferedReader. (StringReader. (str/join "\n" (map #(if (string? %) % (json/write %)) msgs))))
-                  out)
-    (mapv json/read-json (str/split-lines (str out)))))
+                  (fn [] (let [[l & more] @in] (reset! in more) l))
+                  (fn [s] (swap! out conj s)))
+    (mapv json/read-json @out)))
 
 (deftest stdio-speaks-mcp-line-by-line
   (let [[init tools call wipe bad] (run-stdio {:actor "agent-1" :scopes #{:read :write}}
@@ -106,7 +108,7 @@
     (is (= 404 (:status (call tok-a {:text "x"}))) "a deleted session is gone")))
 
 (deftest http-over-a-real-socket
-  (let [h (:ok (http/start! (srv) (assoc cfg :bind "127.0.0.1" :port 0)))
+  (let [h (:ok (jdk/start! (srv) (assoc cfg :bind "127.0.0.1" :port 0)))
         client (HttpClient/newHttpClient)
         send (fn [headers body]
                (let [b (reduce (fn [b [k v]] (.header b k v))

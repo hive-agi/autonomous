@@ -114,16 +114,10 @@
 
 (defn- ledger-config [opts]
   (case (:ledger opts)
-    nil         nil
-    "memory"    {:ledger/kind :memory}
-    "datahike"  (cond-> {:ledger/kind :datahike}
-                  (:datahike-path opts)
-                  (assoc :datahike/config
-                         {:store {:backend :file :path (:datahike-path opts)
-                                  :id (java.util.UUID/nameUUIDFromBytes
-                                       (.getBytes ^String (:datahike-path opts) "UTF-8"))}
-                          :schema-flexibility :write
-                          :keep-history? true}))
+    nil        nil
+    "memory"   {:ledger/kind :memory}
+    "datahike" (cond-> {:ledger/kind :datahike}
+                 (:datahike-path opts) (assoc :datahike/path (:datahike-path opts)))
     {:ledger/kind (keyword (:ledger opts))}))
 
 (defn promote

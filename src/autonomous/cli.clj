@@ -14,17 +14,20 @@
             --actor NAME --scopes read,write
 
    Only stdout carries MCP in stdio mode; everything else goes to stderr."
-  (:require [autonomous.bridge.auth :as auth]
-            [autonomous.bridge.client :as client]
+  (:require [autonomous.bridge.client :as client]
             [autonomous.bridge.ledger :as ledger]
             [autonomous.bridge.channel :as channel]
             [autonomous.config :as config]
             [autonomous.domain.answer :as answer]
             [autonomous.domain.wire :as wire]
-            [autonomous.mcp.http :as http]
             [autonomous.mcp.server :as server]
-            [autonomous.mcp.stdio :as stdio])
-  (:import (java.io BufferedReader InputStreamReader OutputStreamWriter)))
+            [autonomous.mcp.stdio :as stdio]))
+
+;; HTTP and token minting load on demand: they need hashing and an HTTP
+;; server, which ClojureWasm does not have, while stdio serving needs neither.
+(defn- http-start! [srv cfg] ((requiring-resolve 'autonomous.mcp.http.start/start!) srv cfg))
+(defn- mint [] ((requiring-resolve 'autonomous.bridge.auth/mint)))
+(defn- token-entry [t actor scopes] ((requiring-resolve 'autonomous.bridge.auth/token-entry) t actor scopes))
 
 (defn- err [& xs] (binding [*out* *err*] (apply println xs)))
 
@@ -51,11 +54,9 @@
                 srv (build-server cfg)]
             (err "autonomous: target" (pr-str (:target cfg)))
             (case (:transport cfg)
-              :stdio (do (stdio/serve! srv {:actor (:stdio/actor cfg) :scopes (:stdio/scopes cfg)}
-                                       (BufferedReader. (InputStreamReader. System/in "UTF-8"))
-                                       (OutputStreamWriter. System/out "UTF-8"))
+              :stdio (do (stdio/serve! srv {:actor (:stdio/actor cfg) :scopes (:stdio/scopes cfg)})
                          0)
-              :http  (let [h (http/start! srv (merge (:http cfg) {:tokens (:tokens cfg)}))]
+              :http  (let [h (http-start! srv (merge (:http cfg) {:tokens (:tokens cfg)}))]
                        (if (answer/refused? h)
                          (do (err "autonomous serve:" (get-in h [:error :message])) 3)
                          (do (err (str "autonomous: MCP on http://" (get-in cfg [:http :bind] "127.0.0.1")
@@ -67,8 +68,8 @@
   (let [{:keys [opts errors]} (config/parse-args args)]
     (if (or (seq errors) (nil? (:actor opts)))
       (do (err "autonomous token --actor NAME [--scopes read,write]") 2)
-      (let [t     (auth/mint)
-            entry (auth/token-entry t (:actor opts) (config/split-on (or (:scopes opts) "read,write") ","))]
+      (let [t     (mint)
+            entry (token-entry t (:actor opts) (config/split-on (or (:scopes opts) "read,write") ","))]
         (println "token (give it to the agent, store it like a password; shown once):")
         (println t)
         (println "config entry (put it in :tokens of autonomous.edn or AUTONOMOUS_TOKENS):")

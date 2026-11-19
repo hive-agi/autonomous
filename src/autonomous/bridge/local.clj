@@ -18,10 +18,7 @@
 
   port/IRuntimeDirectory
   (-runtimes [_]
-    (answer/ok [{:runtime/id "local" :runtime/kind :clj :runtime/label "this JVM"}]))
-
-  java.io.Closeable
-  (close [_] nil))
+    (answer/ok [{:runtime/id "local" :runtime/kind :clj :runtime/label "this process"}])))
 
 (defn channel
   ([] (channel {:target/kind :local :target/id "local"}))

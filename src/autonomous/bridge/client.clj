@@ -17,17 +17,12 @@
   "Identity the bridge itself reads journals with."
   {:actor "autonomous/bridge" :scopes #{:read}})
 
-(defn- daemon-executor []
-  (java.util.concurrent.Executors/newSingleThreadExecutor
-   (reify java.util.concurrent.ThreadFactory
-     (newThread [_ r] (doto (Thread. ^Runnable r "autonomous-drainer") (.setDaemon true))))))
-
 (defn context
   "Pipeline context. `channel` implements IRuntimeChannel and
    IRuntimeDirectory; `ledger` (optional) implements ILedger. With
    :drain :inline every call drains before answering (deterministic, for
-   tests); the default :background drains on a coalescing daemon thread so
-   a call costs one round trip."
+   tests); the default :background drains in a coalescing future so a call
+   costs one round trip."
   [{:keys [target channel ledger call-timeout-ms clock sleep! drain]}]
   {:target     target
    :channel    channel
@@ -37,7 +32,6 @@
    :sleep!     (or sleep! #(Thread/sleep (long %)))
    :cursors    (atom {})
    :drain      (or drain :background)
-   :drainer    (delay (daemon-executor))
    :queued     (atom #{})})
 
 (defn send!
@@ -112,9 +106,9 @@
   250)
 
 (defn drain-soon!
-  "Drain `session`'s runtime: now when the context drains :inline, else on
-   the drainer thread after `drain-window-ms`, coalescing every request for
-   a runtime made in that window."
+  "Drain `session`'s runtime: now when the context drains :inline, else in
+   a future after `drain-window-ms`, coalescing every request for a runtime
+   made in that window."
   [ctx session]
   (when (:ledger ctx)
     (if (= :inline (:drain ctx))
@@ -122,16 +116,14 @@
       (let [k (or (:session/runtime session) :default)
             [before _] (swap-vals! (:queued ctx) conj k)]
         (when-not (contains? before k)
-          (.submit ^java.util.concurrent.ExecutorService @(:drainer ctx)
-                   ^Runnable (fn []
-                               (try
-                                 (Thread/sleep (long drain-window-ms))
-                                 (swap! (:queued ctx) disj k)
-                                 (drain! ctx session)
-                                 (catch InterruptedException _shutting-down nil)
-                                 (catch Exception e
-                                   (binding [*out* *err*]
-                                     (println "[autonomous] drain failed:" (ex-message e))))))))))))
+          (future
+            (try
+              ((:sleep! ctx) drain-window-ms)
+              (swap! (:queued ctx) disj k)
+              (drain! ctx session)
+              (catch Exception e
+                (binding [*out* *err*]
+                  (println "[autonomous] drain failed:" (ex-message e)))))))))))
 
 (defn manifest [ctx session]
   (send! ctx session {:op :manifest}))

@@ -9,7 +9,8 @@
   (:require [autonomous.domain.answer :as answer]
             [autonomous.domain.decision :as decision]
             [autonomous.domain.wire :as wire]
-            [autonomous.runtime.registry :as registry]))
+            [autonomous.runtime.registry :as registry]
+            [clojure.string :as str]))
 
 (defmulti invoke-kind
   "Run `tool` with decoded `args` for `grant`. Answer a value, or a promise or
@@ -24,32 +25,47 @@
                        "; load the adapter namespace that provides it")
                   {:autonomous/error :unknown-kind :kind (:kind tool)})))
 
+#?(:cljs nil
+   :default (def ^:private promise-type
+              "The class `promise` instances have on this runtime."
+              (type (promise))))
+
 (defn thenable?
-  "True for a value still being computed: a JS promise, or a JVM future or
-   promise."
+  "True for a value still being computed: a JS promise; on the JVM, babashka
+   and ClojureWasm a future or promise (and, on the JVM, any
+   java.util.concurrent.Future). No JVM-only class is named outside the
+   :clj-only branch, so the namespace compiles on every runtime."
   [x]
-  #?(:clj  (or (instance? java.util.concurrent.Future x)
-               (instance? clojure.lang.IBlockingDeref x))
-     :cljs (and (some? x) (object? x) (fn? (.-then x)))))
+  #?(:cljs    (and (some? x) (object? x) (fn? (.-then x)))
+     :cljw    (or (future? x) (instance? promise-type x))
+     :bb      (or (future? x) (instance? promise-type x))
+     :default (or (future? x) (instance? promise-type x)
+                  (instance? java.util.concurrent.Future x))))
+
+(defn- unwrap-deref-failure
+  "What a tool threw, given what deref of its future threw: futures wrap a
+   failure in java.util.concurrent.ExecutionException. Matched by class
+   name, so no runtime has to know the class."
+  [t]
+  (if (and (ex-cause t) (str/ends-with? (str (type t)) "java.util.concurrent.ExecutionException"))
+    (ex-cause t)
+    t))
 
 (defn- settle-later!
   "Park thenable `x`; its outcome becomes the parked answer and a journal
-   entry (:autonomous/settled), so the ledger knows how an async call ended.
-   A JVM future wraps a failure in ExecutionException; the cause is what the
-   tool threw."
+   entry (:autonomous/settled), so the ledger knows how an async call ended."
   [x]
   (let [id      (registry/park!)
         settle! (fn [a]
                   (registry/settle! id a)
                   (registry/record! {:kind :autonomous/settled :pending id :outcome (answer/outcome a)}))]
-    #?(:clj  (future
-               (settle! (try (answer/ok (wire/->wire (deref x)))
-                             (catch java.util.concurrent.ExecutionException e
-                               (answer/from-exception (or (.getCause e) e)))
-                             (catch Throwable t (answer/from-exception t)))))
-       :cljs (-> x
-                 (.then (fn [v] (settle! (answer/ok (wire/->wire v)))))
-                 (.catch (fn [e] (settle! (answer/from-exception e))))))
+    #?(:cljs    (-> x
+                    (.then (fn [v] (settle! (answer/ok (wire/->wire v)))))
+                    (.catch (fn [e] (settle! (answer/from-exception e)))))
+       :default (future
+                  (settle! (try (answer/ok (wire/->wire (deref x)))
+                                (catch Throwable t
+                                  (answer/from-exception (unwrap-deref-failure t)))))))
     (answer/pending id)))
 
 (defn settle

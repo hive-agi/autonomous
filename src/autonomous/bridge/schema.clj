@@ -91,7 +91,8 @@
 (def LedgerConfig
   [:map
    [:ledger/kind [:enum :memory :datahike]]
-   [:datahike/config {:optional true} :map]])
+   [:datahike/config {:optional true} :map]
+   [:datahike/path {:optional true} :string]])
 
 (def Config
   [:map

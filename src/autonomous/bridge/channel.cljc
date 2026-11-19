@@ -1,8 +1,13 @@
 (ns autonomous.bridge.channel
   "Channel construction by target kind (OCP: a new transport, e.g. a
-   websocket the page dials out on, is one defmethod)."
+   websocket the page dials out on, is one defmethod).
+
+   The nREPL adapter is chosen per runtime: the JVM speaks nrepl.core;
+   babashka and ClojureWasm speak bencode through bb-mcp's byte channel."
   (:require [autonomous.bridge.local :as local]
-            [autonomous.bridge.nrepl :as nrepl]))
+            #?(:bb   [autonomous.bridge.nrepl-wire :as nrepl]
+               :cljw [autonomous.bridge.nrepl-wire :as nrepl]
+               :clj  [autonomous.bridge.nrepl :as nrepl])))
 
 (defmulti make
   "An IRuntimeChannel + IRuntimeDirectory for `target`."

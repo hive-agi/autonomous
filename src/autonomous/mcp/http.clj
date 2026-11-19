@@ -12,18 +12,17 @@
    4. session ownership: a session id is honoured only for the actor that
       opened it (404 otherwise, as for an unknown session).
 
-   `route` is pure over a request map and a state atom; `start!` is the thin
-   JDK HttpServer adapter."
+   `route` and `handle-request` are pure over request maps and a state
+   atom, shared by every runtime; the socket adapters live in
+   autonomous.mcp.http.jdk (JVM) and autonomous.mcp.http.kit (babashka),
+   chosen by autonomous.mcp.http.start."
   (:require [autonomous.bridge.auth :as auth]
             [autonomous.bridge.session :as s]
             [autonomous.domain.answer :as answer]
             [autonomous.mcp.json :as json]
             [autonomous.mcp.protocol :as p]
             [autonomous.mcp.server :as server]
-            [clojure.string :as str])
-  (:import (com.sun.net.httpserver HttpExchange HttpHandler HttpServer)
-           (java.net InetSocketAddress)
-           (java.util.concurrent Executors)))
+            [clojure.string :as str]))
 
 (def max-body-bytes (* 1024 1024))
 
@@ -103,42 +102,14 @@
 ;; JDK adapter (Boundary)
 ;; =============================================================================
 
-(defn- exchange->request [^HttpExchange ex]
-  (let [in   (.getRequestBody ex)
-        body (String. (.readNBytes in (inc max-body-bytes)) "UTF-8")]
-    {:method  (.getRequestMethod ex)
-     :path    (.getPath (.getRequestURI ex))
-     :headers (into {} (map (fn [[k vs]] [(str/lower-case k) (first vs)])) (.getRequestHeaders ex))
-     :body    body
-     :too-big (> (count body) max-body-bytes)}))
-
-(defn- send! [^HttpExchange ex {:keys [status headers body]}]
-  (let [bytes (when body (.getBytes ^String body "UTF-8"))]
-    (doseq [[k v] headers] (.add (.getResponseHeaders ex) k v))
-    (.sendResponseHeaders ex status (if bytes (alength bytes) -1))
-    (when bytes (with-open [o (.getResponseBody ex)] (.write o bytes)))
-    (.close ex)))
-
-(defn start!
-  "Listen on `bind`:`port` (port 0 picks one). Answers Ok {:port :stop!} or
-   the exposure refusal."
-  [srv {:keys [bind port tokens] :or {bind "127.0.0.1"} :as cfg}]
-  (if-let [r (exposure-refusal bind tokens)]
-    r
-    (let [state   (atom {:sessions {}})
-          http    (HttpServer/create (InetSocketAddress. ^String bind (int port)) 0)
-          handler (reify HttpHandler
-                    (handle [_ ex]
-                      (try
-                        (let [req (exchange->request ex)]
-                          (send! ex (if (:too-big req)
-                                      (respond 413 {:error "request body over 1 MiB"})
-                                      (route srv state cfg req))))
-                        (catch Exception e
-                          (send! ex (respond 500 {:error (or (ex-message e) "internal error")}))))))]
-      (.createContext http "/" handler)
-      (.setExecutor http (Executors/newFixedThreadPool 16))
-      (.start http)
-      (answer/ok {:port  (.getPort (.getAddress http))
-                  :state state
-                  :stop! (fn [] (.stop http 0))}))))
+(defn handle-request
+  "Response map for request map `req` as every HTTP adapter hands it over:
+   an oversized body is refused (413), any failure is a 500, never a
+   dropped connection."
+  [srv state cfg req]
+  (try
+    (if (:too-big req)
+      (respond 413 {:error "request body over 1 MiB"})
+      (route srv state cfg req))
+    (catch Exception e
+      (respond 500 {:error (or (ex-message e) "internal error")}))))
