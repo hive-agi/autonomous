@@ -191,7 +191,7 @@
   "The AppInfo a fleet introduces itself with: its apps and their state."
   [probes]
   {:name "fleet"
-   :description (str "a fleet of apps; their tools are named <app>__<tool>: "
+   :description (str "several apps behind one bridge, their tools named <app>__<tool>: "
                      (str/join ", " (map (fn [{:keys [target status manifest]}]
                                            (str target
                                                 (when-let [d (get-in manifest [:app :description])] (str " (" d ")"))
