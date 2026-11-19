@@ -1,0 +1,6 @@
+{:admin-covers-all true,
+ :app-defined-scope true,
+ :needs-every-scope false,
+ :nothing-required true,
+ :read-covers-read true,
+ :read-not-write false}

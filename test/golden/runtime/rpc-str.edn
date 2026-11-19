@@ -1,0 +1,85 @@
+{:bad-shape
+ {:error
+  {:type :bad-request,
+   :message "request does not match its op's schema",
+   :data {:tool ["should be a string"]}}},
+ :call-actor {:ok "agent-7"},
+ :call-admin
+ {:error
+  {:type :forbidden,
+   :message "secret requires scopes [\"admin\"]",
+   :data {:granted ["read" "write"]}}},
+ :call-coerces {:ok {:text "hi", :n 2}},
+ :call-denied
+ {:error
+  {:type :forbidden,
+   :message "echo_args requires scopes [\"write\"]",
+   :data {:granted ["read"]}}},
+ :call-invalid
+ {:error
+  {:type :invalid-args,
+   :message "arguments do not match echo_args's input schema",
+   :data {:text ["missing required key"]}}},
+ :call-ok {:ok {:text "hi", :n 2}},
+ :call-throws
+ {:error {:type :app-failure, :message "kaboom", :data {:why 1}}},
+ :manifest-anon
+ {:ok
+  {:protocol 1,
+   :version :v,
+   :app {:name "fixture", :description "test app"},
+   :tools
+   [{:name "echo_actor",
+     :title "echo_actor",
+     :description "Who is calling",
+     :input-schema {:type "object", :properties {}},
+     :annotations {:readOnlyHint true},
+     :scopes ["read"]}],
+   :resources
+   [{:uri "app://status",
+     :name "app://status",
+     :description "Status",
+     :mime "application/json"}]}},
+ :manifest-rw
+ {:ok
+  {:protocol 1,
+   :version :v,
+   :app {:name "fixture", :description "test app"},
+   :tools
+   [{:name "boom",
+     :title "boom",
+     :description "Always throws",
+     :input-schema {:type "object", :properties {}},
+     :annotations {:readOnlyHint false},
+     :scopes ["write"]}
+    {:name "echo_actor",
+     :title "echo_actor",
+     :description "Who is calling",
+     :input-schema {:type "object", :properties {}},
+     :annotations {:readOnlyHint true},
+     :scopes ["read"]}
+    {:name "echo_args",
+     :title "echo_args",
+     :description "Echo the args",
+     :input-schema
+     {:type "object",
+      :properties {:text {:type "string"}, :n {:type "integer"}},
+      :required [:text]},
+     :annotations {:readOnlyHint false},
+     :scopes ["write"]}],
+   :resources
+   [{:uri "app://status",
+     :name "app://status",
+     :description "Status",
+     :mime "application/json"}]}},
+ :not-edn {:error {:type :bad-request, :message "EOF while reading"}},
+ :ping {:ok {:pong true, :protocol 1, :version :v}},
+ :read-ok
+ {:ok
+  {:uri "app://status", :mime "application/json", :value {:up true}}},
+ :read-unknown
+ {:error
+  {:type :unknown-resource,
+   :message "no resource app://nope",
+   :data {:known ["app://status"]}}},
+ :unknown-op {:error {:type :unknown-op, :message "unknown op :zap"}}}

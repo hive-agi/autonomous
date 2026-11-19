@@ -1,0 +1,14 @@
+{:admin-only [:refuse :forbidden {:granted ["read" "write"]}],
+ :admin-passes [:invoke "todo_purge" {}],
+ :decodes-enum [:invoke "todo_add" {:text "milk", :priority :high}],
+ :forbidden-write [:refuse :forbidden {:granted ["read"]}],
+ :holder-writes [:invoke "todo_add" {:text "x"}],
+ :invalid-args
+ [:refuse :invalid-args {:text ["should be at least 1 character"]}],
+ :invokes [:invoke "todo_add" {:text "milk"}],
+ :lease-expired [:invoke "todo_add" {:text "x"}],
+ :leased-read-open [:invoke "todo_list" {}],
+ :leased-write [:refuse :leased {:actor "b", :until 1000}],
+ :missing-arg [:refuse :invalid-args {:text ["missing required key"]}],
+ :unknown
+ [:refuse :unknown-tool {:known ["todo_add" "todo_list" "todo_purge"]}]}

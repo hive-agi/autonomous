@@ -1,0 +1,5 @@
+{:expired false,
+ :holder-writes false,
+ :no-lease false,
+ :other-reads false,
+ :other-writes true}

@@ -1,0 +1,86 @@
+{:admin
+ {:protocol 1,
+  :version 7,
+  :app {:name "todo"},
+  :tools
+  [{:name "todo_add",
+    :title "todo_add",
+    :description "Add a todo",
+    :input-schema
+    {:type "object",
+     :properties
+     {:text {:type "string", :minLength 1},
+      :priority {:type "string", :enum [:low :high]}},
+     :required [:text]},
+    :annotations {:readOnlyHint false},
+    :scopes ["write"]}
+   {:name "todo_list",
+    :title "todo_list",
+    :description "List todos",
+    :input-schema {:type "object", :properties {}},
+    :annotations {:readOnlyHint true},
+    :scopes ["read"]}
+   {:name "todo_purge",
+    :title "todo_purge",
+    :description "Delete everything",
+    :input-schema {:type "object", :properties {}},
+    :annotations {:readOnlyHint false},
+    :scopes ["admin"]}],
+  :resources
+  [{:uri "app://db",
+    :name "db",
+    :description "",
+    :mime "application/json"}
+   {:uri "app://secrets",
+    :name "secrets",
+    :description "",
+    :mime "application/json"}]},
+ :anonymous
+ {:protocol 1,
+  :version 7,
+  :app {:name "todo"},
+  :tools
+  [{:name "todo_list",
+    :title "todo_list",
+    :description "List todos",
+    :input-schema {:type "object", :properties {}},
+    :annotations {:readOnlyHint true},
+    :scopes ["read"]}],
+  :resources
+  [{:uri "app://db",
+    :name "db",
+    :description "",
+    :mime "application/json"}]},
+ :nothing
+ {:protocol 1,
+  :version 7,
+  :app {:name "todo"},
+  :tools [],
+  :resources []},
+ :writer
+ {:protocol 1,
+  :version 7,
+  :app {:name "todo"},
+  :tools
+  [{:name "todo_add",
+    :title "todo_add",
+    :description "Add a todo",
+    :input-schema
+    {:type "object",
+     :properties
+     {:text {:type "string", :minLength 1},
+      :priority {:type "string", :enum [:low :high]}},
+     :required [:text]},
+    :annotations {:readOnlyHint false},
+    :scopes ["write"]}
+   {:name "todo_list",
+    :title "todo_list",
+    :description "List todos",
+    :input-schema {:type "object", :properties {}},
+    :annotations {:readOnlyHint true},
+    :scopes ["read"]}],
+  :resources
+  [{:uri "app://db",
+    :name "db",
+    :description "",
+    :mime "application/json"}]}}

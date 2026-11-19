@@ -1,0 +1,53 @@
+{:custom-kind
+ {:name "rf_evt",
+  :kind :re-frame/event,
+  :scopes #{:write},
+  :read-only? false,
+  :json-schema {:type "object", :properties {}},
+  :annotations {:readOnlyHint false}},
+ :input-not-map [:refused :invalid-tool],
+ :input-not-schema [:refused :invalid-tool],
+ :minimal
+ {:name "ping",
+  :kind :fn,
+  :scopes #{:write},
+  :read-only? false,
+  :json-schema {:type "object", :properties {}},
+  :annotations {:readOnlyHint false}},
+ :named
+ {:name "custom_name",
+  :kind :fn,
+  :scopes #{:write},
+  :read-only? false,
+  :json-schema {:type "object", :properties {}},
+  :annotations {:readOnlyHint false}},
+ :no-description [:refused :invalid-tool],
+ :no-handler [:refused :invalid-tool],
+ :read-only
+ {:name "todo_list",
+  :kind :fn,
+  :scopes #{:read},
+  :read-only? true,
+  :json-schema {:type "object", :properties {}},
+  :annotations {:readOnlyHint true}},
+ :scoped
+ {:name "bill_charge",
+  :kind :fn,
+  :scopes #{:billing},
+  :read-only? false,
+  :json-schema {:type "object", :properties {}},
+  :annotations {:readOnlyHint false}},
+ :typed-input
+ {:name "todo_add",
+  :kind :fn,
+  :scopes #{:write},
+  :read-only? false,
+  :json-schema
+  {:type "object",
+   :properties {:text {:type "string"}, :due {:type "integer"}},
+   :required [:text]},
+  :annotations {:readOnlyHint false},
+  :output-schema
+  {:type "object",
+   :properties {:id {:type "integer"}},
+   :required [:id]}}}

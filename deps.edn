@@ -1,0 +1,37 @@
+{:paths ["src" "resources"]
+
+ ;; Runtime (cljc, ships inside the app): malli only.
+ ;; Bridge (JVM): data.json for MCP, nrepl for the REPL channel.
+ ;; re-frame and datahike are the integrator's choice, never forced.
+ :deps
+ {org.clojure/clojure   {:mvn/version "1.12.1"}
+  metosin/malli         {:mvn/version "0.20.3"}
+  org.clojure/data.json {:mvn/version "2.5.2"}
+  nrepl/nrepl           {:mvn/version "1.3.1"}}
+
+ :aliases
+ {;; clojure -M:serve --dir ../my-app --build app
+  :serve {:main-opts ["-m" "autonomous.cli" "serve"]}
+  :token {:main-opts ["-m" "autonomous.cli" "token"]}
+
+  ;; Durable swarm ledger (autonomous.bridge.ledger.datahike).
+  :datahike {:extra-deps {io.replikativ/datahike {:mvn/version "0.7.1624"}}}
+
+  :test
+  {:extra-paths ["test"]
+   :extra-deps {lambdaisland/kaocha             {:mvn/version "1.91.1392"}
+                org.clojure/test.check          {:mvn/version "1.1.3"}
+                io.github.hive-agi/hive-test    {:mvn/version "0.5.2"}
+                io.github.hive-agi/hive-schemas {:mvn/version "0.2.2"}
+                io.replikativ/datahike          {:mvn/version "0.7.1624"}}
+   :main-opts ["-m" "kaocha.runner"]}
+
+  :nrepl
+  {:extra-deps {cider/cider-nrepl {:mvn/version "0.58.0"}}}
+
+  ;; ClojureScript: adapter tests and the e2e node runtime.
+  :cljs
+  {:extra-paths ["test-cljs" "example/src"]
+   :extra-deps {thheller/shadow-cljs {:mvn/version "3.4.11"}
+                re-frame/re-frame    {:mvn/version "1.4.3"}
+                reagent/reagent      {:mvn/version "1.2.0"}}}}}

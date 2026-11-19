@@ -1,0 +1,59 @@
+{:case-0
+ {:out {:seq 2, :entries [{:kind :s, :actor "", :seq 2, :at 1}]},
+  :in ({:seq 1, :entries []} {:kind :s, :actor ""} 1 2)},
+ :case-1
+ {:out
+  {:seq 2,
+   :entries
+   [{:seq 2, :at 1, :kind :Gg, :actor ""} {:kind :U, :seq 2, :at 1}]},
+  :in
+  ({:seq 1, :entries [{:seq 2, :at 1, :kind :Gg, :actor ""}]}
+   {:kind :U}
+   1
+   2)},
+ :case-2
+ {:out
+  {:seq 1,
+   :entries
+   [{:seq 3, :at 0, :kind :u2, :actor "69"}
+    {:kind :!, :seq 1, :at 1}]},
+  :in
+  ({:seq 0, :entries [{:seq 3, :at 0, :kind :u2, :actor "69"}]}
+   {:kind :!}
+   1
+   3)},
+ :case-3
+ {:out
+  {:seq 1,
+   :entries [{:seq 2, :at 0, :kind :D7} {:kind :xG, :seq 1, :at 1}]},
+  :in
+  ({:seq 0, :entries [{:seq 2, :at 0, :kind :D7}]} {:kind :xG} 1 2)},
+ :case-4
+ {:out
+  {:seq 2,
+   :entries [{:seq 8, :at 4, :kind :Z} {:kind :o, :seq 2, :at 0}]},
+  :in
+  ({:seq 1,
+    :entries
+    [{:seq 3, :at 1, :kind :D5, :actor "H14H"}
+     {:seq 3, :at 0, :kind :qk}
+     {:seq 2, :at 1, :kind :r, :actor nil}
+     {:seq 8, :at 4, :kind :Z}]}
+   {:kind :o}
+   0
+   2)},
+ :case-5
+ {:out
+  {:seq 14,
+   :entries
+   [{:seq 2, :at 2, :kind :., :actor "tq92"}
+    {:kind :AW, :actor "1A", :seq 14, :at 2}]},
+  :in
+  ({:seq 13,
+    :entries
+    [{:seq 2, :at 3, :kind :J, :actor nil}
+     {:seq 4, :at 1, :kind :p, :actor "y"}
+     {:seq 2, :at 2, :kind :., :actor "tq92"}]}
+   {:kind :AW, :actor "1A"}
+   2
+   2)}}

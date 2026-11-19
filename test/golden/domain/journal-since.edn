@@ -1,0 +1,4 @@
+{:caught-up {:seq 3, :entries []},
+ :from-start {:seq 3, :entries [{:seq 1} {:seq 2} {:seq 3}]},
+ :limited {:seq 3, :entries [{:seq 1} {:seq 2}]},
+ :resume {:seq 3, :entries [{:seq 2} {:seq 3}]}}

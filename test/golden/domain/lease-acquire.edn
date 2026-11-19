@@ -1,0 +1,5 @@
+{:default-ttl [:granted {:actor "a", :until 60010}],
+ :free [:granted {:actor "a", :until 1000}],
+ :other-expired [:granted {:actor "a", :until 1100}],
+ :other-live [:refused {:actor "b", :until 500}],
+ :own-renewal [:granted {:actor "a", :until 1100}]}
