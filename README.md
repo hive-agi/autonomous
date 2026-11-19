@@ -43,7 +43,7 @@ npm install
 clojure -M:cljs -m shadow.cljs.devtools.cli watch app
 ```
 
-Open <http://localhost:8280>. The page loads the app and its agent surface.
+Open <http://localhost:8280/>. The page loads the app and its agent surface.
 In another terminal, register the bridge with your MCP client:
 
 ```sh
@@ -56,6 +56,32 @@ The agent now sees `todo_add`, `todo_toggle`, `todos_visible` and the other
 app tools, plus the `autonomous_*` session tools. Ask it to add a todo and
 watch the page change. `--build app` matters here: without it the bridge
 picks the first build in `shadow-cljs.edn`, which is `:test`.
+
+### One command: `bb demo`
+
+```sh
+bb demo
+```
+
+![An agent drives the todo app over MCP; the caption names each call](doc/img/demo.gif)
+
+`bb demo` starts shadow-cljs (`watch app`) on ports next to the defaults
+(nREPL 7889, dev-http 8281, so your own watch on 7888/8280 keeps running),
+starts the bridge over loopback HTTP (`http://127.0.0.1:7777/mcp`, no
+token), and opens the page. With no display, it prints the URL instead. A
+scripted agent (`example/demo-script.json`) then makes one MCP call every
+1.5 s: it adds, ticks, filters and removes todos, and sends one empty todo
+that the malli schema refuses. The demo also prints the commands that
+point Claude Code or a hive ling at the same endpoint. Ctrl-C stops
+everything it started.
+
+| flag | effect |
+|---|---|
+| `--no-script` | no scripted agent: bring your own |
+| `--no-open` | print the URL, do not open a browser |
+| `--exit` | stop once the script has run |
+| `--step-ms N` | pause between scripted calls |
+| `--record OUT.gif` | record the GIF above with headless Playwright ([doc/demo/record.py](doc/demo/record.py), needs `pip install playwright` and ffmpeg) |
 
 Your own app needs two things. First, the library on its classpath (malli
 comes along; re-frame and datahike stay your choice):
