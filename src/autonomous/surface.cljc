@@ -11,7 +11,8 @@
   (:require [autonomous.domain.answer :as answer]
             [autonomous.domain.schema :as s]
             [malli.core :as m]
-            [malli.error :as me]))
+            [malli.error :as me]
+            [autonomous.domain.affordance :as affordance]))
 
 (def Interceptor
   "One link of the agent-call chain, as DATA so it can be inspected and
@@ -43,13 +44,30 @@
   (nil? (m/explain Surface x)))
 
 (defn ->surface
-  "L1 Promote: Ok of the Surface of partial map `m` (missing keys take
-   the empty surface's), or an :invalid-surface refusal."
-  [m]
-  (let [s (merge empty-surface m)]
-    (if-let [e (m/explain Surface s)]
-      (answer/refusal :invalid-surface "not a valid surface" (me/humanize e))
-      (answer/ok s))))
+  "L1 Promote: fill omitted parts and validate a Surface map."
+  [value]
+  (if (or (nil? value) (map? value))
+    (let [s (merge empty-surface value)]
+      (if-let [e (m/explain Surface s)]
+        (answer/refusal :invalid-surface "not a valid surface" (me/humanize e))
+        (answer/ok s)))
+    (answer/refusal :invalid-surface "a surface must be a map")))
+
+(defn- add-compiled-tool
+  "L1 Promote: add a compiled tool; duplicate declarations are errors."
+  [tools {:keys [id name] :as tool}]
+  (if-let [other (get tools name)]
+    (answer/refusal :name-clash (str "tool name " name " is derived twice")
+                    {:name name :ids [(:id other) id]})
+    (answer/ok (assoc tools name tool))))
+
+(defn compile-tools
+  "L1 Promote: compile [id ToolSpec] pairs into a uniquely keyed tool map."
+  [specs]
+  (answer/reduce-answer
+   (fn [tools [id spec]]
+     (answer/bind (affordance/->tool id spec) #(add-compiled-tool tools %)))
+   {} specs))
 
 ;; =============================================================================
 ;; Composition: a monoid on Surface. merge-part is OPEN (OCP): a new part

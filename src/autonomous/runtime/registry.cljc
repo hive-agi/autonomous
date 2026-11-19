@@ -40,6 +40,8 @@
   (-snapshot [rt] "One immutable value: the surface's keys beside the runtime's.")
   (-surface [rt] "The Surface value the instance holds, no runtime state."))
 
+#?(:clj (ns-unmap *ns* 'Runtime))
+
 (defrecord ^{:doc "L2: one running instance. `state` is an atom of {:surface Surface
    :epoch :version :journal :lease :pending :next-id}: the surface value
    changes on deploy or reload, the rest on every call. Two runtimes

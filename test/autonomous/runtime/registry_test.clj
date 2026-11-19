@@ -25,7 +25,7 @@
     (is (= (registry/-snapshot rt) @rt) "deref answers the snapshot")))
 
 (deftest make-runtime-validates-the-surface-loudly
-  (is (thrown? #?(:clj clojure.lang.ExceptionInfo :cljs js/Error)
+  (is (thrown? clojure.lang.ExceptionInfo
                (registry/make-runtime {:tools {"bad" {:name "bad"}}}))))
 
 (deftest two-runtimes-share-nothing

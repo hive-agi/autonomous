@@ -17,6 +17,17 @@
    future of one. Dispatches on the tool's :kind."
   (fn [tool _args _grant] (:kind tool)))
 
+(defn return-answer
+  "L2 Pipeline: distinguish an adapter's Answer from an ordinary tool
+   payload (which can itself be a map containing :ok or :error)."
+  [a]
+  (vary-meta a assoc ::answer true))
+
+(defn invocation-answer?
+  "L2 Pipeline: has the invoke-kind method supplied a complete Answer?"
+  [value]
+  (true? (::answer (meta value))))
+
 (defmethod invoke-kind :fn [tool args grant]
   ((:handler tool) args grant))
 
@@ -69,9 +80,13 @@
     (answer/pending id)))
 
 (defn settle
-  "Answer for value `x`: Ok now, or Pending when it is still being computed."
+  "L2 Pipeline: a plain return becomes Ok, a thenable becomes Pending,
+   and an explicit adapter Answer keeps its variant."
   [x]
-  (if (thenable? x) (settle-later! x) (answer/ok (wire/->wire x))))
+  (cond
+    (invocation-answer? x) (if (answer/ok? x) (answer/ok (wire/->wire (:ok x))) x)
+    (thenable? x)          (settle-later! x)
+    :else                  (answer/ok (wire/->wire x))))
 
 (defn- run-invoke [{:keys [tool args]} grant middleware]
   (try
