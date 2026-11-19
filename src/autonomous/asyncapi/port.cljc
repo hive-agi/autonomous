@@ -47,6 +47,16 @@
                       (str "bus port lacks " (mapv name ps))
                       {:problems ps}))))
 
+(defn subscribe
+  "Start `handler` on `filter` through `port`; answers the subscription id."
+  [port filter handler]
+  ((:subscribe port) filter handler))
+
+(defn unsubscribe
+  "Stop subscription `id` on `port`."
+  [port id]
+  ((:unsubscribe port) id))
+
 (defn close
   "Close `port` when it has a :close, else nil. Never throws."
   [port]

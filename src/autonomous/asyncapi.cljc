@@ -22,12 +22,15 @@
    is the point.
 
    Payloads are validated against the channel's message schema; a
-   non-conforming one is kept and flagged :conforms? false with :problems."
+   non-conforming one is kept and flagged :conforms? false with :problems.
+
+   Every step answers an Answer and chains on autonomous.asyncapi.rail, so a
+   refusal short-circuits and nothing here hand-checks refused?."
   (:require [autonomous.asyncapi.derive :as derive]
             [autonomous.asyncapi.port :as port]
+            [autonomous.asyncapi.rail :as rail]
             [autonomous.asyncapi.read :as read]
             [autonomous.asyncapi.source :as source]
-            [autonomous.core :as core]
             [autonomous.domain.answer :as answer]))
 
 (def kind derive/kind)
@@ -37,29 +40,18 @@
       {:name (or (some-> (:prefix opts) name) "asyncapi")
        :description "Read-only taps on published events"}))
 
-(defn- resource-spec
-  "ResourceSpec of one derived tap over live tap atom `ta` and store `store`."
-  [desc ta store]
-  (cond-> {:read        (fn [grant] (read/read-tap ta store desc grant))
-           :name        (:uri desc)
-           :description (:description desc)
-           :mime        "application/json"}
-    (:scopes desc) (assoc :scopes (:scopes desc))))
+(defn- subscribed
+  "Ok running surface of the derived `specs`, on the port opts names."
+  [opts specs]
+  (source/start! (:port opts) (into {} (map (juxt :uri identity)) specs)))
 
-(defn- live-surface
-  "Running surface of `specs` subscribed on `port`, or a refusal."
-  [port specs]
-  (let [live (source/subscribe! port
-                                {:resources (into {} (map (juxt :uri identity)) specs)})]
-    (if (answer/refused? live)
-      live
-      (let [l  (:ok live)
-            rs (into {}
-                     (map (fn [desc]
-                            (let [{:keys [tap store]} (get-in l [:taps (:uri desc)])]
-                              [(:uri desc) (resource-spec desc tap store)])))
-                     specs)]
-        (answer/ok {:app (app-info {}) :tools {} :resources rs :live l})))))
+(defn- with-app
+  "Ok Surface of running surface `live`, named by opts, read by `read-tap`."
+  [live opts read-tap]
+  (answer/ok {:app       (app-info opts)
+              :tools     {}
+              :resources (source/resource-specs live read-tap)
+              :live      live}))
 
 (defn surface
   "Ok Surface {:app :tools {} :resources {...} :live ...} of the exposed
@@ -69,28 +61,27 @@
    :live is the running surface to hand to `stop!` when the surface is
    removed; it is not part of the surface contract."
   [bundle-or-doc opts]
-  (let [p     (port/check (:port opts))
-        descs (derive/taps bundle-or-doc opts)]
-    (cond
-      (answer/refused? p)     p
-      (answer/refused? descs) descs
-      :else
-      (let [live (live-surface (:port opts) (:ok descs))]
-        (if (answer/refused? live)
-          live
-          (update-in live [:ok :app] merge (app-info opts)))))))
+  (rail/bind (port/check (:port opts))
+             (fn [p]
+               (rail/bind (derive/taps bundle-or-doc opts)
+                          (fn [specs]
+                            (rail/bind (subscribed opts specs)
+                                       #(with-app % opts read/read-tap)))))))
+
+(defn- register!
+  "Register every resource of surface `s`; Ok of what was registered, or the
+   first refusal."
+  [s]
+  (let [live (:live s)]
+    (rail/bind (source/install! live read/read-tap)
+               (fn [l] (answer/ok {:registered (vec (keys (:taps l))) :live l})))))
 
 (defn install!
   "Register every derived resource in the current registry. Answers Ok
    {:registered [uri ...] :live live-surface}, or the refusal, and then
    nothing is registered. Hand :live to `stop!` when the surface goes."
   [bundle-or-doc opts]
-  (let [s (surface bundle-or-doc opts)]
-    (if (answer/refused? s)
-      s
-      (let [uris (mapv (fn [[uri spec]] (core/reg-resource uri spec))
-                       (:resources (:ok s)))]
-        (answer/ok {:registered uris :live (:live (:ok s))})))))
+  (rail/bind (surface bundle-or-doc opts) register!))
 
 (defn stop!
   "Stop running surface `live` (from surface or install!): unsubscribe and

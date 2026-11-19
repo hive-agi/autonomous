@@ -34,15 +34,24 @@
   [b]
   (mapv (fn [[id s]] {:id id :filter (:filter s)}) (:subs @b)))
 
+(defn- handlers
+  "Live handlers of the subscriptions matching `subject`."
+  [b subj]
+  (into []
+        (comp (map #(get-in @b [:subs % :handler])) (remove nil?))
+        (subscribers b subj)))
+
+(defn- record! [b subj payload]
+  (swap! b update :published conj {:subject subj :payload payload}))
+
 (defn publish!
   "Deliver `payload` on `subject` to every matching subscriber, in subscribe
    order. Answers the number of handlers run."
   [b subj payload]
-  (swap! b update :published conj {:subject subj :payload payload})
-  (let [handlers (into [] (comp (map #(get-in @b [:subs % :handler])) (remove nil?))
-                       (subscribers b subj))]
-    (doseq [h handlers] (h {:subject subj :payload payload}))
-    (count handlers)))
+  (record! b subj payload)
+  (let [hs (handlers b subj)]
+    (doseq [h hs] (h {:subject subj :payload payload}))
+    (count hs)))
 
 (defn publish-async!
   "Like `publish!` but each handler runs in a future, so a test can prove
@@ -50,8 +59,7 @@
   [b subj payload]
   #?(:cljs (publish! b subj payload)
      :default
-     (let [hs (into [] (comp (map #(get-in @b [:subs % :handler])) (remove nil?))
-                    (subscribers b subj))]
+     (let [hs (do (record! b subj payload) (handlers b subj))]
        (doseq [h hs] (future (h {:subject subj :payload payload})))
        (count hs))))
 
@@ -77,19 +85,26 @@
   [b]
   (:published @b))
 
+(defn- deliver
+  "Handler that stamps `clock`'s time onto what it delivers to `handler`."
+  [clock handler]
+  (fn [{:keys [subject payload]}]
+    (handler {:subject subject :payload payload :at (clock)})))
+
+(defn- port-on
+  "Ok port over `b`, stamping each delivery with `clock`."
+  [b clock]
+  (let [live (atom #{})]
+    (answer/ok
+     {:subscribe  (fn [filter handler]
+                    (let [id (subscribe! b filter (deliver clock handler))]
+                      (swap! live conj id)
+                      id))
+      :unsubscribe (fn [id] (swap! live disj id) (unsubscribe! b id))
+      :close       (fn [] (doseq [id @live] (unsubscribe! b id)) (reset! live #{}))})))
+
 (defmethod port/connect :asyncapi.memory/bus
   [_ {:keys [bus at]}]
-  (if-not (instance? #?(:clj clojure.lang.IAtom :cljs cljs.core/Atom) bus)
-    (answer/refusal :asyncapi/bad-bus "opts :bus must be an autonomous.asyncapi.memory/bus")
-    (let [clock (or at (fn [] 0))
-          live  (atom #{})]
-      (answer/ok
-       {:subscribe  (fn [filter handler]
-                      (let [id (subscribe! bus filter (fn [{:keys [subject payload]}]
-                                                        (handler {:subject subject
-                                                                  :payload payload
-                                                                  :at (clock)})))]
-                        (swap! live conj id)
-                        id))
-        :unsubscribe (fn [id] (swap! live disj id) (unsubscribe! bus id))
-        :close       (fn [] (doseq [id @live] (unsubscribe! bus id)) (reset! live #{}))}))))
+  (if (instance? #?(:clj clojure.lang.IAtom :cljs cljs.core/Atom) bus)
+    (port-on bus (or at (fn [] 0)))
+    (answer/refusal :asyncapi/bad-bus "opts :bus must be an autonomous.asyncapi.memory/bus")))
