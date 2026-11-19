@@ -5,7 +5,8 @@
  :deps {metosin/malli                {:mvn/version "0.20.3"}
         io.github.hive-agi/bb-mcp    {:mvn/version "1.3.7"}
         io.github.hive-agi/hive-addon {:mvn/version "1.1.10"}
-        io.github.hive-agi/hive-test  {:mvn/version "0.5.2"}}
+        io.github.hive-agi/hive-test  {:mvn/version "0.5.2"}
+        io.github.hive-agi/hive-schemas {:mvn/version "0.2.2"}}
 
  :tasks
  {serve {:doc  "MCP bridge: --dir <app> [--build id] [--http host:port] (see autonomous.cli)"

@@ -5,9 +5,11 @@
   (:require [clojure.test :as t]))
 
 (def suites
-  "primitives-trifecta-test needs hive-schemas.test, not yet proven on bb
-   (kanban follow-up)."
-  '[autonomous.domain.decision-trifecta-test
+  "Every suite that needs no datahike, JDK HTTP socket or live runtime."
+  '[autonomous.domain.primitives-trifecta-test
+    autonomous.domain.decision-trifecta-test
+    autonomous.domain.fleet-trifecta-test
+    autonomous.bridge.fleet-test
     autonomous.runtime.rpc-test
     autonomous.re-frame.model-trifecta-test])
 
