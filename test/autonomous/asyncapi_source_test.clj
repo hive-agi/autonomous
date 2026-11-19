@@ -5,11 +5,12 @@
   (:require [autonomous.asyncapi :as asyncapi]
             [autonomous.asyncapi.memory :as memory]
             [autonomous.asyncapi.port :as port]
-            [autonomous.asyncapi.source :as source]
-            [autonomous.asyncapi.spi :as spi]
+            [autonomous.asyncapi.spi]
+            [autonomous.asyncapi.tap :as tap]
             [autonomous.domain.affordance :as affordance]
             [autonomous.domain.answer :as answer]
             [autonomous.openapi.load :as load]
+            [autonomous.runtime.invoke :as invoke]
             [autonomous.runtime.registry :as registry]
             [autonomous.spi :as spi]
             [clojure.test :refer [deftest is testing]]))
@@ -74,6 +75,34 @@
                                 [:ok :messages])))))
       (testing "the same reader twice sees nothing new"
         (is (empty? (get-in ((:read res) (granted "a")) [:ok :messages])))))))
+
+(deftest actor-and-session-names-cannot-alias-a-cursor
+  (with-surface
+    (fn [b _ _ res]
+      (memory/publish! b "crm.phone.state.v1" phone)
+      (is (= 1 (:cursor ((:read res) (granted "a/s")))))
+      (is (= [phone] (mapv :payload (:messages ((:read res) (assoc (granted "a") :session "s")))))))))
+
+(deftest concurrent-reads-cannot-claim-the-same-page-or-rewind
+  (with-surface
+    (fn [b _ _ res]
+      (let [first-page (promise) resume (promise) calls (atom 0) since tap/since]
+        (memory/publish! b "crm.phone.state.v1" phone)
+        (with-redefs [tap/since (fn [t cursor limit]
+                                 (when (= 1 (swap! calls inc))
+                                   (deliver first-page true)
+                                   (deref resume 5000 nil))
+                                 (since t cursor limit))]
+          (let [read-page #((:read res) (granted "a"))
+                delayed (future (read-page))]
+            (try
+              (is (true? (deref first-page 5000 false)))
+              (memory/publish! b "crm.phone.state.v1" phone)
+              (is (= [1 2] (mapv :seq (:messages (read-page)))))
+              (finally (deliver resume true)))
+            (is (= {:subject "crm.phone.state.v1" :cursor 2 :messages [] :dropped 0}
+                   (deref delayed 5000 nil)))
+            (is (= 2 (:cursor (read-page))))))))))
 
 (deftest the-ring-is-bounded-per-resource
   (with-surface
@@ -148,6 +177,19 @@
         (is (fn? (:read r)))
         (is (= "application/json" (:mime r))))
       (finally (asyncapi/stop! (get-in a [:ok :live]))))))
+
+(deftest runtime-reads-return-one-page-value
+  (let [[b p] (connected)
+        st (registry/instance)
+        uri "asyncapi://crm.phone.state.v1"
+        installed (registry/with-instance st #(asyncapi/install! bundle {:port p :expose expose}))]
+    (try
+      (memory/publish! b "crm.phone.state.v1" phone)
+      (let [value (registry/with-instance st #(invoke/read! uri (granted "a")))]
+        (is (= 1 (get-in value [:ok :value :cursor])))
+        (is (= phone (get-in value [:ok :value :messages 0 :payload])))
+        (is (not (contains? (get-in value [:ok :value]) :ok))))
+      (finally (asyncapi/stop! (get-in installed [:ok :live]))))))
 
 (deftest the-spi-seam-answers-a-surface
   (let [[_ p] (connected)

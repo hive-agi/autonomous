@@ -48,6 +48,19 @@
   (is (subject/valid? "a.*.c"))
   (is (= :asyncapi/bad-subject (get-in (subject/check "a..b") [:error :type]))))
 
+(deftest invalid-filters-and-nonconcrete-subjects-never-match
+  (is (= [:whitespace-or-null] (subject/problems "a.bad token.*")))
+  (is (= [:wildcard-not-a-token] (subject/problems "a.par*")))
+  (is (false? (subject/matches? "a.>.b" "a.x.b")))
+  (is (false? (subject/matches? "a.bad token.*" "a.bad token.c")))
+  (is (false? (subject/matches? "a.*" "a.*")))
+  (is (false? (subject/matches? "a.>" "a.>")))
+  (is (false? (subject/matches? "a.>" "a..b")))
+  (is (false? (subject/matches? "a.>" nil)))
+  (is (false? (subject/literal? "a...b")))
+  (is (subject/matches? "a.*.>" "a.b.c"))
+  (is (false? (subject/matches? "a.*.>" "a.b"))))
+
 ;; -----------------------------------------------------------------------------
 ;; The tap: bounded, cursored, flagging rather than dropping
 
@@ -71,12 +84,16 @@
     (is (= [] (:messages (tap/since t 4))))
     (is (= 4 (:cursor (tap/since t 4))) "an idle read does not move the cursor")))
 
-(deftest a-page-beyond-the-limit-reports-the-rest-as-dropped
-  (let [t    (fill (tap/tap "s.x" 10) 5)
-        page (tap/since t 0 2)]
-    (is (= [1 2] (mapv :seq (:messages page))))
-    (is (= 2 (:cursor page)))
-    (is (= 3 (:dropped page)) "3 messages were skipped by the limit")))
+(deftest a-page-limit-does-not-count-unread-messages-as-dropped
+  (let [t (fill (tap/tap "s.x" 4) 5)
+        first-page (tap/since t 0 2)
+        next-page (tap/since t (:cursor first-page) 2)]
+    (is (= [2 3] (mapv :seq (:messages first-page))))
+    (is (= 3 (:cursor first-page)))
+    (is (= 1 (:dropped first-page)) "only seq 1 was evicted")
+    (is (= [4 5] (mapv :seq (:messages next-page))))
+    (is (= 5 (:cursor next-page)))
+    (is (zero? (:dropped next-page)) "the previous loss is not reported again")))
 
 (deftest a-readmit-of-the-same-seq-is-not-admitted
   (let [t (fill (tap/tap "s.x" 5) 1)
@@ -84,6 +101,17 @@
     (is (false? admitted?))
     (is (= 1 (count (:messages t2))))
     (is (= 0 (:dropped t2)) "a redelivery must not inflate dropped")))
+
+(deftest admission-keeps-local-sequences-contiguous-and-monotonic
+  (let [t (fill (tap/tap "s.x" 2) 4)]
+    (is (= [t false] (tap/admit t {:subject "s.x" :seq 1})) "an evicted redelivery is still old")
+    (is (= [t false] (tap/admit t {:subject "s.x" :seq 6})) "a supplied sequence cannot skip ahead")
+    (is (= [t false] (tap/admit t {:subject "s.x" :seq "5"})))
+    (is (= [t false] (tap/admit t {:subject "s.y"})))
+    (let [[next-t accepted?] (tap/admit t {:subject "s.x" :seq 5})]
+      (is (true? accepted?))
+      (is (= 5 (:cursor next-t)))
+      (is (= [4 5] (mapv :seq (:messages next-t)))))))
 
 (deftest conforming-payloads-pass-and-non-conforming-ones-are-kept-flagged
   (let [validate (m/explainer [:map [:ok :int]])
