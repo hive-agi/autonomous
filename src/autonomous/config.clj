@@ -51,7 +51,7 @@
    file's :targets."
   [file opts]
   (into {} (comp (keep :dir) (distinct) (map (juxt identity read-app-dir)))
-        (concat (:targets opts) (remove :target/kind (:targets file)))))
+        (concat (:targets opts) (remove :target/kind (:targets file))))) ; :http entries carry a :target/kind too
 
 (defn read-env
   "Configuration carried by the environment: AUTONOMOUS_TOKENS (an EDN
@@ -151,6 +151,17 @@
   [opts]
   {:target/kind :ws :target/id (or (:target-id opts) "app")})
 
+(defn http-target
+  "The :http Target an autonomous.edn app entry describes:
+   {:app \"x\" :channel :http :url \"http://...\" :token-env \"X_TOKEN\"}.
+   Entry keys: :app (the target id), :url, :token-env, :timeout-ms."
+  [entry]
+  {:target/kind :http
+   :target/id   (str (:app entry))
+   :url         (str (:url entry))
+   :token-env   (some-> (:token-env entry) str)
+   :timeout-ms  (:timeout-ms entry)})
+
 (defn- ledger-config [opts]
   (case (:ledger opts)
     nil        nil
@@ -161,10 +172,21 @@
 
 (defn- clean-target [t] (into {} (remove (comp nil? val)) t))
 
+(defn- file-target
+  "The Target of one autonomous.edn :targets entry: a Target as written, an
+   :http app entry, or target options such as {:dir \"../api\" :clj? true}
+   derived from their directory."
+  [entry derive]
+  (cond
+    (:target/kind entry) entry
+    (= :http (:channel entry)) (clean-target (http-target entry))
+    :else (derive entry)))
+
 (defn- fleet-targets
   "The Targets of a fleet, or nil for single mode: the command line's
    target groups when it names several, else the file's :targets (each a
-   Target, or target options such as {:dir \"../api\" :clj? true})."
+   Target, an :http app entry, or target options such as {:dir \"../api\"
+   :clj? true})."
   [file opts dir-facts]
   (let [named  (fn [o] (if (or (:target-id o) (:dir o) (nil? (:port o)))
                          o
@@ -172,7 +194,7 @@
         derive (fn [o] (clean-target (derive-target (named o) (get dir-facts (:dir o)))))]
     (cond
       (seq (:targets opts)) (mapv derive (:targets opts))
-      (seq (:targets file)) (mapv #(if (:target/kind %) % (derive %)) (:targets file)))))
+      (seq (:targets file)) (mapv #(file-target % derive) (:targets file)))))
 
 (defn promote
   "Config (validated) from the collected `file`, `env` and `opts` maps and

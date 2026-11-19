@@ -22,6 +22,11 @@
 (defmethod make :ws [target]
   ((requiring-resolve 'autonomous.bridge.ws/channel) target))
 
+;; A remote app over its own /mcp by URL: no nREPL, no inbound port. Loaded
+;; on demand: it needs java.net.http, which ClojureWasm does not carry.
+(defmethod make :http [target]
+  ((requiring-resolve 'autonomous.bridge.http.channel/channel) target))
+
 (defmethod make :default [target]
   (throw (ex-info (str "no channel for target kind " (:target/kind target))
                   {:target target})))

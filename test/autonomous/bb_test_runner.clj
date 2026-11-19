@@ -13,6 +13,7 @@
     autonomous.bridge.bridge-trifecta-test
     autonomous.bridge.fleet-test
     autonomous.bridge.ws-test
+    autonomous.bridge.http-test
     autonomous.mcp.transport-test
     autonomous.ring-test
     autonomous.e2e.check-trifecta-test

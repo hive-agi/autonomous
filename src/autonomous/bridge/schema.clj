@@ -41,11 +41,24 @@
    [:target/id :string]
    [:timeout-ms {:optional true} [:int {:min 100}]]])
 
+(def HttpTarget
+  "A remote app reached by URL over MCP-over-HTTP (its own /mcp, the handler
+   autonomous.ring mounts), so no nREPL and no inbound port. `:token-env`
+   names the environment variable holding the bearer sent with each call;
+   the token itself is never stored here."
+  [:map
+   [:target/kind [:= :http]]
+   [:target/id :string]
+   [:url {:optional true} :string]
+   [:token-env {:optional true} :string]
+   [:timeout-ms {:optional true} [:int {:min 100}]]])
+
 (def Target
   [:multi {:dispatch :target/kind}
    [:nrepl NreplTarget]
    [:local LocalTarget]
-   [:ws WsTarget]])
+   [:ws WsTarget]
+   [:http HttpTarget]])
 
 (def TargetId
   [:and :string [:fn {:error/message "a target id is 1..48 of [A-Za-z0-9._-]"}
