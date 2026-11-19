@@ -10,6 +10,7 @@
     autonomous.domain.primitives-trifecta-test
     autonomous.bridge.bridge-trifecta-test
     autonomous.mcp.transport-test
+    autonomous.e2e.check-trifecta-test
     autonomous.runtime.rpc-test
     autonomous.re-frame.model-trifecta-test])
 

@@ -15,5 +15,8 @@
   token {:doc  "Mint a bearer token: --actor NAME --scopes read,write"
          :task (apply (requiring-resolve 'autonomous.cli/-main) "token" *command-line-args*)}
 
-  test  {:doc  "The portable suites on babashka"
-         :task (exec 'autonomous.bb-test-runner/-main)}}}
+  test  {:doc  "Every unit suite on babashka (the datahike ledger contract is JVM-only)"
+         :task (exec 'autonomous.bb-test-runner/-main)}
+
+  e2e   {:doc  "Live e2e from a bb bridge: shadow :e2e, two node runtimes, MCP over HTTP; stdio smokes on bb and cljw (doc/babashka.md)"
+         :task (exec 'autonomous.e2e.bb-runner/-main)}}}
