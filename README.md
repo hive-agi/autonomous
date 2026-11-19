@@ -21,6 +21,20 @@ its own vocabulary. A bridge serves that surface over MCP, so any MCP client
 stdio, or remotely over authenticated HTTP. The runtime is `.cljc` with a
 re-frame adapter; the bridge runs on the JVM, babashka and ClojureWasm.
 
+The app does not have to be Clojure, and it does not have to open a port:
+
+- **Any language.** `libautonomous` is the runtime as a C library. A Rust,
+  C, Go or Zig app declares its tools and keeps validation, scopes and the
+  journal in process ([doc/cabi.md](doc/cabi.md)).
+- **Production without a REPL.** The app dials the bridge over a websocket
+  with a runtime token ([doc/websocket.md](doc/websocket.md)).
+- **No code change at all.** An OpenAPI 3 service becomes agent tools from
+  its spec ([doc/openapi.md](doc/openapi.md)), and a Ring/reitit app opts
+  routes in with route data, like a logging middleware
+  ([doc/middleware.md](doc/middleware.md)).
+- **Many apps, one bridge.** A fleet serves UI builds and services side by
+  side, also from inside bb-mcp ([doc/fleet.md](doc/fleet.md)).
+
 ## Why
 
 Agents that drive a UI through screenshots and clicks are slow and brittle,
@@ -48,7 +62,7 @@ In another terminal, register the bridge with your MCP client:
 
 ```sh
 claude mcp add todo -- clojure \
-  -Sdeps '{:deps {io.github.hive-agi/autonomous {:mvn/version "0.1.2"}}}' \
+  -Sdeps '{:deps {io.github.hive-agi/autonomous {:mvn/version "0.2.0"}}}' \
   -M -m autonomous.cli serve --dir "$PWD" --build app
 ```
 
@@ -88,7 +102,7 @@ comes along; re-frame and datahike stay your choice):
 
 ```clojure no-run
 ;; deps.edn
-io.github.hive-agi/autonomous {:mvn/version "0.1.2"}
+io.github.hive-agi/autonomous {:mvn/version "0.2.0"}
 ```
 
 Second, a namespace that registers its surface, called from your init. This
@@ -142,8 +156,13 @@ is the example's, shortened:
 | [security](doc/security.md) | remote exposure, tokens, Origin checks, tunnels, secrets via hive-compose |
 | [swarms](doc/swarms.md) | many agents on one app: spread over instances or share one under leases |
 | [fleet](doc/fleet.md) | one bridge over many apps: UI builds and microservices, each with its own tools and nREPL |
-| [babashka](doc/babashka.md) | the bridge on babashka (stdio and HTTP) and ClojureWasm (stdio), `bb` tasks, `bb e2e` |
+| [fleet demo](doc/fleet-demo.md) | one bridge drives the todo UI, a JVM orders service and a bb inventory service |
+| [websocket](doc/websocket.md) | production: the app dials the bridge with a runtime token, no nREPL, no inbound port |
 | [any language](doc/cabi.md) | `libautonomous`, the runtime as a C library: apps in Rust, C, Go, Zig dial the bridge and keep validation, scopes and the journal |
+| [OpenAPI](doc/openapi.md) | an OpenAPI 3 service's operations as agent tools, with no change to the service |
+| [middleware](doc/middleware.md) | `autonomous.ring`: MCP from the app's own Ring/reitit stack, routes opted in by route data |
+| [bb-mcp](doc/bb-mcp.md) | an app fleet mounted inside bb-mcp, beside its own tools |
+| [babashka](doc/babashka.md) | the bridge on babashka (stdio and HTTP) and ClojureWasm (stdio), `bb` tasks, `bb e2e` |
 | [architecture](doc/architecture.md) | strata, ports and adapters, how a call travels |
 | [hive](doc/hive.md) | the `autonomous` IAddon for hive-mcp, and hive-compose programs |
 | [releasing](doc/releasing.md) | staging gate, a patch release per push to main, Clojars |
@@ -172,6 +191,7 @@ is the example's, shortened:
 clojure -M:test unit                                     # JVM suite
 bb test                                                  # babashka suite
 bb e2e                                                   # live swarm story from a bb bridge
+bb cabi && bb cabi-rust && bb cabi-e2e                   # libautonomous, C smoke, Rust app live (needs jolt)
 npm install
 clojure -M:cljs -m shadow.cljs.devtools.cli compile test && node target/cljs-test/test.js
 ```
@@ -183,10 +203,11 @@ attribution over the real nREPL channel.
 
 ## Status
 
-Experimental, on Clojars from 0.1.2. Every library change merged to `main`
-releases a patch (see [releasing](doc/releasing.md)). Next: a websocket
-channel the page dials out on (production, no nREPL), resource subscriptions,
-re-frame2 frames.
+Experimental, on Clojars. 0.2.0 adds the websocket channel, apps in any
+language through `libautonomous`, OpenAPI tools, the Ring/reitit middleware,
+bb-mcp fleets and the `bb demo` / fleet demos. Every library change merged to
+`main` releases a patch (see [releasing](doc/releasing.md)). Next: Go and Zig
+bindings, resource subscriptions, re-frame2 frames.
 
 ## License
 
