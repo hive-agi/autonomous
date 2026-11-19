@@ -33,18 +33,23 @@
      :cljs (and (some? x) (object? x) (fn? (.-then x)))))
 
 (defn- settle-later!
-  "Park thenable `x`; its outcome becomes the parked answer. A JVM future
-   wraps a failure in ExecutionException; the cause is what the tool threw."
+  "Park thenable `x`; its outcome becomes the parked answer and a journal
+   entry (:autonomous/settled), so the ledger knows how an async call ended.
+   A JVM future wraps a failure in ExecutionException; the cause is what the
+   tool threw."
   [x]
-  (let [id (registry/park!)]
+  (let [id      (registry/park!)
+        settle! (fn [a]
+                  (registry/settle! id a)
+                  (registry/record! {:kind :autonomous/settled :pending id :outcome (answer/outcome a)}))]
     #?(:clj  (future
-               (registry/settle! id (try (answer/ok (wire/->wire (deref x)))
-                                         (catch java.util.concurrent.ExecutionException e
-                                           (answer/from-exception (or (.getCause e) e)))
-                                         (catch Throwable t (answer/from-exception t)))))
+               (settle! (try (answer/ok (wire/->wire (deref x)))
+                             (catch java.util.concurrent.ExecutionException e
+                               (answer/from-exception (or (.getCause e) e)))
+                             (catch Throwable t (answer/from-exception t)))))
        :cljs (-> x
-                 (.then (fn [v] (registry/settle! id (answer/ok (wire/->wire v)))))
-                 (.catch (fn [e] (registry/settle! id (answer/from-exception e))))))
+                 (.then (fn [v] (settle! (answer/ok (wire/->wire v)))))
+                 (.catch (fn [e] (settle! (answer/from-exception e))))))
     (answer/pending id)))
 
 (defn settle

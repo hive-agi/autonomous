@@ -1,0 +1,5 @@
+{:clj "(autonomous.core/rpc-str \"{:op :ping}\")",
+ :pinned
+ "(shadow.cljs.devtools.api/cljs-eval :app \"(autonomous.core/rpc-str \\\"{:op :manifest}\\\")\" {:runtime-id 7})",
+ :shadow
+ "(shadow.cljs.devtools.api/cljs-eval :app \"(autonomous.core/rpc-str \\\"{:op :call, :tool \\\\\\\"todo_add\\\\\\\", :args {:text \\\\\\\"say \\\\\\\\\\\\\\\"hi\\\\\\\\\\\\\\\"\\\\\\\"}}\\\")\" {})"}

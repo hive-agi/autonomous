@@ -1,0 +1,8 @@
+{:a {:ok {:actor "agent-a", :scopes #{:read :write}}},
+ :b {:ok {:actor "agent-b", :scopes #{:read}}},
+ :blank
+ {:error {:type :auth/unauthorized, :message "missing bearer token"}},
+ :none
+ {:error {:type :auth/unauthorized, :message "unknown bearer token"}},
+ :unknown
+ {:error {:type :auth/unauthorized, :message "unknown bearer token"}}}

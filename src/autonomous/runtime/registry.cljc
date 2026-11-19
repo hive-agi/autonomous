@@ -19,8 +19,13 @@
 (defn now-ms []
   #?(:clj (System/currentTimeMillis) :cljs (js/Date.now)))
 
-(defn- empty-state []
+(defn- empty-state
+  "A fresh registry. :epoch is when this runtime life began: a reload starts
+   a new epoch and restarts the journal sequence, so a reader keeps its
+   cursor per epoch."
+  []
   {:app        {:name "app"}
+   :epoch      (now-ms)
    :tools      {}
    :resources  {}
    :middleware []

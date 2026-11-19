@@ -1,0 +1,90 @@
+{:bad-port
+ {:error
+  {:message "invalid configuration",
+   :problems {:target #:nrepl{:port ["should be at most 65535"]}}}},
+ :clj-dir
+ {:ok
+  {:transport :stdio,
+   :ledger #:ledger{:kind :memory},
+   :stdio/actor "local",
+   :stdio/scopes #{:read :write},
+   :target
+   {:target/kind :nrepl,
+    :target/id "api",
+    :nrepl/host "localhost",
+    :nrepl/port-file "/w/api/.nrepl-port",
+    :nrepl/mode :clj}}},
+ :datahike
+ {:ok
+  {:transport :stdio,
+   :ledger
+   {:ledger/kind :datahike,
+    :datahike/config
+    {:store
+     {:backend :file,
+      :path "/tmp/l",
+      :id #uuid "35f5def8-dcfd-3360-8353-a4237185358a"},
+     :schema-flexibility :write,
+     :keep-history? true}},
+   :stdio/actor "local",
+   :stdio/scopes #{:read :write},
+   :target
+   {:target/kind :nrepl,
+    :target/id "todo",
+    :nrepl/host "localhost",
+    :nrepl/port-file "/w/todo/.shadow-cljs/nrepl.port",
+    :nrepl/mode :shadow,
+    :shadow/build :app}}},
+ :explicit-build
+ {:ok
+  {:transport :stdio,
+   :ledger #:ledger{:kind :memory},
+   :stdio/actor "local",
+   :stdio/scopes #{:read :write},
+   :target
+   {:target/kind :nrepl,
+    :target/id "todo",
+    :nrepl/host "localhost",
+    :nrepl/port-file "/w/todo/.shadow-cljs/nrepl.port",
+    :nrepl/mode :shadow,
+    :shadow/build :test}}},
+ :http-remote
+ {:ok
+  {:transport :http,
+   :ledger #:ledger{:kind :memory},
+   :stdio/actor "local",
+   :stdio/scopes #{:read :write},
+   "AUTONOMOUS_TOKENS" "[]",
+   :target
+   {:target/kind :nrepl,
+    :target/id "todo",
+    :nrepl/host "localhost",
+    :nrepl/port-file "/w/todo/.shadow-cljs/nrepl.port",
+    :nrepl/mode :shadow,
+    :shadow/build :app},
+   :http {:bind "0.0.0.0", :port 7777}}},
+ :shadow-dir
+ {:ok
+  {:transport :stdio,
+   :ledger #:ledger{:kind :memory},
+   :stdio/actor "local",
+   :stdio/scopes #{:read :write},
+   :target
+   {:target/kind :nrepl,
+    :target/id "todo",
+    :nrepl/host "localhost",
+    :nrepl/port-file "/w/todo/.shadow-cljs/nrepl.port",
+    :nrepl/mode :shadow,
+    :shadow/build :app}}},
+ :stdio-scopes
+ {:ok
+  {:transport :stdio,
+   :ledger #:ledger{:kind :memory},
+   :stdio/actor "agent-9",
+   :stdio/scopes #{:read},
+   :target
+   {:target/kind :nrepl,
+    :target/id "app",
+    :nrepl/host "localhost",
+    :nrepl/port 7002,
+    :nrepl/mode :clj}}}}

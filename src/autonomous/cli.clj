@@ -1,0 +1,84 @@
+(ns autonomous.cli
+  "Command line. Boundary stratum: collects configuration, starts the
+   bridge, prints. Commands:
+
+     serve  run the MCP bridge for an app
+            --dir PATH         app directory (finds shadow-cljs.edn / port files)
+            --build ID         shadow build (default: the first in shadow-cljs.edn)
+            --port N | --port-file PATH | --host H | --clj
+            --http [HOST:]PORT serve MCP over HTTP instead of stdio
+            --ledger memory|datahike [--datahike-path PATH]
+            --actor NAME --scopes read,write   (stdio identity)
+            --config PATH      EDN file (default ./autonomous.edn)
+     token  mint a bearer token
+            --actor NAME --scopes read,write
+
+   Only stdout carries MCP in stdio mode; everything else goes to stderr."
+  (:require [autonomous.bridge.auth :as auth]
+            [autonomous.bridge.client :as client]
+            [autonomous.bridge.ledger :as ledger]
+            [autonomous.bridge.channel :as channel]
+            [autonomous.config :as config]
+            [autonomous.domain.answer :as answer]
+            [autonomous.domain.wire :as wire]
+            [autonomous.mcp.http :as http]
+            [autonomous.mcp.server :as server]
+            [autonomous.mcp.stdio :as stdio])
+  (:import (java.io BufferedReader InputStreamReader OutputStreamWriter)))
+
+(defn- err [& xs] (binding [*out* *err*] (apply println xs)))
+
+(defn build-server
+  "MCP server for validated `cfg`."
+  [cfg]
+  (let [ctx (client/context {:target          (:target cfg)
+                             :channel         (channel/make (:target cfg))
+                             :ledger          (some-> (:ledger cfg) ledger/open)
+                             :call-timeout-ms (:call-timeout-ms cfg)})]
+    (server/server ctx)))
+
+(defn- serve [args]
+  (let [{:keys [opts errors]} (config/parse-args args)]
+    (if (seq errors)
+      (do (err "autonomous serve:" (first errors)) 2)
+      (let [res (config/promote (config/read-file (or (:config opts) "autonomous.edn"))
+                                (config/read-env (System/getenv))
+                                opts
+                                (when (:dir opts) (config/read-app-dir (:dir opts))))]
+        (if-let [e (:error res)]
+          (do (err "autonomous serve:" (:message e) (pr-str (:problems e))) 2)
+          (let [cfg (:ok res)
+                srv (build-server cfg)]
+            (err "autonomous: target" (pr-str (:target cfg)))
+            (case (:transport cfg)
+              :stdio (do (stdio/serve! srv {:actor (:stdio/actor cfg) :scopes (:stdio/scopes cfg)}
+                                       (BufferedReader. (InputStreamReader. System/in "UTF-8"))
+                                       (OutputStreamWriter. System/out "UTF-8"))
+                         0)
+              :http  (let [h (http/start! srv (merge (:http cfg) {:tokens (:tokens cfg)}))]
+                       (if (answer/refused? h)
+                         (do (err "autonomous serve:" (get-in h [:error :message])) 3)
+                         (do (err (str "autonomous: MCP on http://" (get-in cfg [:http :bind] "127.0.0.1")
+                                       ":" (get-in h [:ok :port]) "/mcp"
+                                       (if (seq (:tokens cfg)) " (bearer tokens required)" " (loopback, no tokens)")))
+                             @(promise)))))))))))
+
+(defn- token [args]
+  (let [{:keys [opts errors]} (config/parse-args args)]
+    (if (or (seq errors) (nil? (:actor opts)))
+      (do (err "autonomous token --actor NAME [--scopes read,write]") 2)
+      (let [t     (auth/mint)
+            entry (auth/token-entry t (:actor opts) (config/split-on (or (:scopes opts) "read,write") ","))]
+        (println "token (give it to the agent, store it like a password; shown once):")
+        (println t)
+        (println "config entry (put it in :tokens of autonomous.edn or AUTONOMOUS_TOKENS):")
+        (println (wire/print-edn entry))
+        0))))
+
+(defn -main [& [command & args]]
+  (let [code (case command
+               "serve" (serve args)
+               "token" (token args)
+               (do (err "usage: autonomous serve|token [options]") 2))]
+    (shutdown-agents)
+    (System/exit code)))

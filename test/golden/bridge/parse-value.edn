@@ -1,0 +1,7 @@
+{:clj-alien :channel/not-autonomous,
+ :clj-ok {:ok {:a 1}},
+ :not-edn :channel/unreadable,
+ :shadow-alien :channel/not-autonomous,
+ :shadow-err :channel/runtime-error,
+ :shadow-none :channel/no-runtime,
+ :shadow-ok {:ok 1}}

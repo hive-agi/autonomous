@@ -44,7 +44,9 @@
 
 (defmethod handle :journal [req grant]
   (requires grant #{:read}
-            #(answer/ok (journal/since (:journal (registry/snapshot)) (:since req) (:limit req)))))
+            #(let [snap (registry/snapshot)]
+               (answer/ok (assoc (journal/since (:journal snap) (:since req) (:limit req))
+                                 :epoch (:epoch snap))))))
 
 (defmethod handle :lease [req grant]
   (requires grant #{:write}
