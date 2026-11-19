@@ -17,7 +17,6 @@
    validated on its own and the entries are collected on the railway, so a
    refusal is the earliest bad subject, never a partial surface."
   (:require [autonomous.asyncapi.doc :as doc]
-            [autonomous.asyncapi.rail :as rail]
             [autonomous.asyncapi.subject :as subject]
             [autonomous.asyncapi.tap :as tap]
             [autonomous.domain.answer :as answer]
@@ -83,27 +82,31 @@
            (not (contains? docs subject)))              (unknown-subject subject docs)
       :else (answer/ok (tap-desc bundle subject cfg)))))
 
-(defn- expose-checks
-  "Refusal for an unusable `expose`, nil when it is usable."
+(defn- check-expose
+  "Ok nonempty map of subjects to options, or a refusal."
   [expose]
   (cond
-    (not (map? expose)) (answer/refusal :asyncapi/bad-expose
-                                       ":expose must be a map of subject to options"
-                                       {:got (some-> expose type str)})
-    (empty? expose)     (answer/refusal :asyncapi/nothing-exposed
-                                       "opts :expose names no subject; nothing is derived")))
+    (not (map? expose)) (answer/refusal :asyncapi/bad-expose ":expose must be a map of subject to options")
+    (empty? expose) (answer/refusal :asyncapi/nothing-exposed "opts :expose names no subject; nothing is derived")
+    :else (answer/ok expose)))
+
+(defn- check-document
+  "Ok the document as a Bundle, or a refusal when absent."
+  [bundle-or-doc]
+  (if bundle-or-doc
+    (answer/ok (odoc/->bundle bundle-or-doc))
+    (answer/refusal :asyncapi/no-document "no AsyncAPI document to derive from")))
+
+(defn- append-tap
+  "Append one successfully derived tap to the fold, or pass on its refusal."
+  [bundle specs [subject cfg]]
+  (answer/let-answer [spec (one bundle subject cfg)]
+    (answer/ok (conj specs spec))))
 
 (defn taps
-  "Ok [tap-desc ...] of the subjects opts :expose names, in :expose order, or
-   a refusal. `bundle-or-doc` is an AsyncAPI Bundle or a bare document.
-
-   opts:
-     :expose  {subject {:scope kw :scopes [kw] :capacity n :limit n
-                        :description str}}   [required]"
+  "Ok vector of tap descriptions in :expose order, or the first refusal.
+   :expose maps filter strings to :scope(s), :capacity, :limit and :description."
   [bundle-or-doc {:keys [expose]}]
-  (if-not bundle-or-doc
-    (answer/refusal :asyncapi/no-document "no AsyncAPI document to derive from")
-    (if-let [bad (expose-checks expose)]
-      bad
-      (let [bundle (odoc/->bundle bundle-or-doc)]
-        (rail/collect (map (fn [[subject cfg]] (one bundle subject cfg)) expose))))))
+  (answer/let-answer [bundle (check-document bundle-or-doc)
+                      expose (check-expose expose)]
+    (answer/reduce-answer (partial append-tap bundle) [] expose)))

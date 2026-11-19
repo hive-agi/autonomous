@@ -24,11 +24,10 @@
    Payloads are validated against the channel's message schema; a
    non-conforming one is kept and flagged :conforms? false with :problems.
 
-   Every step answers an Answer and chains on autonomous.asyncapi.rail, so a
-   refusal short-circuits and nothing here hand-checks refused?."
+   Surface construction uses the shared Answer railway so a refusal stops
+   the next step."
   (:require [autonomous.asyncapi.derive :as derive]
             [autonomous.asyncapi.port :as port]
-            [autonomous.asyncapi.rail :as rail]
             [autonomous.asyncapi.read :as read]
             [autonomous.asyncapi.source :as source]
             [autonomous.domain.answer :as answer]))
@@ -41,9 +40,9 @@
        :description "Read-only taps on published events"}))
 
 (defn- subscribed
-  "Ok running surface of the derived `specs`, on the port opts names."
-  [opts specs]
-  (source/start! (:port opts) (into {} (map (juxt :uri identity)) specs)))
+  "Start the derived taps on the checked bus."
+  [bus specs]
+  (source/start! bus (into {} (map (juxt :uri identity)) specs)))
 
 (defn- with-app
   "Ok Surface of running surface `live`, named by opts, read by `read-tap`."
@@ -54,34 +53,26 @@
               :live      live}))
 
 (defn surface
-  "Ok Surface {:app :tools {} :resources {...} :live ...} of the exposed
-   subjects, subscribed on opts :port, or a refusal (and then nothing is
-   subscribed). opts: :port [required], :expose, :app, :prefix.
-
-   :live is the running surface to hand to `stop!` when the surface is
-   removed; it is not part of the surface contract."
+  "Build and subscribe a read-only surface, or refuse before leaving taps live.
+   Keep :live to pass to `stop!` when removing the surface."
   [bundle-or-doc opts]
-  (rail/bind (port/check (:port opts))
-             (fn [p]
-               (rail/bind (derive/taps bundle-or-doc opts)
-                          (fn [specs]
-                            (rail/bind (subscribed opts specs)
-                                       #(with-app % opts read/read-tap)))))))
+  (answer/let-answer [bus   (port/check (:port opts))
+                      specs (derive/taps bundle-or-doc opts)
+                      live  (subscribed bus specs)]
+    (with-app live opts read/read-tap)))
 
 (defn- register!
-  "Register every resource of surface `s`; Ok of what was registered, or the
-   first refusal."
-  [s]
-  (let [live (:live s)]
-    (rail/bind (source/install! live read/read-tap)
-               (fn [l] (answer/ok {:registered (vec (keys (:taps l))) :live l})))))
+  "Install a running surface and return its registered URIs and live handle."
+  [{:keys [live]}]
+  (answer/let-answer [live (source/install! live read/read-tap)]
+    (answer/ok {:registered (vec (keys (:taps live))) :live live})))
 
 (defn install!
   "Register every derived resource in the current registry. Answers Ok
    {:registered [uri ...] :live live-surface}, or the refusal, and then
    nothing is registered. Hand :live to `stop!` when the surface goes."
   [bundle-or-doc opts]
-  (rail/bind (surface bundle-or-doc opts) register!))
+  (answer/bind (surface bundle-or-doc opts) register!))
 
 (defn stop!
   "Stop running surface `live` (from surface or install!): unsubscribe and

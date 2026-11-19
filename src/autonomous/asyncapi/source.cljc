@@ -12,7 +12,6 @@
    derives first (autonomous.asyncapi.derive/taps) and gets a refusal before
    any port is opened."
   (:require [autonomous.asyncapi.port :as port]
-            [autonomous.asyncapi.rail :as rail]
             [autonomous.asyncapi.subject :as subject]
             [autonomous.asyncapi.tap :as tap]
             [autonomous.domain.answer :as answer]
@@ -90,10 +89,8 @@
         (:taps live)))
 
 (defn install!
-  "Register every resource of running surface `live` in the current registry,
-   read by `read-tap`. Answers Ok `live`, or the first refusal."
+  "Register each resource of a running surface and return Ok live."
   [live read-tap]
-  (rail/bind
-   (rail/collect (map (fn [[uri spec]] (answer/ok (registry/add-resource! uri spec)))
-                      (resource-specs live read-tap)))
-   (fn [_] (answer/ok live))))
+  (run! (fn [[uri spec]] (registry/add-resource! uri spec))
+        (resource-specs live read-tap))
+  (answer/ok live))

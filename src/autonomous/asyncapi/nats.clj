@@ -50,12 +50,13 @@
     :unsubscribe (fn [sid] ((:unsub cs) nc sid))
     :close       (fn [] ((:close cs) nc))}))
 
-(defmethod port/connect :asyncapi.nats/driver [_ {:keys [url opts]}]
-  (let [cs (client)]
-    (if (answer/refused? cs)
-      cs
-      (try
-        (port-of ((get-in cs [:ok :connect]) (or url "nats://localhost:4222") (or opts {}))
-                 (:ok cs))
-        (catch Throwable e
-          (answer/from-exception e))))))
+(defn- open
+  "Connect through the resolved client and return an Answer for the port."
+  [{:keys [url opts]} cs]
+  (try
+    (port-of ((:connect cs) (or url "nats://localhost:4222") (or opts {})) cs)
+    (catch Exception e
+      (answer/from-exception e))))
+
+(defmethod port/connect :asyncapi.nats/driver [_ opts]
+  (answer/bind (client) (partial open opts)))
