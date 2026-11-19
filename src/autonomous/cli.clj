@@ -13,7 +13,9 @@
             --probe-ms N       how long a fleet waits for an app (default 1500)
             --http [HOST:]PORT serve MCP over HTTP instead of stdio
             --ledger memory|datahike [--datahike-path PATH]
-            --actor NAME --scopes read,write   (stdio identity)
+            --actor NAME --scopes read,write   (stdio identity; --actor or
+                               AUTONOMOUS_ACTOR also names the caller of
+                               HTTP without tokens)
             --config PATH      EDN file (default ./autonomous.edn)
      token  mint a bearer token
             --actor NAME --scopes read,write
@@ -55,17 +57,32 @@
                    {:mode :fleet :probe-ms (:probe-ms cfg)}))
       (server/server (member-context cfg ledger (:target cfg))))))
 
+(defn anonymous-grant
+  "The grant of every caller of an HTTP server without tokens (loopback
+   only): the configured actor (AUTONOMOUS_ACTOR, or --actor, else
+   \"local\"), with read and write, the same identity stdio serves with."
+  [cfg]
+  {:actor (or (:stdio/actor cfg) "local") :scopes #{:read :write}})
+
+(defn http-config
+  "Configuration autonomous.mcp.http runs on, from validated `cfg`: its
+   :http settings, the tokens, and the anonymous grant."
+  [cfg]
+  (merge (:http cfg) {:tokens (:tokens cfg) :anonymous (anonymous-grant cfg)}))
+
 (defn- serve-http!
   "Start HTTP for `cfg`, announce it on stderr and block until the process
    is told to end. Answers the exit code when it cannot start."
   [srv cfg]
-  (let [h (http-start! srv (merge (:http cfg) {:tokens (:tokens cfg)}))]
+  (let [h (http-start! srv (http-config cfg))]
     (if (answer/refused? h)
       (do (err "autonomous serve:" (get-in h [:error :message])) 3)
       (do (stop-on-exit! (get-in h [:ok :stop!]))
           (err (str "autonomous: MCP on http://" (get-in cfg [:http :bind] "127.0.0.1")
                     ":" (get-in h [:ok :port]) "/mcp"
-                    (if (seq (:tokens cfg)) " (bearer tokens required)" " (loopback, no tokens)")))
+                    (if (seq (:tokens cfg))
+                      " (bearer tokens required)"
+                      (str " (loopback, no tokens, acting as " (:actor (anonymous-grant cfg)) ")"))))
           @(promise)))))
 
 (defn- serve [args]
