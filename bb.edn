@@ -42,4 +42,17 @@
              :task (shell {:dir "cabi/examples/rust"} "cargo" "build" "--release")}
 
   cabi-e2e {:doc  "Live: the Rust example dials a ws-only bb bridge; agents call its tools over MCP HTTP (doc/cabi.md)"
-            :task (exec 'autonomous.e2e.cabi-runner/-main)}}}
+            :task (exec 'autonomous.e2e.cabi-runner/-main)}
+
+  fullstack {:doc  "The fullstack todo: Elm UI + Rust backend, both agent-operable through one bridge; [--headless] [--rebuild] (example/fullstack)"
+             :extra-paths ["example/fullstack"]
+             :task (apply (requiring-resolve 'fullstack/-main) *command-line-args*)}
+
+  fullstack-drive {:doc  "Drive the running fullstack todo from Clojure: AUTONOMOUS_MCP, AUTONOMOUS_TOKEN [--step-ms N]"
+                   :extra-paths ["example/fullstack"]
+                   :task (apply (requiring-resolve 'drive/-main) *command-line-args*)}
+
+  fullstack-e2e {:doc  "Live: build, start bridge + backend + a headless tab, drive UI and backend over MCP, check"
+                 :extra-paths ["example/fullstack"]
+                 :task (fullstack/e2e)
+                 :requires ([fullstack])}}}
