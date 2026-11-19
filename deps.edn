@@ -52,4 +52,9 @@
   :example/orders
   {:extra-paths ["example/orders/src"]
    :jvm-opts ["-Xmx512m"]
-   :main-opts ["-m" "orders.main"]}}}
+   :main-opts ["-m" "orders.main"]}
+
+  ;; The orders sources and tests on the classpath, without a main: a REPL
+  ;; for the example (clojure -M:test:example/orders-dev).
+  :example/orders-dev
+  {:extra-paths ["example/orders/src" "example/orders/test"]}}}

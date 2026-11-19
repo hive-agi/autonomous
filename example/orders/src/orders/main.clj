@@ -20,12 +20,14 @@
    {:customer "grace" :lines [{:sku "mouse-v" :qty 1 :unit-cents 4500}]}])
 
 (defn system
-  "A running orders application: {:env env}, surface installed, seeded."
-  []
-  (let [env (svc/env {:repo (store/memory)})]
-    (run! #(svc/place! env %) seed)
-    (agentic/install! env)
-    {:env env}))
+  "A running orders application: {:env env}, surface installed, seeded.
+   `opts` go to orders.agentic/install! (e.g. :statement-ms)."
+  ([] (system {}))
+  ([opts]
+   (let [env (svc/env {:repo (store/memory)})]
+     (run! #(svc/place! env %) seed)
+     (agentic/install! env opts)
+     {:env env})))
 
 (defn start-nrepl!
   "Start an nREPL on 127.0.0.1 at a free port and write it to
