@@ -16,7 +16,8 @@
      {:call \"tool\" :args {..}}         tools/call
      {:poll true}                      autonomous_poll the last Pending id,
                                        until it settles (up to ~10 s)
-   A step may say :expect :error (the call must be refused) and, as any
+   A step may say :expect :error (the call must be refused), :contains
+   \"text\" (or a vector of them) that its result must hold and, as any
    argument value, [:ref n path..] takes a value from step n's
    structuredContent. Exit code 0 when every step answered as expected.
    The bridge's stderr goes to target/probe-bridge.err.log."
@@ -28,12 +29,16 @@
             [clojure.walk :as walk]))
 
 (defn- resolve-refs
-  "`args` with every [:ref n & path] replaced by that value of step n."
+  "`args` with every [:ref n & path] replaced by that value of step n and
+   every [:str x ..] by its parts joined."
   [args results]
   (walk/postwalk (fn [x]
-                   (if (and (vector? x) (= :ref (first x)))
+                   (cond
+                     (and (vector? x) (= :ref (first x)))
                      (get-in (nth results (second x)) (into [:structuredContent] (drop 2 x)))
-                     x))
+                     ;; refs inside are already resolved: postwalk goes bottom up
+                     (and (vector? x) (= :str (first x))) (apply str (rest x))
+                     :else x))
                  args))
 
 (defn- request
@@ -76,6 +81,14 @@
 
 (defn- refused? [r] (or (some? (:error r)) (true? (get-in r [:result :isError]))))
 
+(defn- contains-all?
+  "True when the JSON of `result` holds every string of `wanted` (one
+   string, or a vector of strings and [:ref ..] forms)."
+  [result wanted results]
+  (let [text (json/generate-string result)]
+    (every? #(str/includes? text (str %))
+            (resolve-refs (if (string? wanted) [wanted] (vec wanted)) results))))
+
 (defn- pending-id [r] (get-in r [:result :structuredContent :pending]))
 
 (defn- run-step
@@ -103,7 +116,8 @@
                   bad
                   (let [[method params r] (run-step send! step results pending)
                         want-error?        (= :error (:expect step))
-                        ok?                (= want-error? (refused? r))]
+                        ok?                (and (= want-error? (refused? r))
+                                                (contains-all? (:result r) (:contains step) results))]
                     (println (format "%2d %s %s %s" i (if ok? "ok  " "FAIL") method
                                      (or (:name params) (:uri params) "")))
                     (println "     <-" (summary r))

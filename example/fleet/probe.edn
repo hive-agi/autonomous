@@ -1,0 +1,37 @@
+;; The fleet demo's scripted agent workflow, through ONE bridge over three
+;; nREPLs: the todo UI (shadow-cljs, a browser runtime), the orders JVM
+;; service and the inventory babashka service. Tools are <app>__<tool>.
+;;
+;;   bb example/probe.clj example/fleet/probe.edn bb serve ...   (bb fleet-demo --probe)
+;;
+;; A customer, lin, wants 2 mice. The agent reserves the stock, places the
+;; order, and puts the shipping task on the team's todo list, then checks
+;; every app shows its part.
+[;; 0  all three apps up behind the one bridge
+ {:call "autonomous_apps" :contains ["todo" "orders" "inventory" "up"]}
+ ;; 1  one surface: tools of the three apps
+ {:tools true :contains ["todo__todo_add" "orders__orders_place" "inventory__inventory_reserve"]}
+ ;; 2  is there stock? (seed: 8 on hand, 2 reserved)
+ {:call "inventory__inventory_item" :args {:sku "mouse-v"} :contains "\"available\":6"}
+ ;; 3  promise 2 units to the order about to be placed
+ {:call "inventory__inventory_reserve" :args {:sku "mouse-v" :units 2} :contains "\"reserved\":4"}
+ ;; 4  place the order (orders JVM service)
+ {:call "orders__orders_place"
+  :args {:customer "lin" :lines [{:sku "mouse-v" :qty 2 :unit-cents 4500}]}
+  :contains "\"status\":\"placed\""}
+ ;; 5  the shipping task appears in the todo UI (a re-frame event in the browser runtime)
+ {:call "todo__todo_add" :args {:text [:str "ship order " [:ref 4 :id] " to lin: 2 x mouse-v"]}
+  :contains [[:str "ship order " [:ref 4 :id]]]}
+ ;; 6  the UI's own subscription shows it
+ {:call "todo__todos_visible" :contains [[:str "ship order " [:ref 4 :id]]]}
+ ;; 7  and the app-db the agent may read
+ {:read "autonomous://todo/re-frame://app-db" :contains "ship order"}
+ ;; 8  the order is there for lin
+ {:call "orders__orders_list" :args {:customer "lin"} :contains [[:ref 4 :id]]}
+ ;; 9  over-promising is refused by the inventory domain (only 4 available now)
+ {:call "inventory__inventory_reserve" :args {:sku "mouse-v" :units 5} :expect :error
+  :contains "only 4 units of mouse-v are available"}
+ ;; 10 writing stock off needs the audit scope this agent was not granted
+ {:call "inventory__inventory_write_off" :args {:sku "mouse-v" :units 1} :expect :error}
+ ;; 11 one ledger across the fleet: every call above, attributed per app
+ {:call "autonomous_ledger" :args {} :contains ["fleet-agent" "inventory" "orders" "todo"]}]
