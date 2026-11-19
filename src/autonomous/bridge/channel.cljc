@@ -17,6 +17,11 @@
 
 (defmethod make :local [target] (local/channel target))
 
+;; The runtime dials out to the bridge (production, no nREPL). Loaded on
+;; demand: token hashing needs SHA-256, which ClojureWasm does not carry.
+(defmethod make :ws [target]
+  ((requiring-resolve 'autonomous.bridge.ws/channel) target))
+
 (defmethod make :default [target]
   (throw (ex-info (str "no channel for target kind " (:target/kind target))
                   {:target target})))

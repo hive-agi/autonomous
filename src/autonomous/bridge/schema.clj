@@ -33,10 +33,19 @@
    [:target/kind [:= :local]]
    [:target/id :string]])
 
+(def WsTarget
+  "Runtimes that dial the bridge over a websocket (production, no nREPL),
+   authenticating with a runtime token whose actor is this :target/id."
+  [:map
+   [:target/kind [:= :ws]]
+   [:target/id :string]
+   [:timeout-ms {:optional true} [:int {:min 100}]]])
+
 (def Target
   [:multi {:dispatch :target/kind}
    [:nrepl NreplTarget]
-   [:local LocalTarget]])
+   [:local LocalTarget]
+   [:ws WsTarget]])
 
 (def TargetId
   [:and :string [:fn {:error/message "a target id is 1..48 of [A-Za-z0-9._-]"}
@@ -136,6 +145,7 @@
     [:probe-ms {:optional true} [:int {:min 50}]]
     [:transport [:enum :stdio :http]]
     [:http {:optional true} HttpConfig]
+    [:ws {:optional true} HttpConfig]
     [:tokens {:optional true} [:vector TokenEntry]]
     [:stdio/actor {:optional true} ds/Actor]
     [:stdio/scopes {:optional true} [:set :keyword]]

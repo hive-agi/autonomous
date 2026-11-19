@@ -64,7 +64,8 @@
 (def ^:private flags
   {"--config" :config "--dir" :dir "--build" :build "--port" :port "--host" :host
    "--port-file" :port-file "--http" :http "--ledger" :ledger "--datahike-path" :datahike-path
-   "--actor" :actor "--scopes" :scopes "--target-id" :target-id "--timeout-ms" :timeout-ms "--probe-ms" :probe-ms})
+   "--actor" :actor "--scopes" :scopes "--target-id" :target-id "--timeout-ms" :timeout-ms "--probe-ms" :probe-ms
+   "--ws" :ws})
 
 (def ^:private switches {"--clj" :clj? "--fleet" :fleet?})
 
@@ -144,6 +145,12 @@
      :nrepl/mode      (if shadow? :shadow :clj)
      :shadow/build    (when shadow? (or build :app))}))
 
+(defn ws-target
+  "The websocket Target `opts` name: runtimes dial the bridge's --ws
+   listener with a runtime token whose actor is this target id."
+  [opts]
+  {:target/kind :ws :target/id (or (:target-id opts) "app")})
+
 (defn- ledger-config [opts]
   (case (:ledger opts)
     nil        nil
@@ -176,6 +183,8 @@
   ([file env opts app-dir] (promote file env opts app-dir {}))
   ([file env opts app-dir dir-facts]
    (let [http    (parse-http (:http opts))
+         ws      (parse-http (:ws opts))
+         ws-only (and ws (not (or (:dir opts) (:port opts) (:port-file opts))))
          ledger  (ledger-config opts)
          targets (fleet-targets file opts dir-facts)
          single? (and (nil? targets)
@@ -186,7 +195,10 @@
                                  :stdio/scopes #{:read :write}}
                                 (dissoc file :targets)
                                 env)
-                   single?            (assoc :target (clean-target (derive-target opts app-dir)))
+                   single?            (assoc :target (if ws-only
+                                                       (ws-target opts)
+                                                       (clean-target (derive-target opts app-dir))))
+                   ws                 (assoc :ws (merge (:ws file) ws))
                    targets            (-> (dissoc :target) (assoc :targets targets))
                    (:fleet? opts)     (assoc :fleet? true)
                    http               (assoc :transport :http :http (merge (:http file) http))
