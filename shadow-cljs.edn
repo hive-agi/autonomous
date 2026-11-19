@@ -3,9 +3,13 @@
 ;; `npx shadow-cljs` (deps come from deps.edn :cljs).
 {:deps {:aliases [:cljs]}
 
+ ;; `bb demo` moves the ports through the environment (SHADOW_CLJS
+ ;; deep-merges scalars but would add a second :dev-http entry, so the
+ ;; dev-http port is read here). :use-index-files serves index.html at `/`.
  :nrepl {:port 7888}
 
- :dev-http {8280 "example/public"}
+ :dev-http {#shadow/env ["AUTONOMOUS_DEV_HTTP_PORT" :as :int :default 8280]
+            {:root "example/public" :use-index-files true}}
 
  :builds
  {:test {:target    :node-test

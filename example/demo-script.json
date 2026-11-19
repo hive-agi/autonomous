@@ -1,0 +1,14 @@
+[
+  {"tool": "autonomous_whoami", "args": {}},
+  {"tool": "todo_add", "args": {"text": "Read the README"}},
+  {"tool": "todo_add", "args": {"text": "Run bb demo"}},
+  {"tool": "todo_add", "args": {"text": "Spawn an agent on the app"}},
+  {"tool": "todo_add", "args": {"text": "Ship it"}},
+  {"tool": "todo_add", "args": {"text": ""}, "note": "refused by the malli schema, nothing reaches the app"},
+  {"tool": "todo_toggle", "args": {"id": {"todo": "Read the README"}}},
+  {"tool": "todo_toggle", "args": {"id": {"todo": "Run bb demo"}}},
+  {"tool": "todo_set-filter", "args": {"filter": "done"}},
+  {"tool": "todo_set-filter", "args": {"filter": "all"}},
+  {"tool": "todo_remove", "args": {"id": {"todo": "Ship it"}}},
+  {"tool": "todos_stats", "args": {}}
+]

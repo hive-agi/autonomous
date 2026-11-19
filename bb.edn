@@ -18,5 +18,8 @@
   test  {:doc  "Every unit suite on babashka (the datahike ledger contract is JVM-only)"
          :task (exec 'autonomous.bb-test-runner/-main)}
 
+  demo  {:doc  "Open the todo app and let an agent drive it over MCP: [--no-open] [--no-script] [--exit] [--step-ms N] [--record OUT.gif]. Ctrl-C stops everything it started."
+         :task (apply (requiring-resolve 'autonomous.demo.runner/-main) *command-line-args*)}
+
   e2e   {:doc  "Live e2e from a bb bridge: shadow :e2e, two node runtimes, MCP over HTTP; stdio smokes on bb and cljw (doc/babashka.md)"
          :task (exec 'autonomous.e2e.bb-runner/-main)}}}
