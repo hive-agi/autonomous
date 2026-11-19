@@ -1,125 +1,217 @@
 (ns autonomous.hive.addon
   "IAddon `autonomous`: hive agents operate apps built with autonomous.
 
-   One tool, `autonomous`, with a command per operation. Every hive agent
-   (coordinator or ling) gets its own session per app, keyed by the agent
-   id it calls with, so a swarm spreads over an app's instances
-   (command=attach) or shares one under leases, and the app's journal and
-   ledger say which ling did what.
+   One tool, `autonomous`, with a command per operation. Every configured
+   app is a member of ONE fleet (autonomous.bridge.fleet) served by one MCP
+   server (autonomous.mcp.server/fleet-server), the same pipeline as
+   `autonomous serve` with several targets. Every hive agent (coordinator or
+   ling) has one session across the whole fleet, keyed by the agent_id it
+   calls with, so it pins an instance per app (command=attach), leases one,
+   and the fleet's one ledger says which ling did what on which app.
 
-   The addon is a thin adapter: each app runs the same MCP server pipeline
-   as `autonomous serve` (autonomous.mcp.server), in this JVM."
+   Routing is the fleet's: `app` + a tool or uri as the app names it is
+   turned into the fleet name (<app>__<tool>, autonomous://<app>/<uri>), and
+   a fleet name passed as is routes by itself. A down or slow app never
+   delays the others (command=apps shows each app's status).
+
+   The addon is a thin adapter. It composes the core's public API and never
+   changes it: per-app grants are kept by narrowing each request to the
+   agent's grant on the app it goes to (ScopedChannel)."
   (:require [autonomous.bridge.channel :as channel]
             [autonomous.bridge.client :as client]
+            [autonomous.bridge.fleet :as fleet]
             [autonomous.bridge.ledger :as ledger]
+            [autonomous.bridge.port :as port]
             [autonomous.bridge.session :as s]
             [autonomous.domain.answer :as answer]
+            [autonomous.domain.fleet :as domain]
             [autonomous.hive.apps :as apps]
             [autonomous.mcp.json :as json]
             [autonomous.mcp.server :as server]
-            [hive-addon.protocol :as addon]
-            [clojure.walk :as walk]))
+            [clojure.string :as str]
+            [clojure.walk :as walk]
+            [hive-addon.protocol :as addon]))
 
 (def addon-id-value "autonomous")
 
 ;; =============================================================================
-;; App contexts
+;; Fleet
 ;; =============================================================================
 
-(defn- open-app
-  "Running state for one app config: its MCP server and agent sessions."
-  [app]
-  (let [target (apps/->target app (apps/read-dir-facts app))
-        ctx    (client/context {:target  target
-                                :channel (channel/make target)
-                                :ledger  (ledger/open (or (:app/ledger app) {:ledger/kind :memory}))})]
-    {:app app :target target :srv (server/server ctx) :sessions (atom {})}))
+(defrecord ScopedChannel [app inner]
+  port/IRuntimeChannel
+  (-send [_ request runtime-id]
+    (port/-send inner (apps/scope-request app request) runtime-id))
+
+  port/IRuntimeDirectory
+  (-runtimes [_] (port/-runtimes inner))
+
+  java.io.Closeable
+  (close [_]
+    (when (instance? java.io.Closeable inner) (.close ^java.io.Closeable inner))))
+
+(defn- shared-ledger-config
+  "The fleet's one ledger: :autonomous/ledger, else the first app's
+   :app/ledger (the per-app key of earlier versions), else memory."
+  [cfg app-cfgs]
+  (or (:autonomous/ledger cfg)
+      (some :app/ledger app-cfgs)
+      {:ledger/kind :memory}))
+
+(defn open-fleet
+  "Running state for addon config `cfg` with apps `app-cfgs`: one fleet, its
+   MCP server, and the agents' sessions. Throws ex-info when the app ids
+   cannot form a fleet."
+  [cfg app-cfgs]
+  (let [ids (mapv (comp str :app/id) app-cfgs)]
+    (when-let [problems (domain/check-targets ids)]
+      (throw (ex-info (str/join "; " problems) {:autonomous/error :fleet/invalid :problems problems})))
+    (let [l       (ledger/open (shared-ledger-config cfg app-cfgs))
+          member  (fn [app]
+                    (let [target (apps/->target app (apps/read-dir-facts app))]
+                      [(:target/id target)
+                       (client/context {:target          target
+                                        :channel         (->ScopedChannel app (channel/make target))
+                                        :ledger          l
+                                        :call-timeout-ms (:app/call-timeout-ms app)})]))
+          members (mapv member app-cfgs)
+          f       (fleet/make members {:mode :fleet :probe-ms (:autonomous/probe-ms cfg)})]
+      {:configs  (into {} (map (juxt (comp str :app/id) identity)) app-cfgs)
+       :order    ids
+       :fleet    f
+       :srv      (server/fleet-server f)
+       :sessions (atom {})})))
+
+(defn close-fleet!
+  "Close every member's channel."
+  [st]
+  (doseq [[_ ctx] (get-in st [:fleet :members])]
+    (when (instance? java.io.Closeable (:channel ctx))
+      (.close ^java.io.Closeable (:channel ctx)))))
 
 (defn- session-of
-  "The session `actor` uses on app state `st`, opened on first use."
+  "The one session `actor` uses across the fleet, opened on first use."
   [st actor]
-  (let [k actor]
-    (or (get @(:sessions st) k)
-        (let [ses (s/open-session (str addon-id-value ":" (get-in st [:app :app/id]) ":" actor)
-                                  (apps/grant-for (:app st) actor))]
-          (swap! (:sessions st) assoc k ses)
-          ses))))
+  (or (get @(:sessions st) actor)
+      (let [ses (s/open-session (str addon-id-value ":hive:" actor)
+                                (apps/fleet-grant (vals (:configs st)) actor))]
+        (get (swap! (:sessions st) #(if (contains? % actor) % (assoc % actor ses))) actor))))
 
 (defn- run-tool!
-  "Answer of `tool` with `args` as `actor`, keeping the session it leaves."
+  "Answer of server tool `tool` with `args` as `actor`, keeping the session
+   it leaves (an attach pins it)."
   [st actor tool args]
   (let [{:keys [answer session]} (server/call-tool (:srv st) (session-of st actor) tool args)]
     (swap! (:sessions st) assoc actor session)
     answer))
 
 ;; =============================================================================
-;; Commands
+;; Routing (pure)
 ;; =============================================================================
 
-(def builtin-commands
-  "Commands that are the session's built-in tools."
-  {"runtimes" "autonomous_runtimes"
-   "attach"   "autonomous_attach"
-   "whoami"   "autonomous_whoami"
-   "journal"  "autonomous_journal"
-   "ledger"   "autonomous_ledger"
-   "poll"     "autonomous_poll"
-   "lease"    "autonomous_lease"
-   "release"  "autonomous_release"})
+(defn exposed-tool
+  "Fleet name of tool `tool` of app `app`; `tool` as is when no app is named
+   (it is then a fleet name, <app>__<tool>, or a built-in)."
+  [app tool]
+  (if app (domain/exposed-name (domain/prefix app) tool) tool))
+
+(defn exposed-uri
+  "Fleet uri of resource `uri` of app `app`; `uri` as is when no app is
+   named or it already is a fleet uri."
+  [app uri]
+  (if (and app (not (str/starts-with? (str uri) domain/resource-scheme)))
+    (domain/exposed-uri (domain/prefix app) uri)
+    uri))
+
+(defn pending-id
+  "Fleet pending id: `id` qualified by `app` unless it already is."
+  [app id]
+  (if (and app (not (str/starts-with? (str id) (str app ":")))) (str app ":" id) id))
+
+(defn ledger-query
+  "The autonomous_ledger arguments of addon `params` (keyword keys): `app`
+   reads one app, `by_actor` filters by who acted. The caller's own
+   identity (agent_id) is never a filter."
+  [{:keys [app by_actor kind tool since until limit]}]
+  (into {} (remove (comp nil? val))
+        {:target app :actor by_actor :kind kind :tool tool :since since :until until :limit limit}))
+
+;; =============================================================================
+;; Commands
+;; =============================================================================
 
 (def command-help
   (array-map
    "help"     "this list"
-   "apps"     "the configured apps and where they are reached"
-   "tools"    "the tools an app offers you. app"
-   "call"     "call an app tool. app, tool, args {..}"
-   "read"     "read an app resource. app, uri"
+   "apps"     "every app of the fleet: status (up, down, slow), tool prefix, tool count, version, target"
+   "tools"    "the tools you may call, named <app>__<tool>. app narrows to one app"
+   "call"     "call an app tool. app + tool (as the app names it), or tool = <app>__<tool>; args {..}"
+   "read"     "read an app resource. app + uri, or uri = autonomous://<app>/<uri>"
    "runtimes" "running instances of an app (tabs, processes). app"
-   "attach"   "pin your session to one instance. app, runtime_id (omit to unpin)"
-   "whoami"   "your actor, scopes and pinned instance. app"
-   "journal"  "recent events of your instance. app, since, limit"
-   "ledger"   "durable record across instances and agents. app, actor, kind, tool, since, until, limit"
-   "poll"     "collect a still-running result. app, id"
-   "lease"    "exclusive write access to your instance. app, ttl_seconds"
-   "release"  "end your lease. app"))
+   "attach"   "pin your session to one instance of an app. app, runtime_id (omit to unpin)"
+   "whoami"   "your actor, scopes and the instance pinned on each app"
+   "journal"  "recent events of your instance of an app. app, since, limit"
+   "ledger"   "durable record across apps, instances and agents. app, by_actor, kind, tool, since, until, limit"
+   "poll"     "collect a still-running result. id (as the call answered it, <app>:<id>)"
+   "lease"    "exclusive write access to your instance of an app. app, ttl_seconds"
+   "release"  "end your lease on an app. app"))
 
 (defn- param [params k] (or (get params k) (get params (keyword k))))
 
-(defn- actor-of [params]
-  (str (or (param params "agent_id") (param params "actor") "hive")))
-
-(defn- tool-args
-  "Arguments for a built-in tool: every param except the routing ones."
+(defn actor-of
+  "The caller: agent_id, else \"hive\"."
   [params]
-  (into {} (comp (map (fn [[k v]] [(keyword (name k)) v]))
-                 (remove (fn [[k _]] (#{:command :app :agent_id :actor} k))))
-        params))
+  (str (or (param params "agent_id") "hive")))
+
+(defn- keywordized [params]
+  (into {} (map (fn [[k v]] [(keyword (name k)) v])) params))
+
+(defn- unknown-app [st app]
+  (answer/refusal :autonomous/unknown-app (str "no app " (pr-str app) "; command=apps lists them")
+                  {:known (:order st)}))
+
+(defn- apps-answer [st actor]
+  (let [a (run-tool! st actor "autonomous_apps" {})]
+    (if (answer/ok? a)
+      (answer/ok (mapv (fn [row] (assoc row :target (get-in st [:fleet :members (:app row) :target])))
+                       (get-in a [:ok :apps])))
+      a)))
+
+(defn- tools-answer [st actor app]
+  (let [pfx (when app (str (domain/prefix app) domain/separator))]
+    (answer/ok (into [] (comp (filter #(or (nil? pfx) (str/starts-with? (:name %) pfx)))
+                              (map #(select-keys % [:name :description :inputSchema])))
+                     (server/list-tools (:srv st) (session-of st actor))))))
 
 (defn dispatch
-  "Answer of `command` with `params` against the running `apps` map. Tool
-   arguments arrive with string keys from the host; they are keywordized
-   as the MCP transport does for JSON."
-  [apps command params]
-  (let [app-id (some-> (param params "app") str)
-        st     (get apps app-id)
-        actor  (actor-of params)]
+  "Answer of `command` with `params` against running fleet state `st`. Tool
+   arguments arrive with string keys from the host; they are keywordized as
+   the MCP transport does for JSON."
+  [st command params]
+  (let [p     (keywordized params)
+        app   (some-> (:app p) str)
+        actor (actor-of params)
+        run   (fn [tool args] (run-tool! st actor tool (into {} (remove (comp nil? val)) args)))]
     (cond
       (= "help" command) (answer/ok {:commands command-help})
-      (= "apps" command) (answer/ok (mapv (fn [[id st]] {:app id :target (:target st)}) (sort-by key apps)))
-      (nil? st)          (answer/refusal :autonomous/unknown-app
-                                         (str "no app " (pr-str app-id) "; command=apps lists them")
-                                         {:known (vec (sort (keys apps)))})
+      (nil? st)          (answer/refusal :autonomous/not-running "the autonomous addon is not initialized")
+      (and app (not (contains? (:configs st) app))) (unknown-app st app)
       :else
       (case command
-        "tools" (answer/ok (mapv #(select-keys % [:name :description :inputSchema])
-                                 (server/list-tools (:srv st) (session-of st actor))))
-        "call"  (run-tool! st actor (str (param params "tool"))
-                           (walk/keywordize-keys (param params "args")))
-        "read"  (client/read-resource (get-in st [:srv :ctx]) (session-of st actor) (str (param params "uri")))
-        (if-let [tool (builtin-commands command)]
-          (run-tool! st actor tool (tool-args params))
-          (answer/refusal :autonomous/unknown-command (str "unknown command " command)
-                          {:known (vec (keys command-help))}))))))
+        "apps"     (apps-answer st actor)
+        "tools"    (tools-answer st actor app)
+        "call"     (run (exposed-tool app (str (:tool p))) (walk/keywordize-keys (or (:args p) {})))
+        "read"     (fleet/read-resource (:fleet st) (session-of st actor) (exposed-uri app (str (:uri p))))
+        "runtimes" (run "autonomous_runtimes" {:target app})
+        "attach"   (run "autonomous_attach" {:target app :runtime_id (:runtime_id p)})
+        "whoami"   (run "autonomous_whoami" {})
+        "journal"  (run "autonomous_journal" {:target app :since (:since p) :limit (:limit p)})
+        "ledger"   (run "autonomous_ledger" (ledger-query p))
+        "poll"     (run "autonomous_poll" {:id (pending-id app (str (:id p)))})
+        "lease"    (run "autonomous_lease" {:target app :ttl_seconds (:ttl_seconds p)})
+        "release"  (run "autonomous_release" {:target app})
+        (answer/refusal :autonomous/unknown-command (str "unknown command " command)
+                        {:known (vec (keys command-help))})))))
 
 (defn- content [a]
   (cond-> {:content [{:type "text" :text (json/write a)}]}
@@ -128,29 +220,29 @@
 (defn tool [state]
   {:name "autonomous"
    :description (str "Operate running apps built with the autonomous library (re-frame UIs, Clojure "
-                     "services): list an app's tools, call them, read its state, and coordinate with "
-                     "other agents. Each agent has its own session per app: attach to an instance "
-                     "(runtime) to work in parallel, or lease one to change it alone. Pass agent_id "
-                     "so the app's journal and ledger attribute your actions. command=help lists commands.")
+                     "services), all behind one fleet: list the apps and their status, list their tools, "
+                     "call them, read their state, and coordinate with other agents. You have one session "
+                     "across the fleet: attach to an instance of an app to work in parallel, or lease one "
+                     "to change it alone. Pass agent_id so journals and the ledger attribute your actions; "
+                     "ledger by_actor reads what another agent did. command=help lists commands.")
    :inputSchema {:type "object"
                  :properties {"command"     {:type "string" :enum (vec (keys command-help))}
                               "app"         {:type "string" :description "app id (command=apps lists them)"}
-                              "tool"        {:type "string" :description "[call] the app tool's name"}
+                              "tool"        {:type "string" :description "[call] the tool as the app names it (with app), or <app>__<tool>"}
                               "args"        {:type "object" :description "[call] the tool's arguments"}
-                              "uri"         {:type "string" :description "[read] resource uri"}
+                              "uri"         {:type "string" :description "[read] resource uri (with app), or autonomous://<app>/<uri>"}
                               "runtime_id"  {:description "[attach] instance id from command=runtimes"}
                               "since"       {:type "integer" :description "[journal|ledger] after this seq / epoch ms"}
                               "until"       {:type "integer" :description "[ledger] before this epoch ms"}
                               "limit"       {:type "integer"}
-                              "actor"       {:type "string" :description "[ledger] filter by actor"}
-                              "kind"        {:type "string" :description "[ledger] filter by entry kind"}
+                              "by_actor"    {:type "string" :description "[ledger] only what this actor (agent id) did"}
+                              "kind"        {:type "string" :description "[ledger] filter by entry kind, e.g. autonomous/call"}
                               "id"          {:type "string" :description "[poll] pending result id"}
                               "ttl_seconds" {:type "integer" :description "[lease] lease length"}
-                              "agent_id"    {:type "string" :description "your agent id (attribution and session)"}}
+                              "agent_id"    {:type "string" :description "you: your agent id (session and attribution)"}}
                  :required ["command"]}
    :handler (fn [params]
-              (let [{:keys [apps]} @state]
-                (content (dispatch apps (str (param params "command")) params))))})
+              (content (dispatch (:fleet-state @state) (str (param params "command")) params)))})
 
 ;; =============================================================================
 ;; Lifecycle
@@ -169,35 +261,34 @@
       (if (= :active (:lifecycle @state))
         {:success? true :already-initialized? true}
         (try
-          (let [cfg  (merge seed (:addon/config seed) runtime-config (:addon/config runtime-config))
-                apps (into {} (map (fn [app] [(str (:app/id app)) (open-app app)])) (configured-apps cfg))]
-            (swap! state assoc :lifecycle :active :apps apps)
-            {:success? true :errors [] :metadata {:apps (vec (sort (keys apps)))}})
+          (let [cfg (merge seed (:addon/config seed) runtime-config (:addon/config runtime-config))
+                st  (open-fleet cfg (configured-apps cfg))]
+            (swap! state assoc :lifecycle :active :fleet-state st)
+            {:success? true :errors [] :metadata {:apps (:order st)}})
           (catch Exception e
             (swap! state assoc :lifecycle :error :error (ex-message e))
             {:success? false :errors [(str "autonomous addon: " (ex-message e))]})))))
   (shutdown! [_]
     (locking state
-      (doseq [[_ st] (:apps @state)]
-        (when-let [ch (get-in st [:srv :ctx :channel])]
-          (when (instance? java.io.Closeable ch) (.close ^java.io.Closeable ch))))
-      (swap! state assoc :lifecycle :stopped :apps {}))
+      (some-> (:fleet-state @state) close-fleet!)
+      (swap! state assoc :lifecycle :stopped :fleet-state nil))
     nil)
-  (tools [this] [(tool state)])
+  (tools [_] [(tool state)])
   (schema-extensions [_] {})
   (health [_]
-    (let [{:keys [lifecycle apps error]} @state]
+    (let [{:keys [lifecycle fleet-state error]} @state]
       (if (= :active lifecycle)
-        {:status :ok :details {:apps (vec (sort (keys apps)))}}
+        {:status :ok :details {:apps (:order fleet-state)}}
         {:status :down :details {:lifecycle lifecycle :error error}})))
   (excluded-tools [_] #{})
   (hooks [_]
-    {:autonomous/dispatch (fn [command params] (dispatch (:apps @state) command params))}))
+    {:autonomous/dispatch (fn [command params] (dispatch (:fleet-state @state) command params))}))
 
 (defn make-addon
-  "Uninitialized addon. No connection is opened until initialize!."
+  "Uninitialized addon. No connection is opened until initialize!, and an
+   nREPL connection only on an app's first use."
   ([] (make-addon {}))
-  ([seed] (->AutonomousAddon (atom {:lifecycle :new :apps {}}) (or seed {}))))
+  ([seed] (->AutonomousAddon (atom {:lifecycle :new :fleet-state nil}) (or seed {}))))
 
 (defn addon-ctor
   "hive-addon.mount constructor: config -> uninitialized IAddon."
