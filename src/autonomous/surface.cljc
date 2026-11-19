@@ -15,12 +15,10 @@
             [autonomous.domain.affordance :as affordance]))
 
 (def Interceptor
-  "One link of the agent-call chain, as DATA so it can be inspected and
-   ordered: :enter (fn [ctx] ctx'), :leave (fn [ctx] ctx'), :error
-   (fn [ctx ex] ctx'). ctx carries at least {:tool :args :grant}; :enter
-   may refuse by setting :refusal, :leave sees :answer."
-  [:map
-   [:name :keyword]
+  "L1 call interceptor. :enter and :leave take context; :error takes
+   [context refusal]. Each returns context. Entry can short-circuit by
+   setting :answer; later stages can transform or recover that Answer."
+  [:map [:name :keyword]
    [:enter {:optional true} fn?]
    [:leave {:optional true} fn?]
    [:error {:optional true} fn?]])
@@ -118,18 +116,26 @@
   (keyed-merge "resource" #(dissoc % :read) :name (:resources a) (:resources b)))
 
 (defmethod merge-part :interceptors [_ a b]
-  (let [by-name #(into (array-map) (map (juxt :name identity)) %)]
-    (answer/bind (keyed-merge "interceptor" identity identity
-                              (by-name (:interceptors a)) (by-name (:interceptors b)))
-                 #(answer/ok (vec (vals %))))))
+  ;; The vector defines execution order. A hash-map's vals do not.
+  (let [entries (concat (:interceptors a) (:interceptors b))
+        names (distinct (map :name entries))]
+    (answer/bind (keyed-merge "interceptor" identity #(vec (sort (keys %)))
+                              {} (map (juxt :name identity) entries))
+                 #(answer/ok (mapv % names)))))
+
+(defmethod merge-part :default [k a b]
+  (cond
+    (not (contains? a k)) (answer/ok (get b k))
+    (not (contains? b k)) (answer/ok (get a k))
+    (= (get a k) (get b k)) (answer/ok (get a k))
+    :else (clash "surface part" k (get a k) (get b k))))
 
 (defn- merge-parts
-  "L1: Ok of `a` with every part replaced by its merge with `b`'s."
+  "L1 Promote: merge every part supplied by either surface."
   [a b]
   (answer/reduce-answer
-   (fn [acc k] (answer/bind (merge-part k acc b) #(answer/ok (assoc acc k %))))
-   a
-   (keys a)))
+   (fn [acc k] (answer/bind (merge-part k a b) #(answer/ok (assoc acc k %))))
+   {} (distinct (concat (keys a) (keys b)))))
 
 (defn- merge-two
   "L1: validate both surfaces, then merge part by part. One railway."
