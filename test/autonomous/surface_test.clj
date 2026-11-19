@@ -3,7 +3,10 @@
   (:require [autonomous.domain.affordance :as affordance]
             [autonomous.domain.answer :as answer]
             [autonomous.surface :as surface]
-            [clojure.test :refer [deftest is testing]]))
+            [clojure.test :refer [deftest is testing]]
+            [clojure.test.check :as tc]
+            [clojure.test.check.generators :as gen]
+            [clojure.test.check.properties :as prop]))
 
 (defn- tool [id]
   (:ok (affordance/->tool id {:description (str id)
@@ -70,7 +73,12 @@
         b (assoc (s-of {}) :interceptors [i2])
         m (surface/merge-surfaces a b)]
     (is (= [i1 i2] (:interceptors (:ok m))))
-    (is (= :name-clash (get-in (surface/merge-surfaces a a) [:error :type])))))
+    (is (= {:ok a} (surface/merge-surfaces a a)) "the same link twice is idempotent")
+    (let [i1' (assoc i1 :enter (fn [ctx] ctx))]
+      (is (= :name-clash (get-in (surface/merge-surfaces
+                                  a (assoc (s-of {}) :interceptors [i1']))
+                                 [:error :type]))
+          "one :name, two different links"))))
 
 (deftest merge-of-apps
   (let [a (s-of {}) b (assoc (s-of {}) :app {:name "t" :description "more"})]
@@ -99,3 +107,55 @@
            (set (keys (:tools (:ok (surface/merge-surfaces
                                     (s-of {"a_x" (tool :a/x) "b_y" (tool :b/y)})
                                     c)))))))))
+
+(def ^:private disjoint-gen
+  "One surface whose tool names carry its own prefix, so two generated
+   surfaces never share a name."
+  (gen/let [prefix (gen/elements ["a" "b" "c" "d"])
+            ids    (gen/vector-distinct (gen/elements [:x :y :z]) {:max-elements 3})]
+    (s-of (into {} (map (fn [i]
+                          (let [id (keyword prefix (name i))]
+                            [(str prefix "_" (name i)) (tool id)])))
+                ids))))
+
+(defn- one-answer? [a]
+  (= 1 (count (select-keys a [:ok :pending :error]))))
+
+(deftest monoid-laws
+  (let [r (tc/quick-check
+           100
+           (prop/for-all [a disjoint-gen b disjoint-gen c disjoint-gen]
+             (let [ab   (surface/merge-surfaces a b)
+                   a-bc (surface/merge-surfaces a (:ok (surface/merge-surfaces b c)))
+                   ab-c (surface/merge-surfaces (:ok ab) c)]
+               (and (one-answer? ab)
+                    (= a-bc ab-c)
+                    (= {:ok a} (surface/merge-surfaces surface/empty-surface a))
+                    (= {:ok a} (surface/merge-surfaces a surface/empty-surface))
+                    (= {:ok a} (surface/merge-surfaces a))
+                    (= {:ok surface/empty-surface} (surface/merge-surfaces))))))]
+    (is (true? (:result r)) (pr-str r))))
+
+(deftest clash-is-always-one-refusal-answer
+  (let [r (tc/quick-check
+           60
+           (prop/for-all [id (gen/elements [:x :y :z])]
+             (let [m (surface/merge-surfaces (s-of {"same" (tool (keyword "a" (name id)))})
+                                             (s-of {"same" (tool (keyword "b" (name id)))}))]
+               (and (one-answer? m)
+                    (answer/refused? m)
+                    (= :name-clash (get-in m [:error :type]))))))]
+    (is (true? (:result r)) (pr-str r))))
+
+(deftest answer-railway
+  (is (= {:ok 3} (answer/let-answer [a (answer/ok 1) b (answer/ok 2)] (answer/ok (+ a b)))))
+  (is (= {:error {:type :no :message "stop"}}
+         (answer/let-answer [a (answer/ok 1)
+                             b (answer/refusal :no "stop")
+                             c (answer/ok (throw (ex-info "never evaluated" {})))]
+           (answer/ok c))))
+  (is (= {:ok [1 2]} (answer/reduce-answer (fn [acc x] (answer/ok (conj acc x))) (answer/ok []) [1 2])))
+  (is (= :stop (get-in (answer/reduce-answer
+                        (fn [acc x] (if (= x 2) (answer/refusal :stop "at 2") (answer/ok (conj acc x))))
+                        (answer/ok []) [1 2 3])
+                       [:error :type]))))

@@ -43,97 +43,86 @@
   (nil? (m/explain Surface x)))
 
 (defn ->surface
-  "Ok of the Surface of partial map `m` (missing keys take the empty
-   surface's), or an :invalid-surface refusal naming the problems."
+  "L1 Promote: Ok of the Surface of partial map `m` (missing keys take
+   the empty surface's), or an :invalid-surface refusal."
   [m]
   (let [s (merge empty-surface m)]
     (if-let [e (m/explain Surface s)]
       (answer/refusal :invalid-surface "not a valid surface" (me/humanize e))
       (answer/ok s))))
 
+;; =============================================================================
+;; Composition: a monoid on Surface. merge-part is OPEN (OCP): a new part
+;; of the surface is a new defmethod; merge-surfaces never changes.
+;; =============================================================================
+
 (defn- clash
+  "L1: the refusal of one name two different values claim."
   [what n left right]
   (answer/refusal :name-clash
-                  (str what " " n " is declared by two different affordances")
+                  (str what " " n " is declared by two different values")
                   {:name n :left left :right right}))
 
-(defn- merge-tools
-  "Tools of `a` and `b`: the same registration (same :id) twice keeps the
-   first; a name two different ids claim is a refusal."
-  [a b]
-  (reduce-kv (fn [acc n t]
-               (if-let [other (get acc n)]
-                 (if (= (:id other) (:id t))
-                   acc
-                   (reduced (clash "tool" n (:id other) (:id t))))
-                 (assoc acc n t)))
-             a b))
+(defn- keyed-merge
+  "L1: THE keyed merge, one shape for every part: same key with the same
+   identity keeps the first; a different identity is a clash refusal.
+   `label` is a (fn [v] described-identity) for the refusal."
+  [what ident label a b]
+  (answer/reduce-answer
+   (fn [acc [k v]]
+     (let [other (get acc k)]
+       (cond
+         (nil? other)                  (answer/ok (assoc acc k v))
+         (= (ident other) (ident v))   (answer/ok acc)
+         :else (clash what k (label other) (label v)))))
+   (answer/ok a)
+   b))
 
-(defn- merge-resources
-  "Resources of `a` and `b` by URI: the same description twice keeps the
-   first (readers are fns, compared by their metadata); two different
-   descriptions of one URI are a refusal."
-  [a b]
-  (reduce-kv (fn [acc uri r]
-               (if-let [other (get acc uri)]
-                 (if (= (dissoc other :read) (dissoc r :read))
-                   acc
-                   (reduced (clash "resource" uri (:name other) (:name r))))
-                 (assoc acc uri r)))
-             a b))
+(defmulti merge-part
+  "L1: merge part `k` of surfaces `a` and `b` into one value. Answers Ok
+   or a refusal. Open: a new surface part adds a method, not an edit."
+  (fn [k _a _b] k))
 
-(defn- merge-interceptors
-  "Chains of `a` then `b`; one :name twice is a refusal (the chain must
-   stay inspectable and unambiguous)."
-  [a b]
-  (reduce (fn [acc i]
-            (if (some #(= (:name %) (:name i)) acc)
-              (reduced (clash "interceptor" (:name i) (:name i) (:name i)))
-              (conj acc i)))
-          (vec a) b))
+(defmethod merge-part :app [_ a b]
+  (let [a (:app a) b (:app b)]
+    (cond
+      (= a b)                    (answer/ok a)
+      (= a (:app empty-surface)) (answer/ok b)
+      (= b (:app empty-surface)) (answer/ok a)
+      (= (:name a) (:name b))    (answer/ok (merge a b))
+      :else (answer/refusal :app-clash "two surfaces name different apps"
+                            {:left a :right b}))))
 
-(defn- merge-app
-  "The more specific AppInfo: the empty surface's app yields, a same-named
-   app is refined key by key (b wins a shared key); two different named
-   apps are a clash."
+(defmethod merge-part :tools [_ a b]
+  (keyed-merge "tool" :id :id (:tools a) (:tools b)))
+
+(defmethod merge-part :resources [_ a b]
+  (keyed-merge "resource" #(dissoc % :read) :name (:resources a) (:resources b)))
+
+(defmethod merge-part :interceptors [_ a b]
+  (let [by-name #(into (array-map) (map (juxt :name identity)) %)]
+    (answer/bind (keyed-merge "interceptor" identity identity
+                              (by-name (:interceptors a)) (by-name (:interceptors b)))
+                 #(answer/ok (vec (vals %))))))
+
+(defn- merge-parts
+  "L1: Ok of `a` with every part replaced by its merge with `b`'s."
   [a b]
-  (cond
-    (= a b)                    a
-    (= a (:app empty-surface)) b
-    (= b (:app empty-surface)) a
-    (= (:name a) (:name b))    (merge a b)
-    :else                      ::clash))
+  (answer/reduce-answer
+   (fn [acc k] (answer/bind (merge-part k acc b) #(answer/ok (assoc acc k %))))
+   (answer/ok a)
+   (keys a)))
+
+(defn- merge-two
+  "L1: validate both surfaces, then merge part by part. One railway."
+  [a b]
+  (answer/let-answer [a (->surface a)
+                      b (->surface b)]
+    (merge-parts a b)))
 
 (defn merge-surfaces
-  "Ok of the composition of surfaces, left to right, or a :name-clash /
-   :invalid-surface / :app-clash refusal. The identity is `empty-surface`;
-   merging is associative on disjoint names."
-  ([] empty-surface)
-  ([s] (->surface s))
-  ([a b]
-   (let [va (->surface a)
-         vb (->surface b)]
-     (cond
-       (answer/refused? va) va
-       (answer/refused? vb) vb
-       :else
-       (let [a (:ok va) b (:ok vb)
-             app (merge-app (:app a) (:app b))]
-         (if (= ::clash app)
-           (answer/refusal :app-clash "two surfaces name different apps"
-                           {:left (:app a) :right (:app b)})
-           (let [merged (reduce (fn [acc [k f]]
-                                  (let [v (f (get acc k) (get b k))]
-                                    (if (answer/refused? v) (reduced v) (assoc acc k v))))
-                                (assoc a :app app)
-                                [[:tools merge-tools]
-                                 [:resources merge-resources]
-                                 [:interceptors merge-interceptors]])]
-             (if (answer/refused? merged) merged (answer/ok merged))))))))
-  ([a b & more]
-   (reduce (fn [acc s]
-             (let [m (merge-surfaces acc s)]
-               (if (answer/refused? m) (reduced m) (:ok m))))
-           (let [m (merge-surfaces a b)]
-             (if (answer/refused? m) m (:ok m)))
-           more)))
+  "L1: the monoid fold of surfaces, left to right: ALWAYS Ok of the
+   composition, or the first refusal (:invalid-surface, :name-clash,
+   :app-clash). Identity: `empty-surface`. Associative on disjoint names."
+  [& surfaces]
+  (answer/reduce-answer merge-two (answer/ok empty-surface) surfaces))
