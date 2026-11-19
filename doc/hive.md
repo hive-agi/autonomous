@@ -28,7 +28,7 @@ The addon publishes one tool, `autonomous`, with a command per operation:
 | `attach` | `app`, `runtime_id` | pin your session to one instance (omit `runtime_id` to unpin) |
 | `whoami` | `app` | your actor, scopes and pinned instance |
 | `journal` | `app`, `since`, `limit` | recent events of your instance |
-| `ledger` | `app`, `actor`, `kind`, `tool`, `since`, `until`, `limit` | the durable record |
+| `ledger` | `app`, `kind`, `tool`, `since`, `until`, `limit` | the durable record |
 | `poll` | `app`, `id` | collect a still-running result |
 | `lease` | `app`, `ttl_seconds` | exclusive write access to your instance |
 | `release` | `app` | end your lease |
@@ -37,6 +37,11 @@ Every command also takes `agent_id`. The commands from `runtimes` down are the
 session tools of [concepts.md](concepts.md) (`autonomous_runtimes` and so on),
 run through the same MCP server pipeline as `autonomous serve`, inside the
 hive-mcp JVM.
+
+One difference from the MCP tool: the addon reads `actor` as the caller's
+identity (when there is no `agent_id`), not as a ledger filter, so
+`command=ledger` cannot filter by actor yet. Filter by `kind` or `tool` and
+read the `actor` field of each entry.
 
 ## Sessions per agent
 
@@ -51,7 +56,7 @@ autonomous command=apps
 autonomous command=runtimes app=todo agent_id=ling-1
 autonomous command=attach   app=todo runtime_id=3 agent_id=ling-1
 autonomous command=call     app=todo tool=todo_add args={"text":"milk"} agent_id=ling-1
-autonomous command=ledger   app=todo actor=ling-1 agent_id=coordinator
+autonomous command=ledger   app=todo kind=autonomous/call agent_id=coordinator
 ```
 
 ## Configuring apps
@@ -79,8 +84,8 @@ Apps live under the addon's entry in the hive-mcp `config.edn`:
 | `:app/ledger` | ledger config, `{:ledger/kind :memory}` or `:datahike` | memory |
 
 An agent's scopes are its own entry in `:app/grants`, else `:app/scopes`, else
-read and write. Connections open lazily, on the first call, and the addon's
-health lists the configured apps.
+read and write. nREPL connections open lazily, on the first call, and the
+addon's health lists the configured apps.
 
 ## hive-compose
 

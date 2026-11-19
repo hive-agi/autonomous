@@ -30,7 +30,7 @@ Give a read-only agent `--scopes read`: it will not even see the write tools.
 | `/mcp` | `DELETE` | end the session named by `Mcp-Session-Id` |
 | `/health` | any | `{"status":"ok"}`, no authentication |
 
-There is no event stream: a `GET` on `/mcp` gets 405. A body over 1 MiB gets
+There is no event stream: an authenticated `GET` on `/mcp` gets 405. A body over 1 MiB gets
 413.
 
 ### What the transport enforces
@@ -103,6 +103,7 @@ plus the settings that have no flag, such as `:allowed-origins`:
  :call-timeout-ms 30000}
 ```
 
+Run it with `serve --dir <app>` (or give the file an explicit `:target`).
 The file is validated against `autonomous.bridge.schema/Config`; an invalid
 one stops `serve` with exit code 2 and says which key is wrong.
 

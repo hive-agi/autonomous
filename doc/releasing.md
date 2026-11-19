@@ -35,7 +35,9 @@ The `:integration` suite needs live app runtimes and stays local.
 library: `src/`, `resources/`, `deps.edn`, `version.edn`, `VERSION`, `test/`,
 `tests.edn` or `.github/workflows/`. A change to the README or `doc/` mints
 nothing, because a published version can never change. It can also be started
-by hand (`workflow_dispatch`). Runs never overlap and are never cancelled.
+by hand (`workflow_dispatch`). One release runs at a time: a run never
+cancels the one in progress, and GitHub keeps only the newest run waiting
+behind it.
 
 The steps:
 
@@ -48,7 +50,8 @@ The steps:
 5. **Deploy.** `clojure -T:build deploy` builds the jar and publishes it to
    Clojars.
 
-So the number comes from the tags. `0.1.1` and `0.1.2` were released this way.
+So the number comes from the tags: the repository has `v0.1.1` and `v0.1.2`,
+and Clojars has `0.1.2`.
 
 ### VERSION is a floor
 
@@ -96,10 +99,10 @@ library every hive package shares: `clojure -T:build <task>`.
 | `jar` | build the source jar under `target/` |
 | `install` | jar and install to the local `~/.m2`, offline |
 | `bump :level :patch` | rewrite `VERSION` to the next version (also `:minor`, `:major`); no commit, no tag |
-| `verify-license` | check that `LICENSE` and `version.edn :license` agree; `:strict true` fails on a mismatch |
+| `verify-license` | check that `LICENSE`, `version.edn :license` and any SPDX headers agree; `:strict true` fails on a mismatch |
 | `kondo` | clj-kondo gate |
 | `changelog` | regenerate `CHANGELOG.md` from the commits between release tags |
-| `deploy` | verify the license, build, and publish `VERSION` per `version.edn :publish`; a version already on Clojars is skipped |
+| `deploy` | report the license check, build, and publish `VERSION` per `version.edn :publish`; a version already on Clojars is skipped |
 
 To check a release locally before pushing:
 

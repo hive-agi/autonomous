@@ -78,7 +78,12 @@ Every call answers one of three shapes:
   A result still running after that is answered as pending, and the agent
   collects it later with `autonomous_poll`. A parked result is kept for
   10 minutes.
-- **Refusal**: `{:error {:type :message :data}}`. MCP marks it `isError`.
+
+A re-frame event tool with `:async? true` answers `{:queued event}` at once,
+without waiting for the event to run.
+- **Refusal**: `{:error {:type :message :data}}`. MCP marks the tool result
+  `isError`. A call to a tool that does not exist is a JSON-RPC
+  `invalid-params` error instead.
 
 ## Resources
 
@@ -151,7 +156,7 @@ time. Other actors keep reading; their calls to tools that are not read-only
 are refused with `:leased`, naming the holder. `autonomous_lease` takes
 `ttl_seconds` (default 60, at most 3600); the holder may call it again to
 renew. `autonomous_release` ends it, and releasing a lease you do not hold
-changes nothing. Taking a lease needs `:write`.
+changes nothing. Taking and releasing a lease need `:write`.
 
 ## Journal
 
@@ -189,7 +194,7 @@ Two stores ship:
 | `--ledger` | store | notes |
 |---|---|---|
 | `memory` | an atom | the default; gone when the bridge stops |
-| `datahike` | datahike | needs the `:datahike` alias; `--datahike-path PATH` keeps it on disk; history is kept, so `as-of` queries work |
+| `datahike` | datahike | needs `io.replikativ/datahike` on the classpath (the `:datahike` alias in a checkout); `--datahike-path PATH` keeps it on disk; the store keeps history |
 
 ## The re-frame adapter
 
