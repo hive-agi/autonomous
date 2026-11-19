@@ -143,6 +143,7 @@ is the example's, shortened:
 | [swarms](doc/swarms.md) | many agents on one app: spread over instances or share one under leases |
 | [fleet](doc/fleet.md) | one bridge over many apps: UI builds and microservices, each with its own tools and nREPL |
 | [babashka](doc/babashka.md) | the bridge on babashka (stdio and HTTP) and ClojureWasm (stdio), `bb` tasks, `bb e2e` |
+| [any language](doc/cabi.md) | `libautonomous`, the runtime as a C library: apps in Rust, C, Go, Zig dial the bridge and keep validation, scopes and the journal |
 | [architecture](doc/architecture.md) | strata, ports and adapters, how a call travels |
 | [hive](doc/hive.md) | the `autonomous` IAddon for hive-mcp, and hive-compose programs |
 | [releasing](doc/releasing.md) | staging gate, a patch release per push to main, Clojars |
