@@ -1,7 +1,8 @@
 (ns autonomous.mcp.transport-test
   "MCP end to end over the in-process channel: stdio framing, and the HTTP
    security pipeline (`route` is pure, so no socket is opened), plus one
-   real socket round trip through the JDK adapter."
+   real socket round trip through the adapter this runtime starts (the JDK
+   server on the JVM, http-kit on babashka)."
   (:require [autonomous.bridge.auth :as auth]
             [autonomous.bridge.client :as client]
             [autonomous.bridge.ledger :as ledger]
@@ -13,7 +14,7 @@
             [autonomous.mcp.stdio :as stdio]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
-            [autonomous.mcp.http.jdk :as jdk])
+            [autonomous.mcp.http.start :as http-start])
   (:import (java.io StringReader StringWriter)
            (java.net URI)
            (java.net.http HttpClient HttpRequest HttpRequest$BodyPublishers HttpResponse$BodyHandlers)))
@@ -108,7 +109,7 @@
     (is (= 404 (:status (call tok-a {:text "x"}))) "a deleted session is gone")))
 
 (deftest http-over-a-real-socket
-  (let [h (:ok (jdk/start! (srv) (assoc cfg :bind "127.0.0.1" :port 0)))
+  (let [h (:ok (http-start/start! (srv) (assoc cfg :bind "127.0.0.1" :port 0)))
         client (HttpClient/newHttpClient)
         send (fn [headers body]
                (let [b (reduce (fn [b [k v]] (.header b k v))
