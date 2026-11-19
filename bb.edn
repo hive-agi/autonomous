@@ -29,4 +29,17 @@
               :task (apply (requiring-resolve 'fleet.demo/-main) *command-line-args*)}
 
   e2e   {:doc  "Live e2e from a bb bridge: shadow :e2e, two node runtimes, MCP over HTTP; stdio smokes on bb and cljw (doc/babashka.md)"
-         :task (exec 'autonomous.e2e.bb-runner/-main)}}}
+         :task (exec 'autonomous.e2e.bb-runner/-main)}
+
+  cabi  {:doc  "libautonomous, the runtime as a C library (jolt build --library; needs JOLT_CHEZ_CSV), then the C smoke test (doc/cabi.md)"
+         :task (do (babashka.fs/create-dirs "cabi/build")
+                   (shell {:dir "cabi"} "jolt" "build" "--library" "-m" "autonomous.cabi" "-o" "build/libautonomous")
+                   (babashka.fs/delete-tree "cabi/build/libautonomous.so.build")
+                   (shell {:dir "cabi/examples/c"} "cc" "-rdynamic" "-I../../include" "-o" "../../build/smoke" "smoke.c" "-ldl")
+                   (shell {:dir "cabi/examples/c"} "../../build/smoke" "../../build/libautonomous.so"))}
+
+  cabi-rust {:doc  "Build the Rust example app over libautonomous (cabi/examples/rust)"
+             :task (shell {:dir "cabi/examples/rust"} "cargo" "build" "--release")}
+
+  cabi-e2e {:doc  "Live: the Rust example dials a ws-only bb bridge; agents call its tools over MCP HTTP (doc/cabi.md)"
+            :task (exec 'autonomous.e2e.cabi-runner/-main)}}}
