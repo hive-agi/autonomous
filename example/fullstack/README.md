@@ -113,6 +113,12 @@ this is a local demo; a real app gives it out behind its own login.
 
 - The Elm app's `elm.json` says 0.19.3, the compiler this was built with;
   set it to your compiler's version (0.19.1 works) if `elm make` complains.
+- The demo backend (tiny_http) speaks HTTP/1.1 only. A client that asks to
+  upgrade to HTTP/2 (babashka.http-client by default) hangs: pass
+  `{:version :http1.1}`.
+- The backend journals every REST change as `todo/human`, including UI
+  clicks an agent made; who clicked is in the frontend's journal, where each
+  UI tool call is recorded under the agent's actor.
 - The frontend tools exist only while a tab is open. With several tabs, the
   bridge drives the oldest; `autonomous_runtimes` and `autonomous_attach`
   pick another.

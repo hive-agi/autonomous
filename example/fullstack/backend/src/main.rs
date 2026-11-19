@@ -16,8 +16,8 @@
 //!                              to the browser by /config.json (a local demo;
 //!                              a real app gets it from its own login)
 
-use std::io::Read;
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::io::Write;
+use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
 
@@ -74,7 +74,12 @@ struct Shared {
 impl Shared {
     /// Change the store as `by`, then tell every open tab; a human change is
     /// also journaled for agents.
-    fn change<R>(&self, by: &str, what: impl FnOnce(&R) -> String, f: impl FnOnce(&mut Store) -> R) -> R {
+    fn change<R>(
+        &self,
+        by: &str,
+        what: impl FnOnce(&R) -> String,
+        f: impl FnOnce(&mut Store) -> R,
+    ) -> R {
         let (r, todos) = {
             let mut s = self.store.lock().unwrap();
             let r = f(&mut s);
@@ -82,9 +87,14 @@ impl Shared {
         };
         let what = what(&r);
         let event = json!({"todos": todos, "by": by, "what": what}).to_string();
-        self.streams.lock().unwrap().retain(|tx| tx.send(event.clone()).is_ok());
+        self.streams
+            .lock()
+            .unwrap()
+            .retain(|tx| tx.send(event.clone()).is_ok());
         if by == "human" {
-            self.journal.send(json!({"kind": "todo/human", "what": what})).ok();
+            self.journal
+                .send(json!({"kind": "todo/human", "what": what}))
+                .ok();
         }
         r
     }
@@ -133,7 +143,15 @@ fn agent_tools(rt: &Runtime, shared: &Shared) -> Result<(), String> {
             s.change(
                 "agent",
                 |t: &Option<Value>| match t {
-                    Some(t) => format!("marked \"{}\" {}", t["text"].as_str().unwrap_or(""), if t["done"] == true { "done" } else { "not done" }),
+                    Some(t) => format!(
+                        "marked \"{}\" {}",
+                        t["text"].as_str().unwrap_or(""),
+                        if t["done"] == true {
+                            "done"
+                        } else {
+                            "not done"
+                        }
+                    ),
                     None => format!("tried to toggle #{id}"),
                 },
                 |st| st.toggle(id),
@@ -164,7 +182,11 @@ fn agent_tools(rt: &Runtime, shared: &Shared) -> Result<(), String> {
         "todos/clear-done",
         "{:description \"Delete every done todo. Answers how many.\" :input [:map]}",
         move |_| {
-            let n = s.change("agent", |n: &usize| format!("cleared {n} done"), |st| st.clear_done());
+            let n = s.change(
+                "agent",
+                |n: &usize| format!("cleared {n} done"),
+                |st| st.clear_done(),
+            );
             Ok(json!({"cleared": n}))
         },
     )?;
@@ -181,31 +203,6 @@ fn json_response(v: &Value) -> Response<std::io::Cursor<Vec<u8>>> {
     Response::from_string(v.to_string()).with_header(header("Content-Type", "application/json"))
 }
 
-/// A server-sent event stream fed by a channel.
-struct Events {
-    rx: Receiver<String>,
-    buf: Vec<u8>,
-    pos: usize,
-}
-
-impl Read for Events {
-    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
-        if self.pos >= self.buf.len() {
-            match self.rx.recv() {
-                Ok(e) => {
-                    self.buf = format!("data: {e}\n\n").into_bytes();
-                    self.pos = 0;
-                }
-                Err(_) => return Ok(0),
-            }
-        }
-        let n = out.len().min(self.buf.len() - self.pos);
-        out[..n].copy_from_slice(&self.buf[self.pos..self.pos + n]);
-        self.pos += n;
-        Ok(n)
-    }
-}
-
 fn body_json(req: &mut Request) -> Value {
     let mut s = String::new();
     req.as_reader().read_to_string(&mut s).ok();
@@ -213,7 +210,11 @@ fn body_json(req: &mut Request) -> Value {
 }
 
 fn serve_static(req: Request, dir: &str, path: &str) {
-    let name = if path == "/" { "index.html" } else { path.trim_start_matches('/') };
+    let name = if path == "/" {
+        "index.html"
+    } else {
+        path.trim_start_matches('/')
+    };
     let mime = match name.rsplit('.').next() {
         Some("html") => "text/html; charset=utf-8",
         Some("js") => "text/javascript",
@@ -221,8 +222,12 @@ fn serve_static(req: Request, dir: &str, path: &str) {
         _ => "application/octet-stream",
     };
     match (!name.contains("..")).then(|| std::fs::read(format!("{dir}/{name}"))) {
-        Some(Ok(bytes)) => req.respond(Response::from_data(bytes).with_header(header("Content-Type", mime))).ok(),
-        _ => req.respond(Response::from_string("not found").with_status_code(404)).ok(),
+        Some(Ok(bytes)) => req
+            .respond(Response::from_data(bytes).with_header(header("Content-Type", mime)))
+            .ok(),
+        _ => req
+            .respond(Response::from_string("not found").with_status_code(404))
+            .ok(),
     };
 }
 
@@ -237,16 +242,29 @@ fn handle(mut req: Request, shared: &Shared, dir: &str, config: &Value) {
             req.respond(json_response(&todos)).ok();
         }
         (Method::Post, ["api", "todos"]) => {
-            let text = body_json(&mut req)["text"].as_str().unwrap_or_default().trim().to_string();
+            let text = body_json(&mut req)["text"]
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
             if text.is_empty() {
-                req.respond(Response::from_string("text is required").with_status_code(400)).ok();
+                req.respond(Response::from_string("text is required").with_status_code(400))
+                    .ok();
             } else {
-                let t = shared.change("human", |t: &Value| format!("added \"{}\"", t["text"].as_str().unwrap_or("")), |s| s.add(&text));
+                let t = shared.change(
+                    "human",
+                    |t: &Value| format!("added \"{}\"", t["text"].as_str().unwrap_or("")),
+                    |s| s.add(&text),
+                );
                 req.respond(json_response(&t)).ok();
             }
         }
         (Method::Post, ["api", "todos", "clear-done"]) => {
-            shared.change("human", |n: &usize| format!("cleared {n} done"), |s| s.clear_done());
+            shared.change(
+                "human",
+                |n: &usize| format!("cleared {n} done"),
+                |s| s.clear_done(),
+            );
             req.respond(json_response(&ok)).ok();
         }
         (Method::Post, ["api", "todos", id, "toggle"]) => {
@@ -254,12 +272,25 @@ fn handle(mut req: Request, shared: &Shared, dir: &str, config: &Value) {
             let r = shared.change(
                 "human",
                 |t: &Option<Value>| match t {
-                    Some(t) => format!("marked \"{}\" {}", t["text"].as_str().unwrap_or(""), if t["done"] == true { "done" } else { "not done" }),
+                    Some(t) => format!(
+                        "marked \"{}\" {}",
+                        t["text"].as_str().unwrap_or(""),
+                        if t["done"] == true {
+                            "done"
+                        } else {
+                            "not done"
+                        }
+                    ),
                     None => format!("tried to toggle #{id}"),
                 },
                 |s| s.toggle(id),
             );
-            req.respond(if r.is_some() { json_response(&ok) } else { json_response(&ok).with_status_code(404) }).ok();
+            req.respond(if r.is_some() {
+                json_response(&ok)
+            } else {
+                json_response(&ok).with_status_code(404)
+            })
+            .ok();
         }
         (Method::Delete, ["api", "todos", id]) => {
             let id = id.parse().unwrap_or(0);
@@ -274,23 +305,34 @@ fn handle(mut req: Request, shared: &Shared, dir: &str, config: &Value) {
             req.respond(json_response(&ok)).ok();
         }
         (Method::Get, ["api", "events"]) => {
-            let (tx, rx) = channel();
+            // Written on the raw socket and flushed per event: a chunked
+            // tiny_http response would sit in its buffer.
+            let (tx, rx) = channel::<String>();
             shared.streams.lock().unwrap().push(tx);
-            let r = Response::new(
-                200.into(),
-                vec![header("Content-Type", "text/event-stream"), header("Cache-Control", "no-cache")],
-                Events { rx, buf: b": open\n\n".to_vec(), pos: 0 },
-                None,
-                None,
-            );
-            req.respond(r).ok();
+            let mut w = req.into_writer();
+            let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                        Cache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n: open\n\n";
+            if w.write_all(head.as_bytes()).and_then(|_| w.flush()).is_ok() {
+                thread::spawn(move || {
+                    for e in rx {
+                        let event = format!("data: {e}\n\n");
+                        if w.write_all(event.as_bytes())
+                            .and_then(|_| w.flush())
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                });
+            }
         }
         (Method::Get, ["config.json"]) => {
             req.respond(json_response(config)).ok();
         }
         (Method::Get, _) => serve_static(req, dir, &path),
         _ => {
-            req.respond(Response::from_string("not found").with_status_code(404)).ok();
+            req.respond(Response::from_string("not found").with_status_code(404))
+                .ok();
         }
     }
 }
@@ -307,12 +349,17 @@ fn main() {
     let config = json!({"wsUrl": ws_url, "token": env("AUTONOMOUS_FRONTEND_TOKEN", "")});
 
     let (journal_tx, journal_rx) = channel::<Value>();
-    let shared = Shared { store: Arc::default(), streams: Arc::default(), journal: journal_tx };
+    let shared = Shared {
+        store: Arc::default(),
+        streams: Arc::default(),
+        journal: journal_tx,
+    };
 
     let server = Arc::new(Server::http(&bind).expect("could not bind"));
     eprintln!("todo-backend: http://{bind}");
     for _ in 0..16 {
-        let (server, shared, dir, config) = (server.clone(), shared.clone(), dir.clone(), config.clone());
+        let (server, shared, dir, config) =
+            (server.clone(), shared.clone(), dir.clone(), config.clone());
         thread::spawn(move || {
             for req in server.incoming_requests() {
                 handle(req, &shared, &dir, &config);
@@ -330,7 +377,9 @@ fn main() {
             thread::park();
         }
     }
-    let dial = Dial::new(&ws_url, &backend_token).runtime_id("backend-1").label("todo backend (Rust)");
+    let dial = Dial::new(&ws_url, &backend_token)
+        .runtime_id("backend-1")
+        .label("todo backend (Rust)");
     rt.serve(&dial, |rt| {
         while let Ok(entry) = journal_rx.try_recv() {
             rt.journal(&entry);
