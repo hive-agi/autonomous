@@ -25,29 +25,29 @@
   [bundle-or-doc opts]
   (derive/derive-tools bundle-or-doc opts))
 
+(defn- empty-surface
+  "Pure: the initial Surface, with an explicit app or a name from the source prefix."
+  [{:keys [app prefix]}]
+  {:app (or app {:name (or (some-> prefix name) "openapi")}) :tools {} :resources {}})
+
+(defn- add-tool-spec
+  "Pure: compile one tool spec and add it unless the name is already taken."
+  [surface [id spec]]
+  (answer/bind (affordance/->tool id spec)
+               (fn [{:keys [name] :as tool}]
+                 (if (contains? (:tools surface) name)
+                   (answer/refusal :name-clash (str "tool name " name " is derived twice"))
+                   (answer/ok (assoc-in surface [:tools name] tool))))))
+
 (defn surface
-  "Ok Surface {:app :tools {mcp-name Tool} :resources {}} of the exposed
-   operations, each compiled as reg-tool compiles it, or a refusal. Pure."
+  "Pure: Ok Surface of the exposed operations, or the first refusal."
   [bundle-or-doc opts]
-  (let [specs (derive-tools bundle-or-doc opts)]
-    (if (answer/refused? specs)
-      specs
-      (reduce (fn [acc [id spec]]
-                (let [t (affordance/->tool id spec)]
-                  (cond
-                    (answer/refused? t) (reduced t)
-                    (contains? (get-in acc [:ok :tools]) (get-in t [:ok :name]))
-                    (reduced (answer/refusal :name-clash (str "tool name " (get-in t [:ok :name]) " is derived twice")))
-                    :else (assoc-in acc [:ok :tools (get-in t [:ok :name])] (:ok t)))))
-              (answer/ok {:app (or (:app opts) {:name (or (some-> (:prefix opts) name) "openapi")})
-                          :tools {} :resources {}})
-              (:ok specs)))))
+  (answer/bind (derive-tools bundle-or-doc opts)
+               #(answer/reduce-answer add-tool-spec (empty-surface opts) %)))
 
 (defn install!
-  "Register the exposed operations as tools of this runtime. Answers Ok
-   [mcp-name ...] or the refusal (and then registers nothing)."
+  "Effect: register the exposed operations in this runtime. Answers Ok of
+   the tool names, or the derivation refusal without registering anything."
   [bundle-or-doc opts]
-  (let [specs (derive-tools bundle-or-doc opts)]
-    (if (answer/refused? specs)
-      specs
-      (answer/ok (mapv (fn [[id spec]] (core/reg-tool id spec)) (:ok specs))))))
+  (answer/bind (derive-tools bundle-or-doc opts)
+               #(answer/ok (mapv (fn [[id spec]] (core/reg-tool id spec)) %))))

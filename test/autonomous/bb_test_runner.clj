@@ -21,6 +21,7 @@
     autonomous.re-frame.model-trifecta-test
     autonomous.openapi-test
     autonomous.openapi-derive-test
+    autonomous.openapi-surface-test
     autonomous.openapi-codec-test
     autonomous.openapi-codec-strata-test
     autonomous.openapi-invoke-test
