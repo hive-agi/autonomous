@@ -1,0 +1,14 @@
+;; The inventory service through the bridge, as an agent granted
+;; read,write,audit (see example/probe.clj and README.md).
+[{:tools true}
+ {:read "inventory://low-stock"}
+ {:call "inventory_items" :args {}}
+ {:call "inventory_reserve" :args {:sku "kbd-60" :units 3}}
+ {:call "inventory_reserve" :args {:sku "mouse-v" :units 50} :expect :error}
+ {:call "inventory_receive" :args {:sku "mouse-v" :units 30}}
+ {:read "inventory://low-stock"}
+ {:call "inventory_write_off" :args {:sku "cable-c" :units 4}}
+ {:call "inventory_add_item" :args {:sku "hub-4" :reorder-at 5}}
+ {:call "inventory_count" :args {}}
+ {:poll true}
+ {:call "autonomous_ledger" :args {:kind "autonomous/call" :limit 3}}]

@@ -1,0 +1,5 @@
+;; The same service as an agent granted only read,write: it moves stock,
+;; and a write-off is refused (it needs the audit scope).
+[{:call "autonomous_whoami"}
+ {:call "inventory_item" :args {:sku "cable-c"}}
+ {:call "inventory_write_off" :args {:sku "cable-c" :units 1} :expect :error}]

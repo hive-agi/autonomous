@@ -129,6 +129,12 @@ is the example's, shortened:
   `--port`, or list `:targets`; tools become `<app>__<tool>`, the session tools
   take a `target`, `autonomous_apps` shows each app's status, and an app that is
   down or slow drops out without affecting the others.
+- **Backend examples:** [example/orders](example/orders/README.md) is a JVM
+  service and [example/inventory](example/inventory/README.md) a babashka
+  microservice, each hosting its own tools, a resource, an app-defined scope
+  and an asynchronous tool over its own nREPL; each keeps its whole agent
+  surface in one namespace. `bb example/probe.clj` drives either (or both as
+  a fleet) through the bridge over stdio.
 - **Cheap hosts:** the same bridge runs on babashka (`bb serve`, stdio and
   HTTP, same security pipeline) and on ClojureWasm (stdio). `bb e2e` proves the
   swarm story live from a bb bridge.

@@ -1,0 +1,14 @@
+;; The inventory microservice on babashka. Its own sources plus the
+;; autonomous runtime from this checkout (an app outside this repository
+;; would take io.github.hive-agi/autonomous from Clojars instead).
+{:paths ["src" "../../src"]
+ :deps  {metosin/malli {:mvn/version "0.20.3"}}
+
+ :tasks
+ {nrepl {:doc  "Start the service and its nREPL on 127.0.0.1 (a free port, written to .nrepl-port)"
+         :task (shell "bb --init boot.clj nrepl-server 127.0.0.1:0")}
+
+  test  {:doc  "The inventory suites"
+         :extra-paths ["test"]
+         :extra-deps {io.github.hive-agi/hive-test {:mvn/version "0.5.2"}}
+         :task (exec 'inventory.test-runner/-main)}}}
