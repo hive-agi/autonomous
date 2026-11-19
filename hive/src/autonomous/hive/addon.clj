@@ -58,29 +58,47 @@
       (some :app/ledger app-cfgs)
       {:ledger/kind :memory}))
 
+(defn- app-id
+  "Promote: the fleet name of an app declaration."
+  [app]
+  (str (:app/id app)))
+
+(defn- checked-app-ids
+  "Promote: ordered app ids, or the public open-fleet configuration exception."
+  [app-cfgs]
+  (let [ids (mapv app-id app-cfgs)]
+    (if-let [problems (domain/check-targets ids)]
+      (throw (ex-info (str/join "; " problems) {:autonomous/error :fleet/invalid :problems problems}))
+      ids)))
+
+(defn- open-member
+  "Boundary: open one app's scoped channel and client context."
+  [l app]
+  (let [target (apps/->target app (apps/read-dir-facts app))]
+    [(:target/id target)
+     (client/context {:target target
+                      :channel (->ScopedChannel app (channel/make target))
+                      :ledger l
+                      :call-timeout-ms (:app/call-timeout-ms app)})]))
+
+(defn- fleet-state
+  "Boundary: assemble a fleet's server and empty session store."
+  [f ids app-cfgs]
+  {:configs  (into {} (map (juxt app-id identity)) app-cfgs)
+   :order    ids
+   :fleet    f
+   :srv      (server/fleet-server f)
+   :sessions (atom {})})
+
 (defn open-fleet
-  "Running state for addon config `cfg` with apps `app-cfgs`: one fleet, its
-   MCP server, and the agents' sessions. Throws ex-info when the app ids
-   cannot form a fleet."
+  "Boundary: start one fleet and its MCP server. Throws ex-info when the
+   app ids cannot form a fleet."
   [cfg app-cfgs]
-  (let [ids (mapv (comp str :app/id) app-cfgs)]
-    (when-let [problems (domain/check-targets ids)]
-      (throw (ex-info (str/join "; " problems) {:autonomous/error :fleet/invalid :problems problems})))
-    (let [l       (ledger/open (shared-ledger-config cfg app-cfgs))
-          member  (fn [app]
-                    (let [target (apps/->target app (apps/read-dir-facts app))]
-                      [(:target/id target)
-                       (client/context {:target          target
-                                        :channel         (->ScopedChannel app (channel/make target))
-                                        :ledger          l
-                                        :call-timeout-ms (:app/call-timeout-ms app)})]))
-          members (mapv member app-cfgs)
-          f       (fleet/make members {:mode :fleet :probe-ms (:autonomous/probe-ms cfg)})]
-      {:configs  (into {} (map (juxt (comp str :app/id) identity)) app-cfgs)
-       :order    ids
-       :fleet    f
-       :srv      (server/fleet-server f)
-       :sessions (atom {})})))
+  (let [ids (checked-app-ids app-cfgs)
+        l   (ledger/open (shared-ledger-config cfg app-cfgs))
+        f   (fleet/make (mapv #(open-member l %) app-cfgs)
+                        {:mode :fleet :probe-ms (:autonomous/probe-ms cfg)})]
+    (fleet-state f ids app-cfgs)))
 
 (defn close-fleet!
   "Close every member's channel."
@@ -170,54 +188,110 @@
   (answer/refusal :autonomous/unknown-app (str "no app " (pr-str app) "; command=apps lists them")
                   {:known (:order st)}))
 
-(defn- apps-answer [st actor]
-  (let [a (run-tool! st actor "autonomous_apps" {})]
-    (if (answer/ok? a)
-      (answer/ok (mapv (fn [row] (assoc row :target (get-in st [:fleet :members (:app row) :target])))
-                       (get-in a [:ok :apps])))
-      a)))
+(defn- with-app-targets
+  "Promote: enrich fleet status rows with each member's target."
+  [members rows]
+  (mapv #(assoc % :target (get-in members [(:app %) :target])) rows))
 
-(defn- tools-answer [st actor app]
+(defn- apps-answer
+  "Boundary: fetch fleet status with the targets it describes."
+  [st actor]
+  (answer/let-answer [{:keys [apps]} (run-tool! st actor "autonomous_apps" {})]
+    (answer/ok (with-app-targets (get-in st [:fleet :members]) apps))))
+
+(defn- listed-tools
+  "Promote: display fields of the tools, optionally filtered to one app."
+  [app tools]
   (let [pfx (when app (str (domain/prefix app) domain/separator))]
-    (answer/ok (into [] (comp (filter #(or (nil? pfx) (str/starts-with? (:name %) pfx)))
-                              (map #(select-keys % [:name :description :inputSchema])))
-                     (server/list-tools (:srv st) (session-of st actor))))))
+    (into [] (comp (filter #(or (nil? pfx) (str/starts-with? (:name %) pfx)))
+                   (map #(select-keys % [:name :description :inputSchema])))
+          tools)))
+
+(defn- tools-answer
+  "Boundary: list the tools this actor is offered."
+  [st actor app]
+  (answer/ok (listed-tools app (server/list-tools (:srv st) (session-of st actor)))))
+
+(defn- command-context
+  "Promote: normalize host arguments without losing the caller's identity."
+  [params]
+  (let [p (keywordized params)]
+    {:params p :app (some-> (:app p) str) :actor (actor-of params)}))
+
+(defn- checked-fleet
+  "Promote: an initialized fleet serving the requested app, or a refusal."
+  [st app]
+  (cond
+    (nil? st) (answer/refusal :autonomous/not-running "the autonomous addon is not initialized")
+    (and app (not (contains? (:configs st) app))) (unknown-app st app)
+    :else (answer/ok st)))
+
+(defn- run-with-args!
+  "Boundary: invoke a fleet tool with only the arguments supplied."
+  [st actor tool args]
+  (run-tool! st actor tool (into {} (remove (comp nil? val)) args)))
+
+(defmulti ^:private run-command
+  "Boundary: run a command against a validated fleet and normalized context."
+  (fn [command _st _ctx] command))
+
+(defmethod run-command "apps" [_ st {:keys [actor]}]
+  (apps-answer st actor))
+
+(defmethod run-command "tools" [_ st {:keys [actor app]}]
+  (tools-answer st actor app))
+
+(defmethod run-command "call" [_ st {:keys [actor app params]}]
+  (run-with-args! st actor (exposed-tool app (str (:tool params)))
+                (walk/keywordize-keys (or (:args params) {}))))
+
+(defmethod run-command "read" [_ st {:keys [actor app params]}]
+  (fleet/read-resource (:fleet st) (session-of st actor) (exposed-uri app (str (:uri params)))))
+
+(defmethod run-command "runtimes" [_ st {:keys [actor app]}]
+  (run-with-args! st actor "autonomous_runtimes" {:target app}))
+
+(defmethod run-command "attach" [_ st {:keys [actor app params]}]
+  (run-with-args! st actor "autonomous_attach" {:target app :runtime_id (:runtime_id params)}))
+
+(defmethod run-command "whoami" [_ st {:keys [actor]}]
+  (run-with-args! st actor "autonomous_whoami" {}))
+
+(defmethod run-command "journal" [_ st {:keys [actor app params]}]
+  (run-with-args! st actor "autonomous_journal" {:target app :since (:since params) :limit (:limit params)}))
+
+(defmethod run-command "ledger" [_ st {:keys [actor params]}]
+  (run-with-args! st actor "autonomous_ledger" (ledger-query params)))
+
+(defmethod run-command "poll" [_ st {:keys [actor app params]}]
+  (run-with-args! st actor "autonomous_poll" {:id (pending-id app (str (:id params)))}))
+
+(defmethod run-command "lease" [_ st {:keys [actor app params]}]
+  (run-with-args! st actor "autonomous_lease" {:target app :ttl_seconds (:ttl_seconds params)}))
+
+(defmethod run-command "release" [_ st {:keys [actor app]}]
+  (run-with-args! st actor "autonomous_release" {:target app}))
+
+(defmethod run-command :default [command _ _]
+  (answer/refusal :autonomous/unknown-command (str "unknown command " command)
+                  {:known (vec (keys command-help))}))
 
 (defn dispatch
-  "Answer of `command` with `params` against running fleet state `st`. Tool
-   arguments arrive with string keys from the host; they are keywordized as
-   the MCP transport does for JSON."
+  "Pipeline: normalize host arguments, validate the fleet, run the command.
+   Help needs no initialized fleet. Returns an Answer."
   [st command params]
-  (let [p     (keywordized params)
-        app   (some-> (:app p) str)
-        actor (actor-of params)
-        run   (fn [tool args] (run-tool! st actor tool (into {} (remove (comp nil? val)) args)))]
-    (cond
-      (= "help" command) (answer/ok {:commands command-help})
-      (nil? st)          (answer/refusal :autonomous/not-running "the autonomous addon is not initialized")
-      (and app (not (contains? (:configs st) app))) (unknown-app st app)
-      :else
-      (case command
-        "apps"     (apps-answer st actor)
-        "tools"    (tools-answer st actor app)
-        "call"     (run (exposed-tool app (str (:tool p))) (walk/keywordize-keys (or (:args p) {})))
-        "read"     (fleet/read-resource (:fleet st) (session-of st actor) (exposed-uri app (str (:uri p))))
-        "runtimes" (run "autonomous_runtimes" {:target app})
-        "attach"   (run "autonomous_attach" {:target app :runtime_id (:runtime_id p)})
-        "whoami"   (run "autonomous_whoami" {})
-        "journal"  (run "autonomous_journal" {:target app :since (:since p) :limit (:limit p)})
-        "ledger"   (run "autonomous_ledger" (ledger-query p))
-        "poll"     (run "autonomous_poll" {:id (pending-id app (str (:id p)))})
-        "lease"    (run "autonomous_lease" {:target app :ttl_seconds (:ttl_seconds p)})
-        "release"  (run "autonomous_release" {:target app})
-        (answer/refusal :autonomous/unknown-command (str "unknown command " command)
-                        {:known (vec (keys command-help))})))))
+  (let [{:keys [app] :as ctx} (command-context params)]
+    (if (= "help" command)
+      (answer/ok {:commands command-help})
+      (answer/let-answer [st (checked-fleet st app)]
+        (run-command command st ctx)))))
 
 (defn- content [a]
   (cond-> {:content [{:type "text" :text (json/write a)}]}
     (answer/refused? a) (assoc :isError true)))
 
-(defn tool [state]
+(def ^:private tool-template
+  "The public tool description and argument schema, apart from command enum."
   {:name "autonomous"
    :description (str "Operate running apps built with the autonomous library (re-frame UIs, Clojure "
                      "services), all behind one fleet: list the apps and their status, list their tools, "
@@ -226,7 +300,7 @@
                      "to change it alone. Pass agent_id so journals and the ledger attribute your actions; "
                      "ledger by_actor reads what another agent did. command=help lists commands.")
    :inputSchema {:type "object"
-                 :properties {"command"     {:type "string" :enum (vec (keys command-help))}
+                 :properties {"command"     {:type "string"}
                               "app"         {:type "string" :description "app id (command=apps lists them)"}
                               "tool"        {:type "string" :description "[call] the tool as the app names it (with app), or <app>__<tool>"}
                               "args"        {:type "object" :description "[call] the tool's arguments"}
@@ -240,9 +314,15 @@
                               "id"          {:type "string" :description "[poll] pending result id"}
                               "ttl_seconds" {:type "integer" :description "[lease] lease length"}
                               "agent_id"    {:type "string" :description "you: your agent id (session and attribution)"}}
-                 :required ["command"]}
-   :handler (fn [params]
-              (content (dispatch (:fleet-state @state) (str (param params "command")) params)))})
+                 :required ["command"]}})
+
+(defn tool
+  "Boundary: attach the fleet's command handler to its advertised schema."
+  [state]
+  (-> tool-template
+      (assoc-in [:inputSchema :properties "command" :enum] (vec (keys command-help)))
+      (assoc :handler (fn [params]
+                        (content (dispatch (:fleet-state @state) (str (param params "command")) params))))))
 
 ;; =============================================================================
 ;; Lifecycle
@@ -250,6 +330,23 @@
 
 (defn- configured-apps [cfg]
   (or (:autonomous/apps cfg) (get-in cfg [:addon/config :autonomous/apps]) []))
+
+(defn- effective-config
+  "Promote: runtime config overlays the seed; nested addon config wins within each."
+  [seed runtime-config]
+  (merge seed (:addon/config seed) runtime-config (:addon/config runtime-config)))
+
+(defn- activate!
+  "Boundary: open the configured fleet and publish its lifecycle state."
+  [state seed runtime-config]
+  (try
+    (let [cfg (effective-config seed runtime-config)
+          st  (open-fleet cfg (configured-apps cfg))]
+      (swap! state assoc :lifecycle :active :fleet-state st)
+      {:success? true :errors [] :metadata {:apps (:order st)}})
+    (catch Exception e
+      (swap! state assoc :lifecycle :error :error (ex-message e))
+      {:success? false :errors [(str "autonomous addon: " (ex-message e))]})))
 
 (defrecord AutonomousAddon [state seed]
   addon/IAddon
@@ -260,14 +357,7 @@
     (locking state
       (if (= :active (:lifecycle @state))
         {:success? true :already-initialized? true}
-        (try
-          (let [cfg (merge seed (:addon/config seed) runtime-config (:addon/config runtime-config))
-                st  (open-fleet cfg (configured-apps cfg))]
-            (swap! state assoc :lifecycle :active :fleet-state st)
-            {:success? true :errors [] :metadata {:apps (:order st)}})
-          (catch Exception e
-            (swap! state assoc :lifecycle :error :error (ex-message e))
-            {:success? false :errors [(str "autonomous addon: " (ex-message e))]})))))
+        (activate! state seed runtime-config))))
   (shutdown! [_]
     (locking state
       (some-> (:fleet-state @state) close-fleet!)
