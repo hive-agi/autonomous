@@ -6,7 +6,8 @@
 (def suites
   "Every unit suite. The datahike ledger contract is gated to the JVM
    inside bridge-trifecta-test; the live e2e runs as `bb e2e`."
-  '[autonomous.domain.decision-trifecta-test
+  '[autonomous.domain.answer-railway-test
+    autonomous.domain.decision-trifecta-test
     autonomous.domain.primitives-trifecta-test
     autonomous.domain.fleet-trifecta-test
     autonomous.bridge.bridge-trifecta-test
