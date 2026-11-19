@@ -12,6 +12,7 @@
     autonomous.bridge.bridge-trifecta-test
     autonomous.bridge.fleet-test
     autonomous.mcp.transport-test
+    autonomous.ring-test
     autonomous.e2e.check-trifecta-test
     autonomous.runtime.rpc-test
     autonomous.re-frame.model-trifecta-test])
