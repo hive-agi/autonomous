@@ -1,0 +1,59 @@
+{:all-down
+ {:tools [],
+  :resources [],
+  :routes {},
+  :apps
+  [{:app "api",
+    :prefix "api",
+    :status :down,
+    :error {:type :channel/connect-failed}}]},
+ :one-down
+ {:tools ["todo__todo_add" "todo__todo_list"],
+  :resources ["autonomous://todo/app://db"],
+  :routes
+  {"todo__todo_add" {:target "todo", :tool "todo_add"},
+   "todo__todo_list" {:target "todo", :tool "todo_list"}},
+  :apps
+  [{:app "todo", :prefix "todo", :status :up, :tools 2, :version 3}
+   {:app "api",
+    :prefix "api",
+    :status :down,
+    :error {:type :channel/connect-failed}}]},
+ :one-slow
+ {:tools ["todo__todo_add" "todo__todo_list"],
+  :resources ["autonomous://todo/app://db"],
+  :routes
+  {"todo__todo_add" {:target "todo", :tool "todo_add"},
+   "todo__todo_list" {:target "todo", :tool "todo_list"}},
+  :apps
+  [{:app "api",
+    :prefix "api",
+    :status :slow,
+    :error {:type :target/slow}}
+   {:app "todo", :prefix "todo", :status :up, :tools 2, :version 3}]},
+ :shadowed
+ {:tools ["todo__todo_add" "todo__todo_list"],
+  :resources
+  ["autonomous://todo/app://db" "autonomous://todo/app://db"],
+  :routes
+  {"todo__todo_add" {:target "todo", :tool "todo_add"},
+   "todo__todo_list" {:target "todo", :tool "todo_list"}},
+  :apps
+  [{:app "todo", :prefix "todo", :status :up, :tools 2, :version 3}
+   {:app "todo",
+    :prefix "todo",
+    :status :up,
+    :tools 0,
+    :version 9,
+    :dropped ["todo_add"]}]},
+ :two-up
+ {:tools ["todo__todo_add" "todo__todo_list" "api__refund"],
+  :resources
+  ["autonomous://todo/app://db" "autonomous://api/app://db"],
+  :routes
+  {"todo__todo_add" {:target "todo", :tool "todo_add"},
+   "todo__todo_list" {:target "todo", :tool "todo_list"},
+   "api__refund" {:target "api", :tool "refund"}},
+  :apps
+  [{:app "todo", :prefix "todo", :status :up, :tools 2, :version 3}
+   {:app "api", :prefix "api", :status :up, :tools 1, :version 1}]}}

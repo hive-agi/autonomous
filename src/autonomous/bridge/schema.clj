@@ -12,7 +12,8 @@
    LedgerEntry  a journal entry promoted for durable storage, keyed so that
                 re-draining a journal never stores it twice.
    Config       everything `autonomous.cli serve` runs on."
-  (:require [autonomous.domain.schema :as ds]))
+  (:require [autonomous.domain.schema :as ds]
+            [autonomous.domain.naming :as naming]))
 
 (def Mode [:enum :shadow :clj])
 
@@ -37,6 +38,35 @@
    [:nrepl NreplTarget]
    [:local LocalTarget]])
 
+(def TargetId
+  [:and :string [:fn {:error/message "a target id is 1..48 of [A-Za-z0-9._-]"}
+                 naming/valid-target-id?]])
+
+(def ProbeStatus [:enum :up :down :slow])
+
+(def Probe
+  "What one look at a target found: its manifest when :up, why not otherwise."
+  [:map
+   [:target TargetId]
+   [:status ProbeStatus]
+   [:at :int]
+   [:manifest {:optional true} [:maybe :map]]
+   [:error {:optional true} [:maybe :map]]])
+
+(def FleetMode [:enum :single :fleet])
+
+(def AppRow
+  "One line of autonomous_apps."
+  [:map
+   [:app TargetId]
+   [:prefix :string]
+   [:status ProbeStatus]
+   [:tools {:optional true} :int]
+   [:version {:optional true} [:maybe :int]]
+   [:description {:optional true} :string]
+   [:dropped {:optional true} [:vector :string]]
+   [:error {:optional true} :map]])
+
 (def ^:private hex-chars (set "0123456789abcdef"))
 
 (defn sha256-hex?
@@ -57,7 +87,8 @@
    [:session/id :string]
    [:session/actor ds/Actor]
    [:session/scopes ds/Scopes]
-   [:session/runtime {:optional true} [:maybe :any]]])
+   [:session/runtime {:optional true} [:maybe :any]]
+   [:session/runtimes {:optional true} [:map-of :string :any]]])
 
 (def LedgerEntry
   [:map
@@ -95,12 +126,20 @@
    [:datahike/path {:optional true} :string]])
 
 (def Config
-  [:map
-   [:target Target]
-   [:transport [:enum :stdio :http]]
-   [:http {:optional true} HttpConfig]
-   [:tokens {:optional true} [:vector TokenEntry]]
-   [:stdio/actor {:optional true} ds/Actor]
-   [:stdio/scopes {:optional true} [:set :keyword]]
-   [:ledger {:optional true} LedgerConfig]
-   [:call-timeout-ms {:optional true} [:int {:min 100}]]])
+  "One :target serves single mode (names as the app gives them); :targets
+   (two or more, or :fleet? true) serves a fleet (names prefixed by app)."
+  [:and
+   [:map
+    [:target {:optional true} Target]
+    [:targets {:optional true} [:vector {:min 1} Target]]
+    [:fleet? {:optional true} :boolean]
+    [:probe-ms {:optional true} [:int {:min 50}]]
+    [:transport [:enum :stdio :http]]
+    [:http {:optional true} HttpConfig]
+    [:tokens {:optional true} [:vector TokenEntry]]
+    [:stdio/actor {:optional true} ds/Actor]
+    [:stdio/scopes {:optional true} [:set :keyword]]
+    [:ledger {:optional true} LedgerConfig]
+    [:call-timeout-ms {:optional true} [:int {:min 100}]]]
+   [:fn {:error/message "configure :target or :targets"}
+    (fn [c] (or (:target c) (seq (:targets c))))]])

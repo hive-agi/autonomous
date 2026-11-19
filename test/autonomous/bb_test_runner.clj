@@ -8,7 +8,9 @@
    inside bridge-trifecta-test; the live e2e runs as `bb e2e`."
   '[autonomous.domain.decision-trifecta-test
     autonomous.domain.primitives-trifecta-test
+    autonomous.domain.fleet-trifecta-test
     autonomous.bridge.bridge-trifecta-test
+    autonomous.bridge.fleet-test
     autonomous.mcp.transport-test
     autonomous.e2e.check-trifecta-test
     autonomous.runtime.rpc-test

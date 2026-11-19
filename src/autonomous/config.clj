@@ -18,7 +18,8 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [malli.core :as m]
-            [malli.error :as me]))
+            [malli.error :as me]
+            [autonomous.domain.fleet :as fleet]))
 
 ;; =============================================================================
 ;; Collect
@@ -44,6 +45,14 @@
      :shadow? (.exists shadow)
      :builds  (when (.exists shadow) (vec (keys (:builds (read-tagged (slurp shadow))))))}))
 
+(defn read-fleet-dirs
+  "{dir facts} of every app directory a fleet names: the :dir of each
+   command-line target group in `opts` and of each option map in the
+   file's :targets."
+  [file opts]
+  (into {} (comp (keep :dir) (distinct) (map (juxt identity read-app-dir)))
+        (concat (:targets opts) (remove :target/kind (:targets file)))))
+
 (defn read-env
   "Configuration carried by the environment: AUTONOMOUS_TOKENS (an EDN
    vector of token entries, e.g. from a secret store) and AUTONOMOUS_ACTOR."
@@ -55,21 +64,44 @@
 (def ^:private flags
   {"--config" :config "--dir" :dir "--build" :build "--port" :port "--host" :host
    "--port-file" :port-file "--http" :http "--ledger" :ledger "--datahike-path" :datahike-path
-   "--actor" :actor "--scopes" :scopes "--target-id" :target-id "--timeout-ms" :timeout-ms})
+   "--actor" :actor "--scopes" :scopes "--target-id" :target-id "--timeout-ms" :timeout-ms "--probe-ms" :probe-ms})
 
-(def ^:private switches {"--clj" :clj?})
+(def ^:private switches {"--clj" :clj? "--fleet" :fleet?})
+
+(def target-keys
+  "Options that describe one target. Repeating an anchor (--dir, --port,
+   --port-file) starts the next target: `--dir a --dir b --clj` is two."
+  #{:dir :build :port :host :port-file :clj? :target-id})
+
+(def ^:private anchor-keys #{:dir :port :port-file})
+
+(defn- add-target-opt
+  "`groups` (a vector of target option maps) with option `k` = `v`; an
+   anchor the last group already holds opens a new group."
+  [groups k v]
+  (let [last-g (peek groups)]
+    (if (or (nil? last-g) (and (anchor-keys k) (some anchor-keys (keys last-g))))
+      (conj groups {k v})
+      (conj (pop groups) (assoc last-g k v)))))
 
 (defn parse-args
-  "{:opts {..} :errors [..]} from command-line `args` (after the command)."
+  "{:opts {..} :errors [..]} from command-line `args` (after the command).
+   :opts holds the last value of every flag (one target, as always) and,
+   when several targets are named, :targets [target-opts ..] in order."
   [args]
-  (loop [[a & more] args acc {:opts {} :errors []}]
-    (cond
-      (nil? a) acc
-      (switches a) (recur more (assoc-in acc [:opts (switches a)] true))
-      (flags a) (if (seq more)
-                  (recur (rest more) (assoc-in acc [:opts (flags a)] (first more)))
-                  (recur more (update acc :errors conj (str a " needs a value"))))
-      :else (recur more (update acc :errors conj (str "unknown argument " a))))))
+  (loop [[a & more] args acc {:opts {} :errors [] :groups []}]
+    (let [put (fn [acc k v]
+                (cond-> (assoc-in acc [:opts k] v)
+                  (target-keys k) (update :groups add-target-opt k v)))]
+      (cond
+        (nil? a) (let [gs (:groups acc)]
+                   (cond-> (dissoc acc :groups)
+                     (< 1 (count gs)) (assoc-in [:opts :targets] gs)))
+        (switches a) (recur more (put acc (switches a) true))
+        (flags a) (if (seq more)
+                    (recur (rest more) (put acc (flags a) (first more)))
+                    (recur more (update acc :errors conj (str a " needs a value"))))
+        :else (recur more (update acc :errors conj (str "unknown argument " a)))))))
 
 ;; =============================================================================
 ;; Promote
@@ -120,26 +152,56 @@
                  (:datahike-path opts) (assoc :datahike/path (:datahike-path opts)))
     {:ledger/kind (keyword (:ledger opts))}))
 
+(defn- clean-target [t] (into {} (remove (comp nil? val)) t))
+
+(defn- fleet-targets
+  "The Targets of a fleet, or nil for single mode: the command line's
+   target groups when it names several, else the file's :targets (each a
+   Target, or target options such as {:dir \"../api\" :clj? true})."
+  [file opts dir-facts]
+  (let [named  (fn [o] (if (or (:target-id o) (:dir o) (nil? (:port o)))
+                         o
+                         (assoc o :target-id (str "app-" (:port o)))))
+        derive (fn [o] (clean-target (derive-target (named o) (get dir-facts (:dir o)))))]
+    (cond
+      (seq (:targets opts)) (mapv derive (:targets opts))
+      (seq (:targets file)) (mapv #(if (:target/kind %) % (derive %)) (:targets file)))))
+
 (defn promote
   "Config (validated) from the collected `file`, `env` and `opts` maps and
-   the app dir facts. Answers {:ok config} or {:error {:message :problems}}."
-  [file env opts app-dir]
-  (let [http   (parse-http (:http opts))
-        ledger (ledger-config opts)
-        cfg    (cond-> (merge {:transport :stdio
-                               :ledger {:ledger/kind :memory}
-                               :stdio/actor "local"
-                               :stdio/scopes #{:read :write}}
-                              file
-                              env)
-                 (or (:dir opts) (:port opts) (:port-file opts) (not (:target file)))
-                 (assoc :target (derive-target opts app-dir))
-                 http               (assoc :transport :http :http (merge (:http file) http))
-                 ledger             (assoc :ledger ledger)
-                 (:actor opts)      (assoc :stdio/actor (:actor opts))
-                 (:scopes opts)     (assoc :stdio/scopes (split-scopes (:scopes opts)))
-                 (:timeout-ms opts) (assoc :call-timeout-ms (parse-long* (:timeout-ms opts))))
-        cfg    (update cfg :target #(into {} (remove (comp nil? val)) %))]
-    (if-let [e (m/explain bs/Config cfg)]
-      {:error {:message "invalid configuration" :problems (me/humanize e)}}
-      {:ok cfg})))
+   the facts of the app dir `app-dir`; `dir-facts` ({dir facts}) carries the
+   facts of every fleet target's dir. Answers {:ok config} or {:error
+   {:message :problems}}. Several targets (or --fleet) make a fleet: :targets
+   replaces :target."
+  ([file env opts app-dir] (promote file env opts app-dir {}))
+  ([file env opts app-dir dir-facts]
+   (let [http    (parse-http (:http opts))
+         ledger  (ledger-config opts)
+         targets (fleet-targets file opts dir-facts)
+         single? (and (nil? targets)
+                      (or (:dir opts) (:port opts) (:port-file opts) (not (:target file))))
+         cfg     (cond-> (merge {:transport :stdio
+                                 :ledger {:ledger/kind :memory}
+                                 :stdio/actor "local"
+                                 :stdio/scopes #{:read :write}}
+                                (dissoc file :targets)
+                                env)
+                   single?            (assoc :target (clean-target (derive-target opts app-dir)))
+                   targets            (-> (dissoc :target) (assoc :targets targets))
+                   (:fleet? opts)     (assoc :fleet? true)
+                   http               (assoc :transport :http :http (merge (:http file) http))
+                   ledger             (assoc :ledger ledger)
+                   (:actor opts)      (assoc :stdio/actor (:actor opts))
+                   (:scopes opts)     (assoc :stdio/scopes (split-scopes (:scopes opts)))
+                   (:timeout-ms opts) (assoc :call-timeout-ms (parse-long* (:timeout-ms opts)))
+                   (:probe-ms opts)   (assoc :probe-ms (parse-long* (:probe-ms opts))))
+         cfg     (cond-> cfg
+                   (:target cfg) (update :target clean-target)
+                   (and (:fleet? cfg) (:target cfg)) (-> (assoc :targets [(:target cfg)]) (dissoc :target)))
+         targets (or targets (when (:fleet? cfg) (:targets cfg)))
+         ids     (map :target/id (:targets cfg))]
+     (if-let [e (m/explain bs/Config cfg)]
+       {:error {:message "invalid configuration" :problems (me/humanize e)}}
+       (if-let [problems (and targets (fleet/check-targets ids))]
+         {:error {:message "invalid fleet" :problems problems}}
+         {:ok cfg})))))
