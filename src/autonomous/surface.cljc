@@ -75,7 +75,7 @@
          (nil? other)                  (answer/ok (assoc acc k v))
          (= (ident other) (ident v))   (answer/ok acc)
          :else (clash what k (label other) (label v)))))
-   (answer/ok a)
+   a
    b))
 
 (defmulti merge-part
@@ -110,7 +110,7 @@
   [a b]
   (answer/reduce-answer
    (fn [acc k] (answer/bind (merge-part k acc b) #(answer/ok (assoc acc k %))))
-   (answer/ok a)
+   a
    (keys a)))
 
 (defn- merge-two
@@ -125,4 +125,4 @@
    composition, or the first refusal (:invalid-surface, :name-clash,
    :app-clash). Identity: `empty-surface`. Associative on disjoint names."
   [& surfaces]
-  (answer/reduce-answer merge-two (answer/ok empty-surface) surfaces))
+  (answer/reduce-answer merge-two empty-surface surfaces))

@@ -23,7 +23,9 @@
 (deftest empty-surface-is-valid-and-exposes-nothing
   (is (surface/surface? surface/empty-surface))
   (is (= {} (:tools surface/empty-surface)))
-  (is (= {:ok surface/empty-surface} (surface/->surface {}))))
+  (is (= {:ok surface/empty-surface} (surface/->surface {})))
+  (is (= {:ok surface/empty-surface} (surface/merge-surfaces))
+      "the fold of nothing is Ok of the identity, never doubly wrapped"))
 
 (deftest surface-schema-rejects-bad-shapes
   (is (not (surface/surface? {})))
@@ -154,8 +156,8 @@
                              b (answer/refusal :no "stop")
                              c (answer/ok (throw (ex-info "never evaluated" {})))]
            (answer/ok c))))
-  (is (= {:ok [1 2]} (answer/reduce-answer (fn [acc x] (answer/ok (conj acc x))) (answer/ok []) [1 2])))
+  (is (= {:ok [1 2]} (answer/reduce-answer (fn [acc x] (answer/ok (conj acc x))) [] [1 2])))
   (is (= :stop (get-in (answer/reduce-answer
                         (fn [acc x] (if (= x 2) (answer/refusal :stop "at 2") (answer/ok (conj acc x))))
-                        (answer/ok []) [1 2 3])
+                        [] [1 2 3])
                        [:error :type]))))
