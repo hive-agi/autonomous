@@ -42,20 +42,36 @@
 
 (defn call-entry
   "The CallEntry of a call of `tool-name` with `args` by `grant` that ended in
-   Answer `ans` after `ms`. `detail` is the app's CallDetail (nil: none):
-   with it the entry carries the grant's session; with :args? the args as
-   sent, :redact paths replaced; with :errors? a refusal's :error."
+   Answer `ans` after `ms`. A Pending answer's id is always kept as :pending,
+   so the call joins the :autonomous/settled entry that says how it ended.
+   `detail` is the app's CallDetail (nil: none): with it the entry carries the
+   grant's session; with :args? the args as sent, :redact paths replaced; with
+   :errors? a refusal's :error."
   [tool-name args grant ans ms detail]
   (cond-> {:kind    :autonomous/call
            :actor   (:actor grant)
            :tool    tool-name
            :outcome (answer/outcome ans)
            :ms      ms}
+    (answer/pending? ans)
+    (assoc :pending (:pending ans))
+
     (and detail (:session grant))
     (assoc :session (:session grant))
 
     (:args? detail)
     (assoc :args (redact-paths (wire/->wire (or args {})) (:redact detail)))
 
+    (and (:errors? detail) (answer/refused? ans))
+    (assoc :error (:error ans))))
+
+(defn settled-entry
+  "The entry saying how the async call parked as `id` ended: Answer `ans`.
+   With the app's CallDetail :errors? on, a refusal's :error is kept, as
+   call-entry keeps it for a call refused at once."
+  [id ans detail]
+  (cond-> {:kind    :autonomous/settled
+           :pending id
+           :outcome (answer/outcome ans)}
     (and (:errors? detail) (answer/refused? ans))
     (assoc :error (:error ans))))

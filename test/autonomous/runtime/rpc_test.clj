@@ -91,6 +91,33 @@
     (is (string? pending))
     (is (= "late" (get-in (poll-until-settled pending) [:error :message])))))
 
+(defn- settled-entry
+  "The :autonomous/settled journal entry of parked `id`, waiting for it: the
+   runtime journals it just after the answer is settled."
+  [id]
+  (loop [i 0]
+    (let [es (:entries (:ok (a/rpc {:op :journal})))
+          e  (first (filter #(and (= :autonomous/settled (:kind %)) (= id (:pending %))) es))]
+      (if (or e (>= i 200)) e (do (Thread/sleep 5) (recur (inc i)))))))
+
+(deftest an-async-call-joins-its-settled-entry-by-pending-id
+  (a/reg-tool :slow-boom {:description "x" :handler (fn [_ _] (future (throw (ex-info "late" {:why 1}))))})
+  (let [call-of (fn [id] (first (filter #(and (= :autonomous/call (:kind %)) (= id (:pending %)))
+                                        (:entries (:ok (a/rpc {:op :journal}))))))]
+    (testing "without call detail: the id joins them, the outcome says how it ended"
+      (let [{:keys [pending]} (call rw "slow-boom" {})]
+        (poll-until-settled pending)
+        (is (= :pending (:outcome (call-of pending))))
+        (is (= {:kind :autonomous/settled :pending pending :outcome :tool-threw}
+               (dissoc (settled-entry pending) :seq :at)))))
+    (testing "with :errors? the settled entry keeps the refusal"
+      (a/journal-calls! {:errors? true})
+      (let [{:keys [pending]} (call rw "slow-boom" {})]
+        (poll-until-settled pending)
+        (is (= pending (:pending (call-of pending))))
+        (is (= {:type :tool-threw :message "late" :data {:why 1}}
+               (:error (settled-entry pending))))))))
+
 (deftest leases-serialize-writers-and-leave-reads-open
   (let [b {:actor "agent-2" :scopes [:read :write]}]
     (is (:ok (a/rpc (merge rw {:op :lease :ttl-ms 10000}))))

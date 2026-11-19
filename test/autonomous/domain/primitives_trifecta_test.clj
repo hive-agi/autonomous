@@ -155,20 +155,44 @@
            :no-args        ["ping" nil {:actor "a"} {:ok nil} 0 {:args? true}]
            :refusal-kept   ["todo_add" {} {:actor "a"} refused 1 {:errors? true}]
            :refusal-quiet  ["todo_add" {} {:actor "a"} refused 1 {:args? true}]
-           :ok-no-error    ["todo_add" {:text "x"} {:actor "a"} {:ok 1} 1 {:errors? true}]}
+           :ok-no-error    ["todo_add" {:text "x"} {:actor "a"} {:ok 1} 1 {:errors? true}]
+           :pending-id     ["todo_slow" {} {:actor "a"} {:pending "p7"} 2 nil]}
    :gen (gen/tuple (gen/elements ["t" "u"])
                    (gen/one-of [(gen/return nil) (gen/map gen/keyword gen/small-integer {:max-elements 3})])
                    (gen/hash-map :actor (gen/elements ["a" "b"]) :session (gen/elements [nil "s"]))
                    (gen/one-of [(gen/fmap answer/ok gen/small-integer)
+                                (gen/fmap answer/pending gen/string-alphanumeric)
                                 (gen/fmap #(answer/refusal % "m") gen/keyword)])
                    gen/nat
                    (gen/one-of [(gen/return nil) (gen/hash-map :args? gen/boolean :errors? gen/boolean)]))
    :pred (fn [e] (and (= :autonomous/call (:kind e)) (keyword? (:outcome e))
-                      (or (nil? (:args e)) (map? (:args e)))))
+                      (or (nil? (:args e)) (map? (:args e)))
+                      (= (= :pending (:outcome e)) (contains? e :pending))))
    :mutations [["ignores detail" (fn [t a g ans ms _] (call-entry* t a g ans ms nil))]
                ["session without detail" (fn [t a g ans ms d] (call-entry* t a g ans ms (or d {})))]
                ["no redaction" (fn [t a g ans ms d] (call-entry* t a g ans ms (some-> d (dissoc :redact))))]
-               ["errors always" (fn [t a g ans ms d] (call-entry* t a g ans ms (some-> d (assoc :errors? true))))]]})
+               ["errors always" (fn [t a g ans ms d] (call-entry* t a g ans ms (some-> d (assoc :errors? true))))]
+               ["pending id dropped" (fn [t a g ans ms d] (dissoc (call-entry* t a g ans ms d) :pending))]]})
+
+(def ^:private settled-entry* journal/settled-entry)
+
+(deftrifecta settled-entry-trifecta
+  autonomous.domain.journal/settled-entry
+  {:golden-path "test/golden/domain/settled-entry.edn"
+   :apply? true
+   :cases {:ok-no-detail     ["p1" {:ok 1} nil]
+           :threw-no-detail  ["p2" {:error {:type :tool-threw :message "boom"}} nil]
+           :threw-kept       ["p3" {:error {:type :tool-threw :message "boom" :data {:at "db"}}} {:errors? true}]
+           :threw-args-only  ["p4" {:error {:type :tool-threw :message "boom"}} {:args? true}]
+           :ok-errors-on     ["p5" {:ok 1} {:errors? true}]}
+   :gen (gen/tuple gen/string-alphanumeric
+                   (gen/one-of [(gen/fmap answer/ok gen/small-integer)
+                                (gen/fmap #(answer/refusal % "m") gen/keyword)])
+                   (gen/one-of [(gen/return nil) (gen/hash-map :args? gen/boolean :errors? gen/boolean)]))
+   :pred (fn [e] (and (= :autonomous/settled (:kind e)) (keyword? (:outcome e)) (contains? e :pending)))
+   :mutations [["ignores detail" (fn [id a _] (settled-entry* id a nil))]
+               ["errors always" (fn [id a d] (settled-entry* id a (assoc d :errors? true)))]
+               ["id dropped" (fn [id a d] (dissoc (settled-entry* id a d) :pending))]]})
 
 ;; -----------------------------------------------------------------------------
 ;; wire values

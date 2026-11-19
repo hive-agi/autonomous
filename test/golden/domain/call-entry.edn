@@ -31,6 +31,13 @@
   :tool "todo_add",
   :outcome :ok,
   :ms 1},
+ :pending-id
+ {:kind :autonomous/call,
+  :actor "a",
+  :tool "todo_slow",
+  :outcome :pending,
+  :ms 2,
+  :pending "p7"},
  :refusal-kept
  {:kind :autonomous/call,
   :actor "a",

@@ -54,12 +54,13 @@
 
 (defn- settle-later!
   "Park thenable `x`; its outcome becomes the parked answer and a journal
-   entry (:autonomous/settled), so the ledger knows how an async call ended."
+   entry (:autonomous/settled), so the ledger knows how an async call ended.
+   The entry follows the app's CallDetail as it is when the call settles."
   [x]
   (let [id      (registry/park!)
         settle! (fn [a]
                   (registry/settle! id a)
-                  (registry/record! {:kind :autonomous/settled :pending id :outcome (answer/outcome a)}))]
+                  (registry/record! (journal/settled-entry id a (:call-detail (registry/snapshot)))))]
     #?(:cljs    (-> x
                     (.then (fn [v] (settle! (answer/ok (wire/->wire v)))))
                     (.catch (fn [e] (settle! (answer/from-exception e)))))

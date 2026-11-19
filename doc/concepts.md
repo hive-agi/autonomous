@@ -165,8 +165,8 @@ It records:
 
 | kind | when | fields |
 |---|---|---|
-| `:autonomous/call` | every tool call | `:actor :tool :outcome :ms` |
-| `:autonomous/settled` | a pending result settles | `:pending :outcome` |
+| `:autonomous/call` | every tool call | `:actor :tool :outcome :ms`, `:pending` (the id) when the answer is pending, `:session :args :error` as `journal-calls!` asks |
+| `:autonomous/settled` | a pending result settles | `:pending :outcome`, `:error` when `journal-calls!` asks for errors |
 | `:autonomous/lease`, `:autonomous/release` | lease changes | `:actor` |
 | `:re-frame/event` | `observe-events!` is on | `:event-id :origin :actor`, `:payload` if asked |
 | anything | the app calls `autonomous.core/journal!` | the app's own |
