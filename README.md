@@ -115,15 +115,30 @@ is the example's, shortened:
 | [concepts](doc/concepts.md) | tools, resources, scopes, grants, sessions, leases, journal, ledger, actors |
 | [security](doc/security.md) | remote exposure, tokens, Origin checks, tunnels, secrets via hive-compose |
 | [swarms](doc/swarms.md) | many agents on one app: spread over instances or share one under leases |
+| [fleet](doc/fleet.md) | one bridge over many apps: UI builds and microservices, each with its own tools and nREPL |
+| [babashka](doc/babashka.md) | the bridge on babashka (stdio and HTTP) and ClojureWasm (stdio), `bb` tasks, `bb e2e` |
 | [architecture](doc/architecture.md) | strata, ports and adapters, how a call travels |
 | [hive](doc/hive.md) | the `autonomous` IAddon for hive-mcp, and hive-compose programs |
 | [releasing](doc/releasing.md) | staging gate, a patch release per push to main, Clojars |
+| [logo](doc/logo-construction.md) | the golden-ratio construction and palette of the mark |
+
+### Fleet and cheap hosts
+
+- **Fleet:** one bridge serves many apps at once (UI builds and microservices,
+  each hosting its own autonomous tools over its own nREPL). Repeat `--dir` or
+  `--port`, or list `:targets`; tools become `<app>__<tool>`, the session tools
+  take a `target`, `autonomous_apps` shows each app's status, and an app that is
+  down or slow drops out without affecting the others.
+- **Cheap hosts:** the same bridge runs on babashka (`bb serve`, stdio and
+  HTTP, same security pipeline) and on ClojureWasm (stdio). `bb e2e` proves the
+  swarm story live from a bb bridge.
 
 ## Develop and test
 
 ```sh
 clojure -M:test unit                                     # JVM suite
 bb test                                                  # babashka suite
+bb e2e                                                   # live swarm story from a bb bridge
 npm install
 clojure -M:cljs -m shadow.cljs.devtools.cli compile test && node target/cljs-test/test.js
 ```
