@@ -20,6 +20,11 @@
   :serve {:main-opts ["-m" "autonomous.cli" "serve"]}
   :token {:main-opts ["-m" "autonomous.cli" "token"]}
 
+  ;; Runtimes dial the bridge over a websocket: `clojure -M:ws:serve --ws 7070`
+  ;; (babashka carries http-kit built in; an app with its own Ring stack
+  ;; uses autonomous.ws.ring/wrap-ws instead and needs no alias).
+  :ws {:extra-deps {http-kit/http-kit {:mvn/version "2.8.1"}}}
+
   ;; Durable swarm ledger (autonomous.bridge.ledger.datahike).
   :datahike {:extra-deps {io.replikativ/datahike {:mvn/version "0.7.1624"}}}
 
@@ -31,7 +36,8 @@
                 io.github.hive-agi/hive-schemas {:mvn/version "0.2.2"}
                 io.replikativ/datahike          {:mvn/version "0.7.1624"}
                 ;; optional at runtime: autonomous.ring resolves reitit lazily
-                metosin/reitit-ring             {:mvn/version "0.10.1"}}
+                metosin/reitit-ring             {:mvn/version "0.10.1"}
+                http-kit/http-kit               {:mvn/version "2.8.1"}}
    :main-opts ["-m" "kaocha.runner"]}
 
   :nrepl

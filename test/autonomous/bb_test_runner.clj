@@ -11,6 +11,7 @@
     autonomous.domain.fleet-trifecta-test
     autonomous.bridge.bridge-trifecta-test
     autonomous.bridge.fleet-test
+    autonomous.bridge.ws-test
     autonomous.mcp.transport-test
     autonomous.ring-test
     autonomous.e2e.check-trifecta-test

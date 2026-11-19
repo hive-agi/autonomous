@@ -12,6 +12,9 @@
             --fleet            fleet naming even for one target
             --probe-ms N       how long a fleet waits for an app (default 1500)
             --http [HOST:]PORT serve MCP over HTTP instead of stdio
+            --ws [HOST:]PORT   listen for runtimes that dial in (production,
+                               no nREPL); without --dir/--port the target is
+                               --target-id, served over the websocket only
             --ledger memory|datahike [--datahike-path PATH]
             --actor NAME --scopes read,write   (stdio identity; --actor or
                                AUTONOMOUS_ACTOR also names the caller of
@@ -39,6 +42,19 @@
 (defn- token-entry [t actor scopes] ((requiring-resolve 'autonomous.bridge.auth/token-entry) t actor scopes))
 
 (defn- err [& xs] (binding [*out* *err*] (apply println xs)))
+
+(defn- start-ws!
+  "Start the runtime websocket listener when `cfg` asks for one (--ws).
+   Answers nil when it runs (or is not asked for), else the exit code."
+  [cfg]
+  (when-let [ws (:ws cfg)]
+    (let [h ((requiring-resolve 'autonomous.ws.server/start!) (assoc ws :tokens (:tokens cfg)))]
+      (if (answer/refused? h)
+        (do (err "autonomous serve --ws:" (get-in h [:error :message])) 3)
+        (do (stop-on-exit! (get-in h [:ok :stop!]))
+            (err (str "autonomous: runtimes dial ws://" (:bind ws "127.0.0.1") ":" (get-in h [:ok :port])
+                      "/autonomous/ws (runtime token required)"))
+            nil)))))
 
 (defn- member-context [cfg ledger target]
   (client/context {:target          target
@@ -108,6 +124,7 @@
                 (err "autonomous: target" (pr-str (:target cfg)))))
             (cond
               (nil? srv) 2
+              (start-ws! cfg) 3
               (= :stdio (:transport cfg))
               (do (stdio/serve! srv {:actor (:stdio/actor cfg) :scopes (:stdio/scopes cfg)})
                   0)

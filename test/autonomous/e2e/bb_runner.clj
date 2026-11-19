@@ -190,6 +190,38 @@
         (when (seq problems) (log (name host) "stderr:" (:err res)))
         problems))))
 
+(defn- ws-runtime!
+  "Production shape, live: a bridge with no nREPL target (`bb serve --ws
+   --http --target-id todo`), a node runtime that dials it with a runtime
+   token, and an agent driving it over MCP HTTP. The runtime must appear in
+   the directory when it connects and leave when it dies."
+  [procs client tokens]
+  (t/testing "a node runtime dialing the bridge over the websocket"
+    (let [rt-token (auth/mint)
+          entries  (conj (:entries tokens) (auth/token-entry rt-token "todo" [:runtime]))
+          [hp wp]  [(free-port) (free-port)]
+          url      (str "http://127.0.0.1:" hp "/mcp")]
+      (log "starting a websocket-only bb bridge on" hp "(runtimes dial" wp ")")
+      (spawn! procs "ws-bridge"
+              (check/serve-command :bb ["--target-id" "todo" "--ws" (str "127.0.0.1:" wp)
+                                        "--http" (str "127.0.0.1:" hp) "--ledger" "memory"])
+              {:extra-env {"AUTONOMOUS_TOKENS" (wire/print-edn entries)}})
+      (when-not (wait-until 60000 300 #(healthy? hp))
+        (throw (ex-info "the ws bridge did not answer /health: see target/e2e-logs/ws-bridge.err.log" {})))
+      (let [agent (agents/http-session! client url (get-in tokens [:tokens "agent-a"]))
+            node  (spawn! procs "node-ws" ["node" "target/e2e/main.js"]
+                          {:extra-env {"AUTONOMOUS_WS_URL" (str "ws://127.0.0.1:" wp "/autonomous/ws")
+                                       "AUTONOMOUS_WS_TOKEN" rt-token
+                                       "AUTONOMOUS_WS_RUNTIME_ID" "node-ws-1"}})]
+        (t/is (wait-until 60000 300 #(some #{"node-ws-1"} (map :runtime/id (runtimes agent))))
+              "the runtime appears in the directory as it connects")
+        (t/is (not (:error? (scenario/-call agent "autonomous_attach" {:runtime_id "node-ws-1"}))))
+        (t/is (not (:error? (scenario/-call agent "todo_add" {:text "over the websocket"}))))
+        (t/is (contains? (scenario/texts agent) "over the websocket"))
+        (p/destroy-tree node)
+        (t/is (wait-until 30000 300 #(empty? (runtimes agent)))
+              "it leaves the directory when it disconnects")))))
+
 (defn- ensure-node-deps! []
   (when-not (fs/exists? (in-root "node_modules" "ws"))
     (log "npm install (once)")
@@ -213,7 +245,8 @@
                      (fn []
                        (scenario/swarm! (agents/http-agent-on client url tokens) [r1 r2]
                                         (str (System/currentTimeMillis)))
-                       (security! client url tokens r1)))
+                       (security! client url tokens r1)
+                       (ws-runtime! procs client {:tokens tokens :entries entries})))
           hosts    (cond-> [:bb] (fs/which "cljw") (conj :cljw))]
       {:counters counters
        :smoke    (into {} (map (fn [h] [h (smoke! h r1)])) hosts)
