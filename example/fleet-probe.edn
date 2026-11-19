@@ -1,0 +1,6 @@
+;; Both services behind one bridge (fleet mode): tools are <app>__<tool>.
+[{:call "autonomous_apps"}
+ {:tools true}
+ {:call "orders__orders_list" :args {:customer "grace"}}
+ {:call "inventory__inventory_reserve" :args {:sku "mouse-v" :units 1}}
+ {:call "orders__orders_refund" :args {:order-id [:ref 2 :result 0 :id] :cents 500 :reason "late"}}]

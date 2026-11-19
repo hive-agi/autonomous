@@ -7,4 +7,9 @@
          {:id :integration
           :test-paths ["test"]
           :ns-patterns ["-test$"]
-          :focus-meta [:integration]}]}
+          :focus-meta [:integration]}
+         ;; the orders example's own suite, its sources on the classpath:
+         ;; clojure -M:test:example/orders-dev orders
+         {:id :orders
+          :test-paths ["example/orders/test"]
+          :ns-patterns ["-test$"]}]}

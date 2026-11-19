@@ -1,0 +1,5 @@
+;; The same service as an agent granted only read,write: it reads and
+;; places orders, and a refund is refused (it needs the billing scope).
+[{:call "autonomous_whoami"}
+ {:call "orders_list" :args {:customer "ada"}}
+ {:call "orders_refund" :args {:order-id [:ref 1 :result 0 :id] :cents 100 :reason "x"} :expect :error}]

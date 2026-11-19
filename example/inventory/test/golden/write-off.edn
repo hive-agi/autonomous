@@ -1,0 +1,4 @@
+{:all-free [:ok 4 4 0],
+ :into-reserved [:error :stock/reserved-units],
+ :some [:ok 7 4 3],
+ :zero [:error :stock/invalid-units]}

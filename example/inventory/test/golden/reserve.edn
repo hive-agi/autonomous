@@ -1,0 +1,5 @@
+{:all [:ok 10 10 0],
+ :negative [:error :stock/invalid-units],
+ :over [:error :stock/insufficient],
+ :some [:ok 10 7 3],
+ :zero [:error :stock/invalid-units]}

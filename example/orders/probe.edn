@@ -1,0 +1,13 @@
+;; The orders service through the bridge, as an agent granted
+;; read,write,billing (see example/probe.clj and README.md).
+[{:tools true}
+ {:resources true}
+ {:call "orders_list" :args {:customer "ada"}}
+ {:call "orders_get" :args {:order-id [:ref 2 :result 0 :id]}}
+ {:call "orders_refund" :args {:order-id [:ref 2 :result 0 :id] :cents 1000 :reason "damaged in transit"}}
+ {:call "orders_refund" :args {:order-id [:ref 2 :result 0 :id] :cents 999999 :reason "everything"} :expect :error}
+ {:call "orders_place" :args {:customer "linus" :lines [{:sku "hub-4" :qty 2 :unit-cents 1500}]}}
+ {:call "orders_statement" :args {:customer "ada"}}
+ {:poll true}
+ {:read "orders://summary"}
+ {:call "autonomous_ledger" :args {:kind "autonomous/call" :limit 3}}]

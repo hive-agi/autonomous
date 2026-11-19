@@ -1,0 +1,7 @@
+{:full [:ok :refunded 1000 1000],
+ :negative [:error :refund/invalid-amount],
+ :over [:error :refund/exceeds-paid],
+ :over-after-one [:error :refund/exceeds-paid],
+ :partial [:ok :partially-refunded 1000 300],
+ :rest-after-one [:ok :refunded 1000 1000],
+ :zero [:error :refund/invalid-amount]}

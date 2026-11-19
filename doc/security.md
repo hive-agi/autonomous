@@ -19,6 +19,8 @@ agent's identity comes from configuration:
 
 Give a read-only agent `--scopes read`: it will not even see the write tools.
 
+The actor also names every caller of HTTP served without tokens (see below).
+
 ## HTTP: remote agents and swarms
 
 `--http [HOST:]PORT` serves MCP over HTTP instead. A bare port binds
@@ -27,11 +29,37 @@ Give a read-only agent `--scopes read`: it will not even see the write tools.
 | path | method | what |
 |---|---|---|
 | `/mcp` | `POST` | one JSON-RPC message; `initialize` answers an `Mcp-Session-Id` header that later requests send back |
-| `/mcp` | `DELETE` | end the session named by `Mcp-Session-Id` |
+| `/mcp` | `GET` | the session's event stream (`Accept: text/event-stream`, `Mcp-Session-Id`) |
+| `/mcp` | `DELETE` | end the session named by `Mcp-Session-Id`, and its stream |
 | `/health` | any | `{"status":"ok"}`, no authentication |
 
-There is no event stream: an authenticated `GET` on `/mcp` gets 405. A body over 1 MiB gets
-413.
+A body over 1 MiB gets 413.
+
+### The event stream
+
+The stream carries `notifications/tools/list_changed` when the tools the
+session sees change: an app of the fleet goes down, comes back, or changes
+its tools. The agent then lists the tools again. This is the same
+notification stdio sends. The stream also carries an SSE comment
+(`: keepalive`) after 15 s of silence.
+
+Streams follow the session rules and are bounded:
+
+- A stream is opened only on a session, and only by the actor that opened
+  the session. Another actor gets 404.
+- A session has at most one stream. A new `GET` replaces the old stream,
+  which is closed.
+- At most `:max-streams` streams (default 64) are open at once. Past that,
+  `GET` gets 503.
+- A stream ends with its session (`DELETE`, idle expiry). An open stream
+  counts as use, so it keeps its session alive.
+- A `GET` without `Accept: text/event-stream` gets 406.
+
+The endpoint is also a Ring handler (`autonomous.mcp.http/ring-handler`), so
+a host can serve `/mcp` from its own stack. Holding a stream needs the
+host's server: on http-kit pass
+`autonomous.mcp.http.kit/stream-response`. Without it, `GET` gets 405 and
+the agent works by request and response only.
 
 ### What the transport enforces
 
@@ -47,7 +75,10 @@ In this order:
 3. **Authentication.** With tokens configured, every request needs
    `Authorization: Bearer <token>`. A missing or unknown token gets 401. The
    token names the actor and its scopes. Without tokens (loopback only),
-   every caller acts as `local` with `read` and `write`.
+   every caller acts as the configured actor (`--actor`, else
+   `AUTONOMOUS_ACTOR`, else `local`) with `read` and `write`, so whoami, the
+   journal and the ledger name the same actor as on stdio. `--scopes` sets
+   only the stdio grant.
 4. **Session ownership.** A session id is honoured only for the actor that
    opened it. Another actor's token with that id gets 404, the same answer as
    for an unknown session.

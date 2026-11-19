@@ -1,0 +1,6 @@
+{:free-item [:error :order/invalid],
+ :no-customer [:error :order/invalid],
+ :no-lines [:error :order/invalid],
+ :one-line [:ok :placed 1000 0],
+ :two-lines [:ok :placed 800 0],
+ :zero-qty [:error :order/invalid]}
