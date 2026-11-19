@@ -1,0 +1,4 @@
+{:agent-grant {:actor "ling-1", :scopes #{:admin}},
+ :app-scopes {:actor "ling-1", :scopes #{:read}},
+ :default {:actor "ling-1", :scopes #{:read :write}},
+ :other-agent {:actor "ling-2", :scopes #{:read :write}}}
