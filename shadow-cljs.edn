@@ -1,0 +1,23 @@
+;; Builds for the adapter tests, the headless example runtime and the
+;; browser example. Run embedded from a REPL on the :cljs alias, or with
+;; `npx shadow-cljs` (deps come from deps.edn :cljs).
+{:deps {:aliases [:cljs]}
+
+ :nrepl {:port 7888}
+
+ :dev-http {8280 "example/public"}
+
+ :builds
+ {:test {:target    :node-test
+         :output-to "target/cljs-test/test.js"
+         :ns-regexp "-test$"
+         :autorun   false}
+
+  :e2e  {:target    :node-script
+         :main      todo.node/main
+         :output-to "target/e2e/main.js"}
+
+  :app  {:target     :browser
+         :output-dir "example/public/js"
+         :asset-path "/js"
+         :modules    {:main {:init-fn todo.browser/init}}}}}

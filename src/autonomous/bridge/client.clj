@@ -17,17 +17,28 @@
   "Identity the bridge itself reads journals with."
   {:actor "autonomous/bridge" :scopes #{:read}})
 
+(defn- daemon-executor []
+  (java.util.concurrent.Executors/newSingleThreadExecutor
+   (reify java.util.concurrent.ThreadFactory
+     (newThread [_ r] (doto (Thread. ^Runnable r "autonomous-drainer") (.setDaemon true))))))
+
 (defn context
   "Pipeline context. `channel` implements IRuntimeChannel and
-   IRuntimeDirectory; `ledger` (optional) implements ILedger."
-  [{:keys [target channel ledger call-timeout-ms clock sleep!]}]
+   IRuntimeDirectory; `ledger` (optional) implements ILedger. With
+   :drain :inline every call drains before answering (deterministic, for
+   tests); the default :background drains on a coalescing daemon thread so
+   a call costs one round trip."
+  [{:keys [target channel ledger call-timeout-ms clock sleep! drain]}]
   {:target     target
    :channel    channel
    :ledger     ledger
    :timeout-ms (or call-timeout-ms default-timeout-ms)
    :clock      (or clock #(System/currentTimeMillis))
    :sleep!     (or sleep! #(Thread/sleep (long %)))
-   :cursors    (atom {})})
+   :cursors    (atom {})
+   :drain      (or drain :background)
+   :drainer    (delay (daemon-executor))
+   :queued     (atom #{})})
 
 (defn send!
   "Answer of `op-map` sent as `session` to its pinned runtime."
@@ -95,15 +106,42 @@
 ;; Operations
 ;; =============================================================================
 
+(def drain-window-ms
+  "How long the drainer waits before draining, so a burst of calls shares
+   one journal read (they share the runtime connection with it)."
+  250)
+
+(defn drain-soon!
+  "Drain `session`'s runtime: now when the context drains :inline, else on
+   the drainer thread after `drain-window-ms`, coalescing every request for
+   a runtime made in that window."
+  [ctx session]
+  (when (:ledger ctx)
+    (if (= :inline (:drain ctx))
+      (drain! ctx session)
+      (let [k (or (:session/runtime session) :default)
+            [before _] (swap-vals! (:queued ctx) conj k)]
+        (when-not (contains? before k)
+          (.submit ^java.util.concurrent.ExecutorService @(:drainer ctx)
+                   ^Runnable (fn []
+                               (try
+                                 (Thread/sleep (long drain-window-ms))
+                                 (swap! (:queued ctx) disj k)
+                                 (drain! ctx session)
+                                 (catch InterruptedException _shutting-down nil)
+                                 (catch Exception e
+                                   (binding [*out* *err*]
+                                     (println "[autonomous] drain failed:" (ex-message e))))))))))))
+
 (defn manifest [ctx session]
   (send! ctx session {:op :manifest}))
 
 (defn call!
   "Call tool `tool-name` with `args` as `session`; wait for a Pending result
-   up to the timeout; drain the journal afterwards."
+   up to the timeout; have the journal drained (see `drain-soon!`)."
   [ctx session tool-name args]
   (let [a (await! ctx session (send! ctx session {:op :call :tool tool-name :args (or args {})}))]
-    (drain! ctx session)
+    (drain-soon! ctx session)
     a))
 
 (defn read-resource [ctx session uri]
@@ -117,12 +155,12 @@
 
 (defn lease! [ctx session ttl-ms]
   (let [a (send! ctx session {:op :lease :ttl-ms ttl-ms})]
-    (drain! ctx session)
+    (drain-soon! ctx session)
     a))
 
 (defn release! [ctx session]
   (let [a (send! ctx session {:op :release})]
-    (drain! ctx session)
+    (drain-soon! ctx session)
     a))
 
 (defn runtimes [ctx]

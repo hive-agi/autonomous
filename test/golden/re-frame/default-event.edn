@@ -1,0 +1,3 @@
+{:args [:todo/add {:text "x"}],
+ :nil-args [:todo/init],
+ :no-args [:todo/init]}

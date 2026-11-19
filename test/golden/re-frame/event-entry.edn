@@ -1,0 +1,17 @@
+{:agent
+ {:kind :re-frame/event,
+  :event-id :todo/add,
+  :origin :agent,
+  :actor "agent-1"},
+ :human {:kind :re-frame/event, :event-id :todo/add, :origin :app},
+ :no-args
+ {:kind :re-frame/event,
+  :event-id :todo/init,
+  :origin :app,
+  :payload []},
+ :with-payload
+ {:kind :re-frame/event,
+  :event-id :todo/add,
+  :origin :agent,
+  :actor "agent-1",
+  :payload ["milk" {:n 1}]}}

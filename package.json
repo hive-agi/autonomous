@@ -1,0 +1,10 @@
+{
+  "name": "autonomous-dev",
+  "private": true,
+  "description": "Node dependencies of the autonomous example app and ClojureScript tests",
+  "devDependencies": {
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "ws": "8.18.0"
+  }
+}

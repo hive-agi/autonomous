@@ -1,0 +1,14 @@
+{:absent-path {},
+ :absent-redact {:filter :all},
+ :everything
+ {:todos {1 {:id 1, :text "milk"}},
+  :filter :all,
+  :user {:email "a@b.c", :name "Ana"},
+  :next-id 2},
+ :paths {:todos {1 {:id 1, :text "milk"}}, :filter :all},
+ :paths+redact {:user {:email "<redacted>", :name "Ana"}},
+ :redacted
+ {:todos {1 {:id 1, :text "milk"}},
+  :filter :all,
+  :user {:email "<redacted>", :name "Ana"},
+  :next-id 2}}
