@@ -1,0 +1,38 @@
+{:cancel
+ {:method :post,
+  :url
+  "http://stub.invalid/api/payment/payments/550e8400-e29b-41d4-a716-446655440000/cancel",
+  :headers
+  {"accept" "application/json, application/problem+json",
+   "content-type" "application/json"},
+  :body "{\"reason\":\"duplicated at the till\"}"},
+ :get
+ {:method :get,
+  :url
+  "http://stub.invalid/api/payment/payments/550e8400-e29b-41d4-a716-446655440000",
+  :headers {"accept" "application/json, application/problem+json"},
+  :body nil},
+ :get-escapes
+ {:method :get,
+  :url "http://stub.invalid/api/payment/payments/a%20b%2Fc",
+  :headers {"accept" "application/json, application/problem+json"},
+  :body nil},
+ :list-empty
+ {:method :get,
+  :url "http://stub.invalid/api/payment/payments",
+  :headers {"accept" "application/json, application/problem+json"},
+  :body nil},
+ :list-filters
+ {:method :get,
+  :url
+  "http://stub.invalid/api/payment/payments?page=2&status=paid&referenceMonth=11",
+  :headers {"accept" "application/json, application/problem+json"},
+  :body nil},
+ :mark-paid
+ {:method :post,
+  :url
+  "http://stub.invalid/api/payment/boletos/550e8400-e29b-41d4-a716-446655440000/mark-paid",
+  :headers
+  {"accept" "application/json, application/problem+json",
+   "content-type" "application/json"},
+  :body "{\"paymentDate\":\"2026-11-10\",\"paidAmount\":\"120.00\"}"}}

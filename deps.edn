@@ -7,7 +7,9 @@
  {org.clojure/clojure   {:mvn/version "1.12.1"}
   metosin/malli         {:mvn/version "0.20.3"}
   org.clojure/data.json {:mvn/version "2.5.2"}
-  nrepl/nrepl           {:mvn/version "1.3.1"}}
+  nrepl/nrepl           {:mvn/version "1.3.1"}
+  ;; autonomous.openapi.load reads YAML specs (built into babashka).
+  clj-commons/clj-yaml  {:mvn/version "1.0.29"}}
 
  :aliases
  {;; Canonical hive release entrypoint (clojure -T:build <task>): jar / install /
