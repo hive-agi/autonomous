@@ -1,17 +1,14 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-labelledby="t">
   <title id="t">autonomous</title>
-  <!-- An app window (the running program) holding its tool graph, with an
-       agent cursor operating the active node. -->
-  <rect x="2.5" y="2.5" width="59" height="59" rx="14" fill="#0f172a" stroke="#2dd4bf" stroke-width="3"/>
-    <rect x="9" y="10.5" width="7" height="4" rx="2" fill="#2dd4bf"/>
-    <rect x="18.5" y="10.5" width="4" height="4" rx="2" fill="#2dd4bf" opacity="0.55"/>
-    <g stroke="#2dd4bf" stroke-width="4" stroke-linecap="round">
-      <line x1="15" y1="46" x2="29" y2="32"/>
-      <line x1="29" y1="32" x2="49" y2="23"/>
-    </g>
-    <circle cx="15" cy="46" r="6" fill="#2dd4bf"/>
-    <circle cx="49" cy="23" r="6" fill="#2dd4bf"/>
-    <circle cx="29" cy="32" r="7" fill="#0f172a" stroke="#fbbf24" stroke-width="3.5"/>
-    <path d="M32 35 L32 53 L36.6 48.6 L39.9 55.5 L43.5 53.9 L40.2 47.1 L46.6 47.1 Z"
-          fill="#fbbf24" stroke="#0f172a" stroke-width="2.2" stroke-linejoin="round"/>
+  <!-- An app window holding its tool graph, with an agent cursor on the
+       active node. Built on u = 64/phi^6; see doc/logo-construction.md. -->
+  <rect x="1.78" y="1.78" width="60.43" height="60.43" rx="13.33" fill="#0f1f33" stroke="#20dac9" stroke-width="3.57"/>
+  <circle cx="15.11" cy="9.34" r="2.2" fill="#20dac9"/>
+  <circle cx="24.45" cy="9.34" r="2.2" fill="#1e7c72"/>
+  <path d="M15.11 48.89 L48.89 15.11" stroke="#20dac9" stroke-width="3.57" stroke-linecap="round"/>
+  <circle cx="15.11" cy="48.89" r="5.77" fill="#20dac9"/>
+  <circle cx="48.89" cy="15.11" r="5.77" fill="#20dac9"/>
+  <circle cx="32" cy="32" r="9.34" fill="#0f1f33" stroke="#faac1b" stroke-width="3.57"/>
+  <circle cx="32" cy="32" r="3.57" fill="#20dac9"/>
+  <path d="M39.55 39.55 L39.55 51.64 L42.58 49 L44.92 54.36 L47.11 53.38 L44.77 48.24 L48.89 48.24 Z" fill="#faac1b" stroke="#0f1f33" stroke-width="2.72" stroke-linejoin="round" paint-order="stroke"/>
 </svg>
