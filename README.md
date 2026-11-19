@@ -28,7 +28,8 @@ and they see none of the app's own meaning. Agents that get a raw REPL can do
 anything, which is too much. `autonomous` sits between the two. The app names
 the operations it supports, with malli schemas, scopes and descriptions. An
 agent calls them like any MCP tool, and the call runs through the same code
-path a human click does (for re-frame: a real `dispatch`). Every call is
+path a human click does (for re-frame: a real `dispatch-sync` through
+interceptors and effects). Every call is
 attributed to an actor and recorded, so several agents can share one app.
 
 ## Quickstart
