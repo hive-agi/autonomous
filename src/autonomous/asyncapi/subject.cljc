@@ -19,11 +19,10 @@
 (def wildcard-rest ">")
 
 (defn tokens
-  "Token vector of `subject`, or nil when it is blank."
+  "Token vector of `subject`, or nil when it is not a non-blank string."
   [subject]
-  (when (string? subject)
-    (when-not (str/blank? subject)
-      (str/split subject #"\\." -1))))
+  (when (and (string? subject) (not (str/blank? subject)))
+    (str/split subject #"\." -1)))
 
 (defn- bad-token? [t] (str/blank? t))
 
@@ -55,13 +54,12 @@
 (defn- match-tokens [pats subs]
   (loop [p pats s subs]
     (cond
-      (empty? p)                 (empty? s)
+      (empty? p)                  (empty? s)
       (= wildcard-rest (first p)) (boolean (seq s))
-      (empty? s)                 false
-      (or (= wildcard-one (first p)) (not= "*" (first p))
-          ;; a literal token, or a `*` the branch above already allowed
-          (= (first p) (first s))) (recur (rest p) (rest s))
-      :else                      false)))
+      (empty? s)                  false
+      (= wildcard-one (first p))  (recur (rest p) (rest s))
+      (= (first p) (first s))     (recur (rest p) (rest s))
+      :else                       false)))
 
 (defn matches?
   "True when concrete `subject` is published under `filter`."

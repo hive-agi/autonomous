@@ -58,11 +58,14 @@
 (defn subscribe!
   "Register `handler` for `filter`; answers the subscription id."
   [b filter handler]
-  (let [id (:next (swap! b (fn [st] (-> st
-                                        (update :next inc)
-                                        (assoc-in [:subs (:next st)]
-                                                  {:filter filter :handler handler})))))]
-    id))
+  (let [id (atom nil)]
+    (swap! b (fn [st]
+               (let [n (:next st)]
+                 (reset! id n)
+                 (-> st
+                     (update :next inc)
+                     (assoc-in [:subs n] {:filter filter :handler handler})))))
+    @id))
 
 (defn unsubscribe!
   [b id]

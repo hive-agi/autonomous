@@ -13,28 +13,44 @@
             [autonomous.openapi.doc :as odoc]
             [autonomous.openapi.schema :as schema]))
 
+(defn- resolve [bundle node] (odoc/resolved bundle node))
+
+(defn- address-of
+  "Subject of channel `id` resolved to `ch`: its 3.x `address`, else the key."
+  [id ch]
+  (let [a (get ch "address")]
+    (if (string? a) a id)))
+
+(defn- message
+  "Message map of name `mname` resolved to `m`, or nil when it is not one."
+  [bundle mname m]
+  (let [m (resolve bundle m)]
+    (when (map? m)
+      {:name         mname
+       :content-type (get m "contentType")
+       :schema       (some-> (get m "payload") schema/->malli)})))
+
+(defn- messages
+  "Every message of channel `ch`, unresolved refs inlined."
+  [bundle ch]
+  (into [] (keep (fn [[mname m]] (message bundle mname m))) (get ch "messages")))
+
+(defn- channel-of [[id ch]]
+  (fn [bundle]
+    (let [ch (resolve bundle ch)]
+      (when (map? ch)
+        {:channel-id  id
+         :address     (address-of id ch)
+         :description (get ch "description")
+         :messages    (messages bundle ch)}))))
+
 (defn channels
-  "Every channel of `bundle` as {:address :channel-id :description :messages},
+  "Every channel of `bundle` as {:channel-id :address :description :messages},
    in document order.
      :messages [{:name :content-type :schema}] with :schema a malli form, nil
    when the message declares no payload."
   [bundle]
-  (let [root (odoc/root-doc bundle)]
-    (for [[id ch] (get root "channels")
-          :when (map? ch)
-          :let [ch      (odoc/resolved bundle ch)
-                address (let [a (get ch "address")] (if (string? a) a id))]]
-      {:channel-id  id
-       :address     address
-       :description (get ch "description")
-       :messages    (into []
-                          (keep (fn [[mname m]]
-                                  (when-let [m (some-> m (odoc/resolved bundle))]
-                                    (when (map? m)
-                                      {:name         mname
-                                       :content-type (get m "contentType")
-                                       :schema       (some-> (get m "payload") schema/->malli)}))))
-                          (get ch "messages"))})))
+  (into [] (keep #(% bundle)) (map channel-of (get (odoc/root-doc bundle) "channels"))))
 
 (defn by-address
   "Channels of `bundle` keyed by their address; the first wins when two
