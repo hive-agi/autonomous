@@ -1,0 +1,33 @@
+;; The fleet demo as a hive-compose project: one tiny compose service (the
+;; anchor every section needs) and the three apps as host programs. Each
+;; program starts with its nREPL; the fleet bridge reaches all three.
+;;
+;; hive-compose reads projects from the operator's config (see
+;; doc/fleet-demo.md for the snippet); `bb fleet-demo` reads THIS file and
+;; starts the same commands without hive-compose, so the two never drift.
+;; Relative dirs resolve against this file's directory (example/fleet).
+{:project/id "autonomous-fleet"
+ :project/dir "."
+ :project/ttl-minutes 30
+ :project/programs
+ [{:program/id "todo"
+   :program/description "the todo UI: shadow-cljs watch of build :app, page on http://localhost:8280"
+   :program/dir "../.."
+   :program/kind :shadow
+   :program/command ["clojure" "-J-Xmx2g" "-M:cljs" "-m" "shadow.cljs.devtools.cli" "watch" "app"]
+   :program/nrepl-port 7888}
+
+  {:program/id "orders"
+   :program/description "the orders JVM service (-Xmx512m from the :example/orders alias)"
+   :program/dir "../orders"
+   :program/kind :plain
+   ;; the alias lives in the repository's deps.edn; the service writes
+   ;; example/orders/.nrepl-port, which hive-compose reads for this dir
+   :program/command "cd ../.. && exec clojure -M:example/orders"}
+
+  {:program/id "inventory"
+   :program/description "the inventory babashka service"
+   :program/dir "../inventory"
+   :program/kind :bb
+   :program/command ["bb" "--init" "boot.clj" "nrepl-server" "127.0.0.1:7872"]
+   :program/nrepl-port 7872}]}
