@@ -1,7 +1,7 @@
 ;; The bridge on babashka: `bb serve --dir ../todo`, one cheap process per
 ;; agent (or one per fleet), the same code as the JVM bridge. ClojureWasm runs
 ;; the same namespaces (`cljw -cp ... -m autonomous.cli serve`), stdio only.
-{:paths ["src" "test"]
+{:paths ["src" "test" "bb-mcp/src" "bb-mcp/test"]
  :deps {metosin/malli                {:mvn/version "0.20.3"}
         io.github.hive-agi/bb-mcp    {:mvn/version "1.3.7"}
         io.github.hive-agi/hive-addon {:mvn/version "1.1.10"}
@@ -12,11 +12,34 @@
  {serve {:doc  "MCP bridge: --dir <app> [--build id] [--http host:port] (see autonomous.cli)"
          :task (apply (requiring-resolve 'autonomous.cli/-main) "serve" *command-line-args*)}
 
+  bb-mcp {:doc  "bb-mcp with an app fleet mounted beside its own tools (doc/bb-mcp.md)"
+          :task (apply (requiring-resolve 'autonomous.bb-mcp.main/-main) *command-line-args*)}
+
   token {:doc  "Mint a bearer token: --actor NAME --scopes read,write"
          :task (apply (requiring-resolve 'autonomous.cli/-main) "token" *command-line-args*)}
 
   test  {:doc  "Every unit suite on babashka (the datahike ledger contract is JVM-only)"
          :task (exec 'autonomous.bb-test-runner/-main)}
 
+  demo  {:doc  "Open the todo app and let an agent drive it over MCP: [--no-open] [--no-script] [--exit] [--step-ms N] [--record OUT.gif]. Ctrl-C stops everything it started."
+         :task (apply (requiring-resolve 'autonomous.demo.runner/-main) *command-line-args*)}
+
+  fleet-demo {:doc  "The fleet demo without hive-compose: todo UI + orders (JVM) + inventory (bb); --headless, --probe [--keep] (doc/fleet-demo.md)"
+              :extra-paths ["example"]
+              :task (apply (requiring-resolve 'fleet.demo/-main) *command-line-args*)}
+
   e2e   {:doc  "Live e2e from a bb bridge: shadow :e2e, two node runtimes, MCP over HTTP; stdio smokes on bb and cljw (doc/babashka.md)"
-         :task (exec 'autonomous.e2e.bb-runner/-main)}}}
+         :task (exec 'autonomous.e2e.bb-runner/-main)}
+
+  cabi  {:doc  "libautonomous, the runtime as a C library (jolt build --library; needs JOLT_CHEZ_CSV), then the C smoke test (doc/cabi.md)"
+         :task (do (babashka.fs/create-dirs "cabi/build")
+                   (shell {:dir "cabi"} "jolt" "build" "--library" "-m" "autonomous.cabi" "-o" "build/libautonomous")
+                   (babashka.fs/delete-tree "cabi/build/libautonomous.so.build")
+                   (shell {:dir "cabi/examples/c"} "cc" "-rdynamic" "-I../../include" "-o" "../../build/smoke" "smoke.c" "-ldl")
+                   (shell {:dir "cabi/examples/c"} "../../build/smoke" "../../build/libautonomous.so"))}
+
+  cabi-rust {:doc  "Build the Rust example app over libautonomous (cabi/examples/rust)"
+             :task (shell {:dir "cabi/examples/rust"} "cargo" "build" "--release")}
+
+  cabi-e2e {:doc  "Live: the Rust example dials a ws-only bb bridge; agents call its tools over MCP HTTP (doc/cabi.md)"
+            :task (exec 'autonomous.e2e.cabi-runner/-main)}}}

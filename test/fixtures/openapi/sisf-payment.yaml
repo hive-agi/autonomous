@@ -1,0 +1,1933 @@
+# libs/openapi/sisf-payment.yaml
+# OpenAPI spec for sisf-payment service
+# Financial operations (payments, boletos, collectors)
+
+openapi: 3.1.0
+info:
+  title: SISF Payment Service API
+  version: 1.0.0
+  description: |
+    Financial operations management for the SISF platform.
+
+    This service handles:
+    - **Payments**: Recording, tracking, and managing contributor payments
+    - **Boletos**: Bank slip generation, registration, and reconciliation
+    - **Collectors**: Commission tracking for payment collectors
+
+    **Legacy Integration**: Supports lookup by Firebird keys (legacy_code)
+    for migration compatibility with SISF_MOVIMENTACAO and MV_BOLETO tables.
+
+    **Bulk Operations**: Optimized endpoints for batch processing
+    and financial reporting.
+
+  contact:
+    name: SISF Platform Team
+    email: "dev@funerariafrancana.com.br"
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://localhost:10000/api/payment
+    description: Development (via Envoy)
+  - url: https://funerariafrancana.com.br/api/payment
+    description: Production
+
+tags:
+  - name: Payments
+    description: Payment recording and management
+  - name: Boletos
+    description: Bank slip (boleto) operations
+  - name: Collectors
+    description: Payment collector management
+  - name: Reports
+    description: Financial reporting endpoints
+  - name: Health
+    description: Service health endpoints
+
+paths:
+  # ============================================
+  # Payments
+  # ============================================
+  /payments:
+    get:
+      summary: List payments
+      description: |
+        Returns paginated list of payments with optional filters.
+        Supports filtering by contributor, date range, status, and type.
+      operationId: listPayments
+      tags:
+        - Payments
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/QueryPage"
+        - $ref: "./common.yaml#/components/parameters/QueryLimit"
+        - name: contributorId
+          in: query
+          schema:
+            $ref: "./common.yaml#/components/schemas/UUID"
+          description: Filter by contributor UUID
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/PaymentStatus"
+          description: Filter by payment status
+        - name: type
+          in: query
+          schema:
+            $ref: "#/components/schemas/PaymentType"
+          description: Filter by payment type
+        - name: paymentDateFrom
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Filter payments from this date (inclusive)
+        - name: paymentDateTo
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Filter payments up to this date (inclusive)
+        - name: dueDateFrom
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Filter by due date from
+        - name: dueDateTo
+          in: query
+          schema:
+            type: string
+            format: date
+          description: Filter by due date to
+        - name: collectorId
+          in: query
+          schema:
+            $ref: "./common.yaml#/components/schemas/UUID"
+          description: Filter by collector
+        - name: referenceMonth
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 12
+          description: Filter by reference month
+        - name: referenceYear
+          in: query
+          schema:
+            type: integer
+            minimum: 1900
+          description: Filter by reference year
+      responses:
+        "200":
+          description: Paginated list of payments
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentList"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+    post:
+      summary: Record a payment
+      description: |
+        Records a new payment for a contributor.
+        Validates contributor exists and calculates net_amount automatically.
+      operationId: createPayment
+      tags:
+        - Payments
+      requestBody:
+        required: true
+        description: Payment data including contributor, amount, and method
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentCreate"
+      responses:
+        "201":
+          description: Payment recorded successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "401":
+          $ref: "./common.yaml#/components/responses/Unauthorized"
+        "404":
+          description: Contributor not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "./common.yaml#/components/schemas/ProblemDetail"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /payments/{id}:
+    get:
+      summary: Get payment by ID
+      description: Retrieves a single payment by its ID.
+      operationId: getPayment
+      tags:
+        - Payments
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Payment details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+    put:
+      summary: Update a payment
+      description: |
+        Updates payment details. Cannot update cancelled payments.
+        Net amount is recalculated automatically.
+      operationId: updatePayment
+      tags:
+        - Payments
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/PathId"
+      requestBody:
+        required: true
+        description: Updated payment fields
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentUpdate"
+      responses:
+        "200":
+          description: Payment updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+        "409":
+          description: Cannot update cancelled payment
+          content:
+            application/problem+json:
+              schema:
+                $ref: "./common.yaml#/components/schemas/ProblemDetail"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /payments/{id}/cancel:
+    post:
+      summary: Cancel a payment
+      description: |
+        Cancels a payment. Requires a cancellation reason.
+        Sets status to 'cancelled' and records cancellation metadata.
+      operationId: cancelPayment
+      tags:
+        - Payments
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/PathId"
+      requestBody:
+        required: true
+        description: Cancellation reason for the payment
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PaymentCancel"
+      responses:
+        "200":
+          description: Payment cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+        "409":
+          description: Payment already cancelled
+          content:
+            application/problem+json:
+              schema:
+                $ref: "./common.yaml#/components/schemas/ProblemDetail"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /payments/legacy/{code}:
+    get:
+      summary: Get payment by legacy code
+      description: |
+        Retrieves a payment by its original Firebird CODMOVIMENTACAO.
+        Used during migration and for legacy system integration.
+      operationId: getPaymentByLegacyCode
+      tags:
+        - Payments
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            $ref: "./common.yaml#/components/schemas/LegacyCode"
+          description: Firebird CODMOVIMENTACAO
+      responses:
+        "200":
+          description: Payment details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Payment"
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /payments/contributor/{contributorId}:
+    get:
+      summary: List payments for a contributor
+      description: Returns all payments for a specific contributor
+      operationId: listPaymentsByContributor
+      tags:
+        - Payments
+      parameters:
+        - name: contributorId
+          in: path
+          required: true
+          schema:
+            $ref: "./common.yaml#/components/schemas/UUID"
+        - $ref: "./common.yaml#/components/parameters/QueryPage"
+        - $ref: "./common.yaml#/components/parameters/QueryLimit"
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/PaymentStatus"
+        - name: year
+          in: query
+          schema:
+            type: integer
+            minimum: 1900
+          description: Filter by reference year
+      responses:
+        "200":
+          description: Paginated list of payments
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentList"
+        "404":
+          description: Contributor not found
+          content:
+            application/problem+json:
+              schema:
+                $ref: "./common.yaml#/components/schemas/ProblemDetail"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /payments/overdue:
+    get:
+      summary: List overdue payments
+      description: Returns payments with status 'overdue' or past due date
+      operationId: listOverduePayments
+      tags:
+        - Payments
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/QueryPage"
+        - $ref: "./common.yaml#/components/parameters/QueryLimit"
+        - name: daysOverdue
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 30
+          description: Minimum days overdue
+      responses:
+        "200":
+          description: Paginated list of overdue payments
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentList"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  # ============================================
+  # Boletos
+  # ============================================
+  /boletos:
+    get:
+      summary: List boletos
+      description: Returns paginated list of boletos with optional filters
+      operationId: listBoletos
+      tags:
+        - Boletos
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/QueryPage"
+        - $ref: "./common.yaml#/components/parameters/QueryLimit"
+        - name: contributorId
+          in: query
+          schema:
+            $ref: "./common.yaml#/components/schemas/UUID"
+          description: Filter by contributor
+        - name: status
+          in: query
+          schema:
+            $ref: "#/components/schemas/BoletoStatus"
+          description: Filter by status
+        - name: dueDateFrom
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: dueDateTo
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: issueDateFrom
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: issueDateTo
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Paginated list of boletos
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoletoList"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+    post:
+      summary: Generate a boleto
+      description: |
+        Creates a new boleto for a contributor.
+        Automatically generates nosso_numero and barcode.
+      operationId: createBoleto
+      tags:
+        - Boletos
+      requestBody:
+        required: true
+        description: Boleto details with contributor, due date, and line items
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoletoCreate"
+      responses:
+        "201":
+          description: Boleto created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Boleto"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "401":
+          $ref: "./common.yaml#/components/responses/Unauthorized"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /boletos/{id}:
+    get:
+      summary: Get boleto by ID
+      description: Retrieves a boleto with its items by its ID.
+      operationId: getBoleto
+      tags:
+        - Boletos
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Boleto details with items
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoletoWithItems"
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+    put:
+      summary: Update boleto
+      description: Updates boleto details. Cannot update paid or cancelled boletos.
+      operationId: updateBoleto
+      tags:
+        - Boletos
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/PathId"
+      requestBody:
+        required: true
+        description: Updated boleto fields
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoletoUpdate"
+      responses:
+        "200":
+          description: Boleto updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Boleto"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+        "409":
+          description: Cannot update boleto in current status
+          content:
+            application/problem+json:
+              schema:
+                $ref: "./common.yaml#/components/schemas/ProblemDetail"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /boletos/{id}/cancel:
+    post:
+      summary: Cancel a boleto
+      description: Cancels a boleto. Updates status to 'cancelled'.
+      operationId: cancelBoleto
+      tags:
+        - Boletos
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/PathId"
+      requestBody:
+        required: false
+        description: Optional cancellation reason
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  description: Cancellation reason
+      responses:
+        "200":
+          description: Boleto cancelled
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Boleto"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+        "409":
+          description: Cannot cancel boleto in current status
+          content:
+            application/problem+json:
+              schema:
+                $ref: "./common.yaml#/components/schemas/ProblemDetail"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /boletos/{id}/mark-paid:
+    post:
+      summary: Mark boleto as paid
+      description: |
+        Manually marks a boleto as paid.
+        Typically used when bank return file processing is not available.
+      operationId: markBoletoPaid
+      tags:
+        - Boletos
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/PathId"
+      requestBody:
+        required: true
+        description: Payment date and amount to mark boleto as paid
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoletoMarkPaid"
+      responses:
+        "200":
+          description: Boleto marked as paid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Boleto"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /boletos/{id}/pdf:
+    get:
+      summary: Generate boleto PDF
+      description: Generates and returns the boleto as a PDF document
+      operationId: getBoletoPdf
+      tags:
+        - Boletos
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Boleto PDF
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /boletos/legacy/{code}:
+    get:
+      summary: Get boleto by legacy code
+      description: Retrieves boleto by Firebird CODBOLETO
+      operationId: getBoletoByLegacyCode
+      tags:
+        - Boletos
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            $ref: "./common.yaml#/components/schemas/LegacyCode"
+      responses:
+        "200":
+          description: Boleto details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BoletoWithItems"
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /boletos/batch/generate:
+    post:
+      summary: Batch generate boletos
+      description: |
+        Generates boletos for multiple contributors at once.
+        Typically used for monthly billing runs.
+      operationId: batchGenerateBoletos
+      tags:
+        - Boletos
+      requestBody:
+        required: true
+        description: Batch generation parameters with filters and due date
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BoletoBatchGenerate"
+      responses:
+        "202":
+          description: Batch generation started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchOperationResult"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /boletos/remittance:
+    post:
+      summary: Generate remittance file
+      description: |
+        Generates a CNAB 240/400 remittance file for bank registration.
+        Includes all boletos with status 'issued'.
+      operationId: generateRemittance
+      tags:
+        - Boletos
+      requestBody:
+        required: true
+        description: Remittance file format and boleto selection
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RemittanceRequest"
+      responses:
+        "200":
+          description: Remittance file generated
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemittanceResponse"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /boletos/return:
+    post:
+      summary: Process bank return file
+      description: |
+        Processes a CNAB 240/400 return file from the bank.
+        Updates boleto statuses based on bank responses.
+      operationId: processReturnFile
+      tags:
+        - Boletos
+      requestBody:
+        required: true
+        description: CNAB return file from the bank
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required:
+                - file
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: CNAB return file
+      responses:
+        "200":
+          description: Return file processed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReturnProcessResult"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  # ============================================
+  # Collectors
+  # ============================================
+  /collectors:
+    get:
+      summary: List collectors
+      description: Returns all payment collectors
+      operationId: listCollectors
+      tags:
+        - Collectors
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/QueryActive"
+        - $ref: "./common.yaml#/components/parameters/QuerySearch"
+      responses:
+        "200":
+          description: List of collectors
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Collector"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+    post:
+      summary: Create a collector
+      description: Creates a new payment collector
+      operationId: createCollector
+      tags:
+        - Collectors
+      requestBody:
+        required: true
+        description: New collector data with commission percentage
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CollectorCreate"
+      responses:
+        "201":
+          description: Collector created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Collector"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /collectors/{id}:
+    get:
+      summary: Get collector by ID
+      description: Retrieves a collector (cobrador) by its ID.
+      operationId: getCollector
+      tags:
+        - Collectors
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/PathId"
+      responses:
+        "200":
+          description: Collector details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Collector"
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+    put:
+      summary: Update collector
+      description: Updates the fields of a collector (cobrador).
+      operationId: updateCollector
+      tags:
+        - Collectors
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/PathId"
+      requestBody:
+        required: true
+        description: Updated collector fields
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CollectorUpdate"
+      responses:
+        "200":
+          description: Collector updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Collector"
+        "400":
+          $ref: "./common.yaml#/components/responses/BadRequest"
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+    delete:
+      summary: Deactivate collector
+      description: Soft deletes a collector (sets is_active to false)
+      operationId: deactivateCollector
+      tags:
+        - Collectors
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/PathId"
+      responses:
+        "204":
+          description: Collector deactivated
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+        "409":
+          description: Cannot deactivate - collector has active payments
+          content:
+            application/problem+json:
+              schema:
+                $ref: "./common.yaml#/components/schemas/ProblemDetail"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /collectors/{id}/payments:
+    get:
+      summary: List payments collected by collector
+      description: Returns payments associated with a specific collector
+      operationId: listCollectorPayments
+      tags:
+        - Collectors
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/PathId"
+        - $ref: "./common.yaml#/components/parameters/QueryPage"
+        - $ref: "./common.yaml#/components/parameters/QueryLimit"
+        - name: dateFrom
+          in: query
+          schema:
+            type: string
+            format: date
+        - name: dateTo
+          in: query
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Collector's payments
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PaymentList"
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /collectors/{id}/commission:
+    get:
+      summary: Calculate collector commission
+      description: |
+        Calculates commission for a collector based on payments collected
+        within a date range.
+      operationId: calculateCollectorCommission
+      tags:
+        - Collectors
+      parameters:
+        - $ref: "./common.yaml#/components/parameters/PathId"
+        - name: dateFrom
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: dateTo
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Commission calculation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommissionCalculation"
+        "404":
+          $ref: "./common.yaml#/components/responses/NotFound"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  # ============================================
+  # Reports
+  # ============================================
+  /reports/daily-summary:
+    get:
+      summary: Daily financial summary
+      description: Returns payment totals and counts for a specific date
+      operationId: getDailySummary
+      tags:
+        - Reports
+      parameters:
+        - name: date
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Daily summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DailySummary"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /reports/monthly-summary:
+    get:
+      summary: Monthly financial summary
+      description: Returns payment totals and counts for a month
+      operationId: getMonthlySummary
+      tags:
+        - Reports
+      parameters:
+        - name: year
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1900
+        - name: month
+          in: query
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 12
+      responses:
+        "200":
+          description: Monthly summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MonthlySummary"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /reports/collector-performance:
+    get:
+      summary: Collector performance report
+      description: Returns collection metrics by collector for a period
+      operationId: getCollectorPerformance
+      tags:
+        - Reports
+      parameters:
+        - name: dateFrom
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+        - name: dateTo
+          in: query
+          required: true
+          schema:
+            type: string
+            format: date
+      responses:
+        "200":
+          description: Collector performance data
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/CollectorPerformance"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  /reports/delinquency:
+    get:
+      summary: Delinquency report
+      description: Returns contributors with overdue payments
+      operationId: getDelinquencyReport
+      tags:
+        - Reports
+      parameters:
+        - name: minDaysOverdue
+          in: query
+          schema:
+            type: integer
+            default: 30
+        - $ref: "./common.yaml#/components/parameters/QueryPage"
+        - $ref: "./common.yaml#/components/parameters/QueryLimit"
+      responses:
+        "200":
+          description: Delinquency report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DelinquencyReport"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+  # ============================================
+  # Health
+  # ============================================
+  /health:
+    get:
+      summary: Health check
+      description: Returns the service health status.
+      operationId: healthCheck
+      tags:
+        - Health
+      security: []
+      responses:
+        "200":
+          description: Service is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: "healthy"
+                  service:
+                    type: string
+                    example: "sisf-payment"
+        "500":
+          $ref: "./common.yaml#/components/responses/InternalError"
+
+security:
+  - BearerAuth: []
+
+components:
+  securitySchemes:
+    BearerAuth:
+      $ref: "./common.yaml#/components/securitySchemes/BearerAuth"
+
+  schemas:
+    # ============================================
+    # Enums
+    # ============================================
+    PaymentStatus:
+      type: string
+      enum:
+        - pending
+        - paid
+        - cancelled
+        - overdue
+      description: Payment status
+
+    PaymentType:
+      type: string
+      enum:
+        - monthly_fee
+        - registration_fee
+        - service_payment
+        - other
+      description: Type of payment
+
+    BoletoStatus:
+      type: string
+      enum:
+        - issued
+        - registered
+        - paid
+        - cancelled
+        - overdue
+      description: Boleto status in banking lifecycle
+
+    # ============================================
+    # Payment Schemas
+    # ============================================
+    Payment:
+      description: A financial payment record for a contributor
+      type: object
+      required:
+        - id
+        - paymentDate
+        - amount
+        - netAmount
+        - paymentType
+        - status
+      properties:
+        id:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        legacyCode:
+          $ref: "./common.yaml#/components/schemas/LegacyCode"
+        paymentDate:
+          type: string
+          format: date
+        dueDate:
+          type: string
+          format: date
+        amount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        discount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        interest:
+          $ref: "./common.yaml#/components/schemas/Money"
+        fine:
+          $ref: "./common.yaml#/components/schemas/Money"
+        netAmount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        contributorId:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        contributor:
+          $ref: "#/components/schemas/ContributorSummary"
+        paymentMethodId:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        paymentMethodName:
+          type: string
+        collectorId:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        collectorName:
+          type: string
+        paymentType:
+          $ref: "#/components/schemas/PaymentType"
+        referenceMonth:
+          type: integer
+          minimum: 1
+          maximum: 12
+        referenceYear:
+          type: integer
+          minimum: 1900
+        receiptNumber:
+          type: string
+        documentNumber:
+          type: string
+        status:
+          $ref: "#/components/schemas/PaymentStatus"
+        cancelledAt:
+          type: string
+          format: date-time
+        cancellationReason:
+          type: string
+        notes:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    PaymentCreate:
+      description: Payload to record a new payment
+      type: object
+      required:
+        - paymentDate
+        - amount
+        - contributorId
+        - paymentMethodId
+        - paymentType
+      properties:
+        paymentDate:
+          type: string
+          format: date
+        dueDate:
+          type: string
+          format: date
+        amount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        discount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        interest:
+          $ref: "./common.yaml#/components/schemas/Money"
+        fine:
+          $ref: "./common.yaml#/components/schemas/Money"
+        contributorId:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        paymentMethodId:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        collectorId:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        paymentType:
+          $ref: "#/components/schemas/PaymentType"
+        referenceMonth:
+          type: integer
+          minimum: 1
+          maximum: 12
+        referenceYear:
+          type: integer
+          minimum: 1900
+        receiptNumber:
+          type: string
+        documentNumber:
+          type: string
+        notes:
+          type: string
+
+    PaymentUpdate:
+      description: Partial update payload for a payment record
+      type: object
+      properties:
+        paymentDate:
+          type: string
+          format: date
+        dueDate:
+          type: string
+          format: date
+        amount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        discount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        interest:
+          $ref: "./common.yaml#/components/schemas/Money"
+        fine:
+          $ref: "./common.yaml#/components/schemas/Money"
+        paymentMethodId:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        collectorId:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        paymentType:
+          $ref: "#/components/schemas/PaymentType"
+        referenceMonth:
+          type: integer
+          minimum: 1
+          maximum: 12
+        referenceYear:
+          type: integer
+          minimum: 1900
+        receiptNumber:
+          type: string
+        documentNumber:
+          type: string
+        notes:
+          type: string
+
+    PaymentCancel:
+      description: Cancellation request with required reason
+      type: object
+      required:
+        - reason
+      properties:
+        reason:
+          type: string
+          minLength: 10
+          description: Cancellation reason (minimum 10 characters)
+
+    PaymentList:
+      description: Paginated list of payments with optional summary
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Payment"
+        pagination:
+          $ref: "./common.yaml#/components/schemas/PaginationResponse"
+        summary:
+          $ref: "#/components/schemas/PaymentListSummary"
+
+    PaymentListSummary:
+      description: Aggregate totals and counts for a payment list
+      type: object
+      properties:
+        totalAmount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        totalCount:
+          type: integer
+        byStatus:
+          type: object
+          additionalProperties:
+            type: integer
+
+    # ============================================
+    # Boleto Schemas
+    # ============================================
+    Boleto:
+      description: A bank slip (boleto bancario) for contributor billing
+      type: object
+      required:
+        - id
+        - boletoNumber
+        - nossoNumero
+        - issueDate
+        - dueDate
+        - faceValue
+        - payerName
+        - status
+      properties:
+        id:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        legacyCode:
+          $ref: "./common.yaml#/components/schemas/LegacyCode"
+        boletoNumber:
+          type: string
+        nossoNumero:
+          type: string
+        barcode:
+          type: string
+        digitableLine:
+          type: string
+        issueDate:
+          type: string
+          format: date
+        dueDate:
+          type: string
+          format: date
+        paymentDate:
+          type: string
+          format: date
+        faceValue:
+          $ref: "./common.yaml#/components/schemas/Money"
+        discount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        interest:
+          $ref: "./common.yaml#/components/schemas/Money"
+        fine:
+          $ref: "./common.yaml#/components/schemas/Money"
+        paidAmount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        bankCode:
+          type: string
+        agency:
+          type: string
+        account:
+          type: string
+        payerName:
+          type: string
+        payerCpfCnpj:
+          type: string
+        payerAddress:
+          type: string
+        contributorId:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        contributor:
+          $ref: "#/components/schemas/ContributorSummary"
+        status:
+          $ref: "#/components/schemas/BoletoStatus"
+        remittanceFile:
+          type: string
+        returnFile:
+          type: string
+        sentToBankAt:
+          type: string
+          format: date-time
+        registeredAt:
+          type: string
+          format: date-time
+        instructions:
+          type: string
+        notes:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    BoletoWithItems:
+      description: Boleto with its billing line items
+      allOf:
+        - $ref: "#/components/schemas/Boleto"
+        - type: object
+          properties:
+            items:
+              type: array
+              items:
+                $ref: "#/components/schemas/BoletoItem"
+
+    BoletoItem:
+      description: A single billing line item in a boleto
+      type: object
+      required:
+        - id
+        - description
+        - unitPrice
+        - totalPrice
+      properties:
+        id:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        legacyCode:
+          $ref: "./common.yaml#/components/schemas/LegacyCode"
+        description:
+          type: string
+        quantity:
+          type: number
+          format: double
+          default: 1.000
+        unitPrice:
+          $ref: "./common.yaml#/components/schemas/Money"
+        totalPrice:
+          $ref: "./common.yaml#/components/schemas/Money"
+        paymentId:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        referenceMonth:
+          type: integer
+          minimum: 1
+          maximum: 12
+        referenceYear:
+          type: integer
+          minimum: 1900
+
+    BoletoCreate:
+      description: Payload to generate a new boleto with line items
+      type: object
+      required:
+        - contributorId
+        - dueDate
+        - items
+      properties:
+        contributorId:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        dueDate:
+          type: string
+          format: date
+        discount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        instructions:
+          type: string
+        notes:
+          type: string
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/BoletoItemCreate"
+
+    BoletoItemCreate:
+      description: Line item to include in a boleto
+      type: object
+      required:
+        - description
+        - unitPrice
+      properties:
+        description:
+          type: string
+        quantity:
+          type: number
+          format: double
+          default: 1.000
+        unitPrice:
+          $ref: "./common.yaml#/components/schemas/Money"
+        referenceMonth:
+          type: integer
+          minimum: 1
+          maximum: 12
+        referenceYear:
+          type: integer
+          minimum: 1900
+
+    BoletoUpdate:
+      description: Partial update payload for a boleto
+      type: object
+      properties:
+        dueDate:
+          type: string
+          format: date
+        discount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        instructions:
+          type: string
+        notes:
+          type: string
+
+    BoletoMarkPaid:
+      description: Data to manually mark a boleto as paid
+      type: object
+      required:
+        - paymentDate
+        - paidAmount
+      properties:
+        paymentDate:
+          type: string
+          format: date
+        paidAmount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        interest:
+          $ref: "./common.yaml#/components/schemas/Money"
+        fine:
+          $ref: "./common.yaml#/components/schemas/Money"
+        discount:
+          $ref: "./common.yaml#/components/schemas/Money"
+
+    BoletoList:
+      description: Paginated list of boletos
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/Boleto"
+        pagination:
+          $ref: "./common.yaml#/components/schemas/PaginationResponse"
+
+    BoletoBatchGenerate:
+      description: Parameters for batch boleto generation
+      type: object
+      required:
+        - dueDate
+        - referenceMonth
+        - referenceYear
+      properties:
+        contributorIds:
+          type: array
+          items:
+            $ref: "./common.yaml#/components/schemas/UUID"
+          description: Specific contributors (if empty, generates for all active)
+        groupIds:
+          type: array
+          items:
+            $ref: "./common.yaml#/components/schemas/UUID"
+          description: Filter by contributor groups
+        sectorIds:
+          type: array
+          items:
+            $ref: "./common.yaml#/components/schemas/UUID"
+          description: Filter by sectors
+        dueDate:
+          type: string
+          format: date
+        referenceMonth:
+          type: integer
+          minimum: 1
+          maximum: 12
+        referenceYear:
+          type: integer
+          minimum: 1900
+        amountOverride:
+          $ref: "./common.yaml#/components/schemas/Money"
+          description: Override default monthly fee
+
+    BatchOperationResult:
+      description: Status and results of a batch processing operation
+      type: object
+      properties:
+        batchId:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        status:
+          type: string
+          enum: [queued, processing, completed, failed]
+        totalCount:
+          type: integer
+        processedCount:
+          type: integer
+        successCount:
+          type: integer
+        errorCount:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              contributorId:
+                $ref: "./common.yaml#/components/schemas/UUID"
+              error:
+                type: string
+        startedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+
+    RemittanceRequest:
+      description: Parameters for CNAB remittance file generation
+      type: object
+      required:
+        - format
+      properties:
+        format:
+          type: string
+          enum: [cnab240, cnab400]
+        boletoIds:
+          type: array
+          items:
+            $ref: "./common.yaml#/components/schemas/UUID"
+          description: Specific boletos (if empty, includes all 'issued')
+        includeStatus:
+          type: array
+          items:
+            $ref: "#/components/schemas/BoletoStatus"
+          default: [issued]
+
+    RemittanceResponse:
+      description: Result of remittance file generation
+      type: object
+      properties:
+        fileName:
+          type: string
+        recordCount:
+          type: integer
+        totalAmount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        boletoIds:
+          type: array
+          items:
+            $ref: "./common.yaml#/components/schemas/UUID"
+        generatedAt:
+          type: string
+          format: date-time
+
+    ReturnProcessResult:
+      description: Result of processing a bank return file
+      type: object
+      properties:
+        fileName:
+          type: string
+        recordCount:
+          type: integer
+        processedCount:
+          type: integer
+        paidCount:
+          type: integer
+        rejectedCount:
+          type: integer
+        totalPaidAmount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              nossoNumero:
+                type: string
+              status:
+                type: string
+              paidAmount:
+                $ref: "./common.yaml#/components/schemas/Money"
+              paymentDate:
+                type: string
+                format: date
+              rejectReason:
+                type: string
+
+    # ============================================
+    # Collector Schemas
+    # ============================================
+    Collector:
+      description: A payment collector who collects fees from contributors
+      type: object
+      required:
+        - id
+        - fullName
+      properties:
+        id:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        legacyCode:
+          $ref: "./common.yaml#/components/schemas/LegacyCode"
+        fullName:
+          type: string
+        cpf:
+          $ref: "./common.yaml#/components/schemas/CPF"
+        phone:
+          $ref: "./common.yaml#/components/schemas/PhoneNumber"
+        email:
+          $ref: "./common.yaml#/components/schemas/Email"
+        commissionPercentage:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          example: 5.00
+        isActive:
+          type: boolean
+          default: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    CollectorCreate:
+      description: Payload to create a new payment collector
+      type: object
+      required:
+        - fullName
+      properties:
+        fullName:
+          type: string
+          maxLength: 200
+        cpf:
+          $ref: "./common.yaml#/components/schemas/CPF"
+        phone:
+          $ref: "./common.yaml#/components/schemas/PhoneNumber"
+        email:
+          $ref: "./common.yaml#/components/schemas/Email"
+        commissionPercentage:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+          default: 0
+
+    CollectorUpdate:
+      description: Partial update payload for a payment collector
+      type: object
+      properties:
+        fullName:
+          type: string
+          maxLength: 200
+        cpf:
+          $ref: "./common.yaml#/components/schemas/CPF"
+        phone:
+          $ref: "./common.yaml#/components/schemas/PhoneNumber"
+        email:
+          $ref: "./common.yaml#/components/schemas/Email"
+        commissionPercentage:
+          type: number
+          format: double
+          minimum: 0
+          maximum: 100
+        isActive:
+          type: boolean
+
+    CommissionCalculation:
+      description: Collector commission calculation for a date range
+      type: object
+      properties:
+        collectorId:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        collectorName:
+          type: string
+        periodStart:
+          type: string
+          format: date
+        periodEnd:
+          type: string
+          format: date
+        commissionPercentage:
+          type: number
+          format: double
+        totalCollected:
+          $ref: "./common.yaml#/components/schemas/Money"
+        commissionAmount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        paymentCount:
+          type: integer
+        payments:
+          type: array
+          items:
+            $ref: "#/components/schemas/PaymentSummary"
+
+    PaymentSummary:
+      description: Compact payment view for embedding in reports
+      type: object
+      properties:
+        id:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        paymentDate:
+          type: string
+          format: date
+        contributorName:
+          type: string
+        amount:
+          $ref: "./common.yaml#/components/schemas/Money"
+
+    # ============================================
+    # Report Schemas
+    # ============================================
+    DailySummary:
+      description: Financial totals and breakdowns for a single day
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+        totalReceived:
+          $ref: "./common.yaml#/components/schemas/Money"
+        paymentCount:
+          type: integer
+        byPaymentMethod:
+          type: array
+          items:
+            type: object
+            properties:
+              methodId:
+                $ref: "./common.yaml#/components/schemas/UUID"
+              methodName:
+                type: string
+              amount:
+                $ref: "./common.yaml#/components/schemas/Money"
+              count:
+                type: integer
+        byPaymentType:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                $ref: "#/components/schemas/PaymentType"
+              amount:
+                $ref: "./common.yaml#/components/schemas/Money"
+              count:
+                type: integer
+        cancelledCount:
+          type: integer
+        cancelledAmount:
+          $ref: "./common.yaml#/components/schemas/Money"
+
+    MonthlySummary:
+      description: Financial totals and contributor metrics for a month
+      type: object
+      properties:
+        year:
+          type: integer
+        month:
+          type: integer
+        totalReceived:
+          $ref: "./common.yaml#/components/schemas/Money"
+        totalExpected:
+          $ref: "./common.yaml#/components/schemas/Money"
+        paymentCount:
+          type: integer
+        activeContributors:
+          type: integer
+        delinquentContributors:
+          type: integer
+        byDay:
+          type: array
+          items:
+            type: object
+            properties:
+              day:
+                type: integer
+              amount:
+                $ref: "./common.yaml#/components/schemas/Money"
+              count:
+                type: integer
+        boletosIssued:
+          type: integer
+        boletosPaid:
+          type: integer
+        boletosOverdue:
+          type: integer
+
+    CollectorPerformance:
+      description: Collection metrics for a single collector over a period
+      type: object
+      properties:
+        collectorId:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        collectorName:
+          type: string
+        totalCollected:
+          $ref: "./common.yaml#/components/schemas/Money"
+        paymentCount:
+          type: integer
+        averagePaymentAmount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        commissionEarned:
+          $ref: "./common.yaml#/components/schemas/Money"
+        collectionRate:
+          type: number
+          format: double
+          description: Percentage of assigned contributors who paid
+
+    DelinquencyReport:
+      description: Report of contributors with overdue payments
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: "#/components/schemas/DelinquentContributor"
+        pagination:
+          $ref: "./common.yaml#/components/schemas/PaginationResponse"
+        summary:
+          type: object
+          properties:
+            totalDelinquent:
+              type: integer
+            totalAmountOverdue:
+              $ref: "./common.yaml#/components/schemas/Money"
+
+    DelinquentContributor:
+      description: A contributor with overdue payment details
+      type: object
+      properties:
+        contributorId:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        contributorName:
+          type: string
+        phone:
+          type: string
+        overdueAmount:
+          $ref: "./common.yaml#/components/schemas/Money"
+        oldestDueDate:
+          type: string
+          format: date
+        daysOverdue:
+          type: integer
+        overduePayments:
+          type: integer
+        lastPaymentDate:
+          type: string
+          format: date
+
+    # ============================================
+    # Supporting Schemas
+    # ============================================
+    ContributorSummary:
+      type: object
+      description: Minimal contributor info for embedding in responses
+      properties:
+        id:
+          $ref: "./common.yaml#/components/schemas/UUID"
+        legacyCode:
+          $ref: "./common.yaml#/components/schemas/LegacyCode"
+        legacySeq:
+          $ref: "./common.yaml#/components/schemas/LegacySeq"
+        fullName:
+          type: string
+        cpf:
+          type: string
+        groupName:
+          type: string
+        isActive:
+          type: boolean
+          description: The contributor's contract is active (contributor.v1.ContributorSummary.is_active).
+        isDeceased:
+          type: boolean
+          description: The contributor is deceased (contributor.v1.ContributorSummary.is_deceased).

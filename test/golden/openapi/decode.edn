@@ -1,0 +1,92 @@
+{:no-status
+ {:error
+  {:type :openapi/unreachable,
+   :message "getPayment: no HTTP response (no status)"}},
+ :not-found-plain
+ {:error
+  {:type :openapi/not-found,
+   :message "getPayment: no such payment",
+   :data {:status 404}}},
+ :ok-bad-json
+ {:error
+  {:type :openapi/bad-response,
+   :message "getPayment answered 200 with malformed JSON",
+   :data
+   {:status 200,
+    :cause
+    "JSON error (non-string key in object), found `n`, expected `\"`"}}},
+ :ok-declared
+ {:ok
+  {:id "550e8400-e29b-41d4-a716-446655440000",
+   :paymentDate "2026-11-10",
+   :amount "120.00",
+   :netAmount "120.00",
+   :paymentType "monthly_fee",
+   :status "paid"}},
+ :ok-list
+ {:ok
+  {:data
+   [{:id "550e8400-e29b-41d4-a716-446655440000",
+     :paymentDate "2026-11-10",
+     :amount "120.00",
+     :netAmount "120.00",
+     :paymentType "monthly_fee",
+     :status "paid"}],
+   :pagination {:page 1, :limit 20, :total 1, :totalPages 1}}},
+ :ok-undeclared
+ {:error
+  {:type :openapi/undeclared-response,
+   :message "getPayment answered 201, which its spec does not declare",
+   :data {:status 201, :declared ["200" "404" "500"]}}},
+ :ok-wrong-shape
+ {:error
+  {:type :openapi/response-mismatch,
+   :message
+   "getPayment answered 200 with a body its spec does not declare",
+   :data
+   {:status 200,
+    :problems
+    {:amount ["missing required key"],
+     :id ["should be a string" "should match regex"],
+     :netAmount ["missing required key"],
+     :paymentDate ["missing required key"],
+     :paymentType ["missing required key"],
+     :status ["missing required key"]}}}},
+ :problem-400
+ {:error
+  {:type :openapi/bad-request,
+   :message "cancelPayment: reason too short",
+   :data
+   {:status 400,
+    :problem
+    {:type "t",
+     :title "Validation Error",
+     :status 400,
+     :detail "reason too short",
+     :errors [{:field "reason", :message "min 10"}]},
+    :errors [{:field "reason", :message "min 10"}]}}},
+ :problem-409
+ {:error
+  {:type :openapi/conflict,
+   :message "cancelPayment: payment already cancelled",
+   :data
+   {:status 409,
+    :problem
+    {:type "https://x/problems/conflict",
+     :title "Conflict",
+     :status 409,
+     :detail "payment already cancelled"}}}},
+ :server-error
+ {:error
+  {:type :openapi/server-error,
+   :message "getPayment: upstream down",
+   :data {:status 503, :problem {:message "upstream down"}}}},
+ :transport-failed
+ {:error
+  {:type :openapi/unreachable,
+   :message "getPayment: no HTTP response (connection refused)"}},
+ :unauthorized
+ {:error
+  {:type :openapi/unauthenticated,
+   :message "getPayment: HTTP 401",
+   :data {:status 401}}}}
