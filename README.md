@@ -214,6 +214,8 @@ and built-in tools go through the same plan.
 ## Develop and test
 
 Tests run in warm REPLs (hive-test trifectas: golden, property, mutation).
+The ClojureScript side needs `npm install` once (React for reagent, `ws` for
+the node REPL runtime).
 
 ```clojure
 ;; JVM suite (aliases :test:nrepl)
