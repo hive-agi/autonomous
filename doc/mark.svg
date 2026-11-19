@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-labelledby="t">
+  <title id="t">autonomous</title>
+  <!-- An app window (the running program) holding its tool graph, with an
+       agent cursor operating the active node. -->
+  <rect x="2.5" y="2.5" width="59" height="59" rx="14" fill="#0f172a" stroke="#2dd4bf" stroke-width="3"/>
+    <rect x="9" y="10.5" width="7" height="4" rx="2" fill="#2dd4bf"/>
+    <rect x="18.5" y="10.5" width="4" height="4" rx="2" fill="#2dd4bf" opacity="0.55"/>
+    <g stroke="#2dd4bf" stroke-width="4" stroke-linecap="round">
+      <line x1="15" y1="46" x2="29" y2="32"/>
+      <line x1="29" y1="32" x2="49" y2="23"/>
+    </g>
+    <circle cx="15" cy="46" r="6" fill="#2dd4bf"/>
+    <circle cx="49" cy="23" r="6" fill="#2dd4bf"/>
+    <circle cx="29" cy="32" r="7" fill="#0f172a" stroke="#fbbf24" stroke-width="3.5"/>
+    <path d="M32 35 L32 53 L36.6 48.6 L39.9 55.5 L43.5 53.9 L40.2 47.1 L46.6 47.1 Z"
+          fill="#fbbf24" stroke="#0f172a" stroke-width="2.2" stroke-linejoin="round"/>
+</svg>
