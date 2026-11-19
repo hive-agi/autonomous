@@ -1,0 +1,6 @@
+{:all-fresh {"a" 90, "b" 95},
+ :empty {},
+ :exact-idle {},
+ :one-idle {"b" 95},
+ :over-cap {"b" 99, "c" 95},
+ :untouched {}}

@@ -35,6 +35,11 @@
   :nrepl
   {:extra-deps {cider/cider-nrepl {:mvn/version "0.58.0"}}}
 
+  ;; ClojureWasm host: cljw -A:cljw -m autonomous.cli serve --dir ../todo
+  ;; (stdio only; the nREPL channel speaks bencode through bb-mcp).
+  :cljw
+  {:extra-deps {io.github.hive-agi/bb-mcp {:mvn/version "1.3.7"}}}
+
   ;; ClojureScript: adapter tests and the e2e node runtime.
   :cljs
   {:extra-paths ["test-cljs" "example/src"]
