@@ -22,6 +22,7 @@
     autonomous.openapi-test
     autonomous.openapi-derive-test
     autonomous.openapi-codec-test
+    autonomous.openapi-codec-strata-test
     autonomous.openapi-invoke-test
     autonomous.bb-mcp.mount-test])
 

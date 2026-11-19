@@ -41,21 +41,33 @@
 ;; -----------------------------------------------------------------------------
 ;; encode
 
-(defn- fill-path [path args params]
-  (reduce (fn [p {:keys [name key in]}]
-            (if (= "path" in)
-              (str/replace p (str "{" name "}") (url-encode (text (get args key))))
-              p))
-          path params))
+(defmulti place-parameter
+  "Pure: place one argument in the request parts, by OpenAPI parameter location."
+  (fn [_parts parameter _args] (:in parameter)))
 
-(defn- query-string [args params]
-  (let [pairs (for [{:keys [name key in]} params
-                    :when (= "query" in)
-                    :let  [v (get args key)]
-                    :when (some? v)
-                    x     (if (sequential? v) v [v])]
-                (str (url-encode name) "=" (url-encode (text x))))]
-    (when (seq pairs) (str/join "&" pairs))))
+(defmethod place-parameter "path" [parts {:keys [name key]} args]
+  (update parts :path str/replace (str "{" name "}") (url-encode (text (get args key)))))
+
+(defmethod place-parameter "query" [parts {:keys [name key]} args]
+  (if-some [v (get args key)]
+    (update parts :query into
+            (map #(str (url-encode name) "=" (url-encode (text %))))
+            (if (sequential? v) v [v]))
+    parts))
+
+(defmethod place-parameter "header" [parts {:keys [name key]} args]
+  (if-some [v (get args key)]
+    (assoc-in parts [:headers (str/lower-case name)] (text v))
+    parts))
+
+(defmethod place-parameter :default [parts _ _] parts)
+
+(defn- request-parts
+  "Pure: fold the parameters in declaration order into path, query and headers."
+  [{:keys [path params]} args]
+  (reduce #(place-parameter %1 %2 args)
+          {:path path :query [] :headers {"accept" "application/json, application/problem+json"}}
+          params))
 
 (defn- join-url [base path]
   (str (str/replace (str base) #"/+$" "") path))
@@ -69,20 +81,13 @@
     nil))
 
 (defn encode
-  "Ring-style request for `operation` called with decoded `args`, sent to
-   `base-url`: {:method :get :url \"https://...\" :headers {...} :body
-   \"json\"|nil}. Header names are lower case."
+  "Pure: Ring-style request for `operation` with `args` at `base-url`."
   [operation base-url args]
-  (let [{:keys [method path params body]} operation
-        q       (query-string args params)
-        payload (body-of operation args)
-        headers (into {"accept" "application/json, application/problem+json"}
-                      (for [{:keys [name key in]} params
-                            :when (and (= "header" in) (some? (get args key)))]
-                        [(str/lower-case name) (text (get args key))]))]
-    {:method  (keyword method)
-     :url     (cond-> (join-url base-url (fill-path path args params)) q (str "?" q))
-     :headers (cond-> headers (some? payload) (assoc "content-type" (:media body)))
+  (let [{:keys [path query headers]} (request-parts operation args)
+        payload (body-of operation args)]
+    {:method  (keyword (:method operation))
+     :url     (cond-> (join-url base-url path) (seq query) (str "?" (str/join "&" query)))
+     :headers (cond-> headers (some? payload) (assoc "content-type" (get-in operation [:body :media])))
      :body    (when (some? payload) (write-json payload))}))
 
 ;; -----------------------------------------------------------------------------
@@ -95,16 +100,23 @@
   (let [ct (str/lower-case (str ct))]
     (or (str/includes? ct "application/json") (str/includes? ct "+json"))))
 
+(defn- parse-json-body
+  "Pure: parsed JSON or its reader diagnostic."
+  [body]
+  (try {:kind :value :value (read-json body)}
+       (catch #?(:cljs :default :default Exception) e
+         (if-let [cause (ex-message e)]
+           {:kind :bad-json :cause cause}
+           {:kind :value :value nil}))))
+
 (defn- parse-body
-  "{:ok parsed} / {:raw text} / {:bad message} of a response body."
+  "Pure: classify a response body as a value, opaque text or bad JSON."
   [{:keys [headers body]}]
   (cond
-    (or (nil? body) (and (string? body) (str/blank? body))) {:ok nil}
-    (not (string? body))                                     {:ok body}
-    (json-type? (header headers "content-type"))
-    (try {:ok (read-json body)}
-         (catch #?(:cljs :default :default Exception) e {:bad (ex-message e)}))
-    :else {:raw body}))
+    (not (string? body)) {:kind :value :value body}
+    (str/blank? body) {:kind :value :value nil}
+    (json-type? (header headers "content-type")) (parse-json-body body)
+    :else {:kind :raw :text body}))
 
 (defn- declared [responses status]
   (let [s (str status)]
@@ -117,66 +129,86 @@
    404 :openapi/not-found 409 :openapi/conflict 422 :openapi/bad-request
    429 :openapi/rate-limited})
 
-(defn- problem-refusal [operation status parsed]
-  (let [p   (when (map? (:ok parsed)) (:ok parsed))
-        msg (or (some-> (:detail p) str not-empty)
-                (some-> (:title p) str not-empty)
-                (some-> (:message p) str not-empty)
-                (some-> (:error p) str not-empty)
-                (some-> (:raw parsed) str (subs 0 (min 300 (count (:raw parsed)))))
-                (str "HTTP " status))]
-    (answer/refusal (or (refusal-types status)
-                        (if (<= 500 status) :openapi/server-error :openapi/http-error))
-                    (str (:operation-id operation) ": " msg)
-                    (cond-> {:status status}
-                      p                    (assoc :problem p)
-                      (seq (:errors p))    (assoc :errors (:errors p))))))
+(defn- problem-message
+  "Pure: first nonempty problem field, else a bounded excerpt or HTTP status."
+  [problem text status]
+  (or (some #(some-> (get problem %) str not-empty) [:detail :title :message :error])
+      (when text (subs text 0 (min 300 (count text))))
+      (str "HTTP " status)))
 
-(defn- check-schema [operation status form value]
+(defn- problem-refusal
+  "Pure: translate a non-success status and parsed body to a refusal."
+  [operation status {:keys [value text]}]
+  (let [problem (when (map? value) value)]
+    (answer/refusal (or (refusal-types status) (if (<= 500 status) :openapi/server-error :openapi/http-error))
+                    (str (:operation-id operation) ": " (problem-message problem text status))
+                    (cond-> {:status status}
+                      problem (assoc :problem problem)
+                      (seq (:errors problem)) (assoc :errors (:errors problem))))))
+
+(defn- check-schema
+  "Pure: validate a decoded value, treating an unusable schema as absent."
+  [operation status form value]
   (let [sch (try (m/schema form) (catch #?(:cljs :default :default Exception) _ nil))]
-    (cond
-      (nil? sch)               (answer/ok value)
-      (m/validate sch value)   (answer/ok value)
-      :else (answer/refusal :openapi/response-mismatch
-                            (str (:operation-id operation) " answered " status
-                                 " with a body its spec does not declare")
-                            {:status status :problems (me/humanize (m/explain sch value))}))))
+    (if (or (nil? sch) (m/validate sch value))
+      (answer/ok value)
+      (answer/refusal :openapi/response-mismatch
+                      (str (:operation-id operation) " answered " status " with a body its spec does not declare")
+                      {:status status :problems (me/humanize (m/explain sch value))}))))
+
+(defn- checked-declaration
+  "Pure: accept a declared response or refuse with the known status keys."
+  [operation status declaration]
+  (if (nil? declaration)
+    (answer/refusal :openapi/undeclared-response
+                    (str (:operation-id operation) " answered " status ", which its spec does not declare")
+                    {:status status :declared (vec (keys (:responses operation)))})
+    (answer/ok declaration)))
+
+(defn- malformed-body
+  "Pure: the refusal for malformed JSON in a declared success response."
+  [operation status cause]
+  (answer/refusal :openapi/bad-response
+                  (str (:operation-id operation) " answered " status " with malformed JSON")
+                  {:status status :cause cause}))
+
+(defn- success-body
+  "Pure: interpret a declared success according to its parsed body tag."
+  [operation {:keys [status headers]} declaration {:keys [kind value text cause]}]
+  (case kind
+    :bad-json (malformed-body operation status cause)
+    :raw (answer/ok {:status status :media (header headers "content-type") :size (count text)})
+    :value (if-let [form (:schema declaration)]
+             (check-schema operation status form value)
+             (answer/ok value))))
+
+(defn- unreachable-reason
+  "Pure: transport diagnostic when there is no usable HTTP response."
+  [e]
+  (if (nil? e) "no status" (or (ex-message e) (str (type e)))))
+
+(defmulti decode-response
+  "Pure: interpret the response by HTTP status class, or :unreachable."
+  (fn [_ response]
+    (let [status (:status response)]
+      (if (or (:error response) (not (int? status))) :unreachable (quot status 100)))))
+
+(defmethod decode-response :unreachable [operation response]
+  (answer/refusal :openapi/unreachable
+                  (str (:operation-id operation) ": no HTTP response (" (unreachable-reason (:error response)) ")")))
+
+(defmethod decode-response 2 [operation {:keys [status] :as response}]
+  (let [declaration (declared (:responses operation) status)
+        parsed (parse-body response)]
+    (answer/bind (checked-declaration operation status declaration)
+                 #(success-body operation response % parsed))))
+
+(defmethod decode-response :default [operation response]
+  (problem-refusal operation (:status response) (parse-body response)))
 
 (defn decode
-  "Answer for `response` ({:status :headers :body}, body a string or
-   already parsed) of a call to `operation`. A response with :error (the
-   transport failed) is :openapi/unreachable. Never throws."
+  "Pure: total Answer for a ring-style response, whose body may be predecoded."
   [operation response]
-  (try
-    (let [status (:status response)]
-      (cond
-        (or (:error response) (not (int? status)))
-        (answer/refusal :openapi/unreachable
-                        (str (:operation-id operation) ": no HTTP response ("
-                             (let [e (:error response)]
-                               (cond (nil? e)        "no status"
-                                     (ex-message e)  (ex-message e)
-                                     :else           (str (type e))))
-                             ")"))
-
-        (<= 200 status 299)
-        (let [d      (declared (:responses operation) status)
-              parsed (parse-body response)]
-          (cond
-            (nil? d)
-            (answer/refusal :openapi/undeclared-response
-                            (str (:operation-id operation) " answered " status ", which its spec does not declare")
-                            {:status status :declared (vec (keys (:responses operation)))})
-            (:bad parsed)
-            (answer/refusal :openapi/bad-response
-                            (str (:operation-id operation) " answered " status " with malformed JSON")
-                            {:status status :cause (:bad parsed)})
-            (contains? parsed :raw)
-            (answer/ok {:status status :media (header (:headers response) "content-type")
-                        :size (count (:raw parsed))})
-            (:schema d) (check-schema operation status (:schema d) (:ok parsed))
-            :else       (answer/ok (:ok parsed))))
-
-        :else (problem-refusal operation status (parse-body response))))
-    (catch #?(:cljs :default :default Throwable) e
-      (answer/refusal :openapi/decode-failed (str "could not decode the response: " (ex-message e))))))
+  (try (decode-response operation response)
+       (catch #?(:cljs :default :default Throwable) e
+         (answer/refusal :openapi/decode-failed (str "could not decode the response: " (ex-message e))))))
