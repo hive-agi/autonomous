@@ -29,8 +29,15 @@
   [] {:sessions (atom {}) :slots (atom {})})
 
 (def empty-slot
-  "A cache slot with no listing, stale, and no fetch in flight."
-  {:manifest nil :at 0 :stale? true :fetching nil})
+  "A cache slot with no listing, stale, and no fetch in flight. :revision
+   counts the list_changed events seen, so a fetch knows one arrived
+   while it ran."
+  {:manifest nil :at 0 :stale? true :fetching nil :revision 0})
+
+(defn mark-stale
+  "Pure: slot `sl` after a list_changed: stale, its revision moved on."
+  [sl]
+  (-> sl (assoc :stale? true) (update :revision inc)))
 
 (defn- slot
   "The cache slot (an atom) of `actor`, created empty."
@@ -63,7 +70,7 @@
   "Hold `ses`'s event stream: a list_changed marks `actor`'s listing stale."
   [ch client credentials target grant ses]
   (let [actor  (:actor grant)
-        on-msg (fn [msg] (when (rpc/list-changed? msg) (swap! (slot ch actor) assoc :stale? true)))
+        on-msg (fn [msg] (when (rpc/list-changed? msg) (swap! (slot ch actor) mark-stale)))
         r      (ses/open-stream! client credentials target grant ses on-msg #(forget-stream! ch actor))]
     (when (answer/ok? r) (swap! (:sessions ch) update actor merge (:ok r)))))
 
@@ -103,12 +110,20 @@
      (answer/ok {:tools (vec (get-in reply [:result :tools]))
                  :resources (vec (get-in reply [:result :resources]))}))))
 
+(defn stored
+  "Pure: slot `sl` holding `manifest`, fetched at `at` from revision `rev`.
+   It is fresh only when no list_changed moved the revision meanwhile."
+  [sl manifest at rev]
+  (assoc sl :manifest manifest :at at :stale? (not= rev (:revision sl))))
+
 (defn- store!
-  "Record listing `r` as a fresh cache slot for `target`."
-  [sl r target]
-  (swap! sl assoc :manifest (rpc/manifest-of (:target/id target) (http/shown-url target)
-                                             (:tools (:ok r)) (:resources (:ok r)))
-         :at (now) :stale? false))
+  "Record `listing`, fetched from revision `rev`, in slot `sl`; answers the
+   Manifest of that listing, the one this fetch saw."
+  [sl listing target rev]
+  (let [m (rpc/manifest-of (:target/id target) (http/shown-url target)
+                           (:tools listing) (:resources listing))]
+    (swap! sl stored m (now) rev)
+    m))
 
 ;; =============================================================================
 ;; Calls
@@ -152,8 +167,21 @@
 ;; The agent-facing look
 ;; =============================================================================
 
+(defn- fetch-into!
+  "Answer of a fresh listing for `grant` stored in slot `slot*`, shared
+   with concurrent looks through promise `p`. The revision is read before
+   the fetch, so a list_changed during it leaves the slot stale."
+  [ch client credentials target grant slot* p]
+  (let [rev (:revision @slot*)]
+    (try
+      (deliver p (answer/let-answer [listing (fetch! ch client credentials target grant)]
+                   (answer/ok (store! slot* listing target rev))))
+      @p
+      (finally (swap! slot* assoc :fetching nil)))))
+
 (defn manifest!
-  "Answer of `target`'s Manifest for `grant`, reused while fresh."
+  "Answer of `target`'s Manifest for `grant`, reused while fresh; a look
+   during a fetch waits for that fetch."
   [ch client credentials target grant]
   (let [slot* (slot ch (:actor grant))
         st    @slot*
@@ -166,11 +194,7 @@
       :else
       (let [p (promise)]
         (swap! slot* assoc :fetching p)
-        (try
-          (deliver p (answer/let-answer [listing (fetch! ch client credentials target grant)]
-                       (answer/ok (:manifest (store! slot* {:ok listing} target)))))
-          @p
-          (finally (swap! slot* assoc :fetching nil)))))))
+        (fetch-into! ch client credentials target grant slot* p)))))
 
 ;; =============================================================================
 ;; The channel

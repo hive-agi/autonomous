@@ -24,6 +24,7 @@
             [autonomous.bridge.url :as url]
             [autonomous.bridge.http.jdk :as jdk]
             [autonomous.bridge.http.session :as ses]
+            [autonomous.bridge.http.channel :as hc]
             [autonomous.cli :as cli]
             [autonomous.config :as config]
             [malli.core :as m]))
@@ -521,6 +522,39 @@
      (str "data: " (json/write {:jsonrpc "2.0" :method rpc/list-changed}) "\n\n"))
     (is (= ["todo_list"] (names "agent-a")) "A's listing is refetched after its list_changed")
     (is (= ["todo_list"] (names "agent-b")) "B was not notified: its cached listing stands")))
+
+(defn- notifying-during-list
+  "A client over stub `client` that, the first time it serves a
+   tools/list, first pushes a list_changed to that actor's stream."
+  [client streams]
+  (let [fired? (atom false)]
+    (reify port/IHttpClient
+      (-request! [_ req]
+        (when (and (= "tools/list" (:method (json/read-json (str (:body req)))))
+                   (compare-and-set! fired? false true))
+          ((get-in @streams [(actor-of req) :text!])
+           (str "data: " (json/write {:jsonrpc "2.0" :method rpc/list-changed}) "\n\n")))
+        (port/-request! client req))
+      (-open-stream! [_ req sink] (port/-open-stream! client req sink)))))
+
+(deftest a-list-changed-during-a-fetch-is-not-lost
+  (let [[client state streams] (open-stub)
+        c (channel/make (assoc target :credentials (credential-policy) :ttl-ms 60000
+                               :credential-source (source)
+                               :http/client (notifying-during-list client streams)))
+        first-look (manifest-as c "agent-b" #{:read})]
+    (is (= ["todo_list"] (mapv :name (:tools (:ok first-look))))
+        "the look answers the listing it fetched")
+    (swap! state assoc-in [:scopes "agent-b"] #{:read :write})
+    (is (= ["todo_add" "todo_list"] (mapv :name (:tools (:ok (manifest-as c "agent-b" #{:read})))))
+        "the event that arrived mid-fetch still forces the next look to refetch")))
+
+(deftest a-stored-listing-is-fresh-only-at-its-own-revision
+  (let [sl (assoc hc/empty-slot :revision 3)]
+    (is (false? (:stale? (hc/stored sl {:v 1} 10 3))))
+    (is (true? (:stale? (hc/stored sl {:v 1} 10 2))) "an event moved the revision meanwhile")
+    (is (= {:v 1} (:manifest (hc/stored sl {:v 1} 10 2))) "the fetched listing is still kept")
+    (is (= 4 (:revision (hc/mark-stale sl))))))
 
 (deftest fleet-refreshes-the-notified-target-without-crossing-actors
   (let [[c state streams] (ch)
