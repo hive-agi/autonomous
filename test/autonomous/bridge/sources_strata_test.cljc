@@ -5,9 +5,9 @@
   (:require [autonomous.bridge.eval-source :as src]
             [autonomous.bridge.ledger :as ledger]
             [autonomous.bridge.ledger.memory]
-            [autonomous.bridge.nrepl-wire]
-            #?@(:bb [] :clj [[autonomous.bridge.ledger.datahike :as dh]
-                             [autonomous.bridge.nrepl]])
+            #?@(:bb [[autonomous.bridge.nrepl-wire]]
+                :clj [[autonomous.bridge.ledger.datahike :as dh]
+                      [autonomous.bridge.nrepl]])
             [clojure.test :refer [deftest is testing]]))
 
 ;; -----------------------------------------------------------------------------
@@ -61,14 +61,16 @@
 ;; -----------------------------------------------------------------------------
 ;; nREPL result promotion
 
-(deftest bb-nrepl-results-promote-to-answers
-  (let [wire-answer #'autonomous.bridge.nrepl-wire/wire-answer]
-    (is (= {:ok "1"} (wire-answer 7 {:result "1"})))
-    (is (= :channel/eval-threw (get-in (wire-answer 7 {:result "x" :error? true}) [:error :type])))
-    (testing "a failed connection wins over an eval error and names the port"
-      (let [a (wire-answer 7 {:result "refused" :error? true :connect-failed? true})]
-        (is (= :channel/connect-failed (get-in a [:error :type])))
-        (is (= "cannot reach nREPL on port 7" (get-in a [:error :message])))))))
+;; nrepl-wire rides bb-mcp, which only the babashka classpath carries.
+#?(:bb (deftest bb-nrepl-results-promote-to-answers
+         (let [wire-answer @(resolve 'autonomous.bridge.nrepl-wire/wire-answer)]
+           (is (= {:ok "1"} (wire-answer 7 {:result "1"})))
+           (is (= :channel/eval-threw (get-in (wire-answer 7 {:result "x" :error? true}) [:error :type])))
+           (testing "a failed connection wins over an eval error and names the port"
+             (let [a (wire-answer 7 {:result "refused" :error? true :connect-failed? true})]
+               (is (= :channel/connect-failed (get-in a [:error :type])))
+               (is (= "cannot reach nREPL on port 7" (get-in a [:error :message])))))))
+   :clj nil)
 
 #?(:bb nil
    :clj (deftest jvm-nrepl-messages-promote-to-answers
