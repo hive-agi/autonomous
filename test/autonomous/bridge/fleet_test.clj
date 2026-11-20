@@ -200,7 +200,7 @@
         p1       (future (bf/probe f one))]
     (is (wait-for #(= ["agent-1"] @arrived)) "agent-1's look is in flight")
     (let [p2 (future (bf/probe f two))]
-      (wait-for #(= 2 (count @arrived)))
+      (is (wait-for #(= 2 (count @arrived))) "agent-2's own look is in flight beside it")
       (deliver latch true)
       (is (= (per-actor-tools "agent-1") (tools-of @p1)))
       (is (= (per-actor-tools "agent-2") (tools-of @p2))
