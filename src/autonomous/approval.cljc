@@ -63,10 +63,12 @@
 
 (defn- ->decision
   "L1 Promote: the Decision for what the asker answered (`::timeout` when
-   nothing came in time). A value that is not a Verdict denies."
+   nothing came in time, `::error` when it failed). Any other value that
+   is not a Verdict denies."
   [v t0]
   (cond
     (= ::timeout v)        (stamp {:decision :timeout} t0)
+    (= ::error v)          (stamp {:decision :error} t0)
     (m/validate Verdict v) (stamp (select-keys v [:decision :approver]) t0)
     :else                  (stamp {:decision :deny} t0)))
 

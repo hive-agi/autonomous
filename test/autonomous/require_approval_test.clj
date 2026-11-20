@@ -100,6 +100,41 @@
         (is (= 1 (count @(:requests asker))))
         (is (= 1 @runs))))))
 
+(defn- approving-tool! [handler]
+  (a/reg-tool :pay {:description "Move money" :input [:map [:amount :int]] :handler handler})
+  (approving! [{:decision :approve :approver "ana"}] 1000))
+
+(deftest an-approved-tool-that-fails-keeps-its-approval-in-the-journal
+  (doseq [[label handler] [["throws" (fn [_ _] (swap! runs inc) (throw (ex-info "bank down" {})))]
+                           ["fails later" (fn [_ _] (swap! runs inc) (future (throw (ex-info "bank down" {}))))]]]
+    (testing label
+      (reset! runs 0)
+      (approving-tool! handler)
+      (let [id (:pending (call {:amount 10}))
+            r  (poll-until-settled id)
+            e  (settled-entry id)]
+        (is (= :tool-threw (get-in r [:error :type])))
+        (is (= 1 @runs))
+        (is (= :tool-threw (:outcome e)))
+        (is (= {:decision :approve :approver "ana"} (dissoc (:approval e) :ms)))))))
+
+(defrecord ThrowingAsker []
+  approval/Asker
+  (-ask! [_ _] (throw (ex-info "asker down" {}))))
+
+(defrecord PlainAsker []
+  approval/Asker
+  (-ask! [_ _] {:decision :approve :approver "not a promise"}))
+
+(deftest an-asker-that-fails-refuses-and-journals-an-error-decision
+  (doseq [asker [(->ThrowingAsker) (->PlainAsker)]]
+    (a/decorate! (a/each-tool (decorator/require-approval {:asker asker :timeout-ms 1000})))
+    (let [id (:pending (call {:amount 10}))
+          r  (poll-until-settled id)]
+      (is (= :approval-error (get-in r [:error :type])))
+      (is (= :error (get-in (settled-entry id) [:approval :decision])))
+      (is (zero? @runs)))))
+
 (deftest bad-options-throw-at-construction
   (is (thrown? clojure.lang.ExceptionInfo (decorator/require-approval {:asker :nope :timeout-ms 10})))
   (is (thrown? clojure.lang.ExceptionInfo

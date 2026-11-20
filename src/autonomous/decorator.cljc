@@ -35,7 +35,8 @@
 (def ^:private refusals
   "L1: the refusal of each Decision that does not run the tool."
   {:deny    (answer/refusal :approval-denied "a human denied this call")
-   :timeout (answer/refusal :approval-timeout "no human answered in time")})
+   :timeout (answer/refusal :approval-timeout "no human answered in time")
+   :error   (answer/refusal :approval-error "the approval asker failed")})
 
 (defn- as-answer
   "L1 Promote: a tool's value `v` as an Answer: a complete Answer as is,
@@ -49,12 +50,19 @@
   [d a]
   (vary-meta (answer/complete a) assoc :autonomous/approval d))
 
+(defn- approved
+  "L1 Pipeline: a thenable of the Answer of thunk `run` (the refusal of
+   what it throws or fails with), stamped with Decision `d`."
+  [run d]
+  (thenable/attempt #(thenable/chain (run) (comp (partial stamped d) as-answer))
+                    (comp (partial stamped d) answer/from-exception)))
+
 (defn- decided
   "L1 Pipeline: run thunk `run` when Decision `d` approves; else its refusal."
   [run d]
   (if (= :approve (:decision d))
-    (thenable/chain (run) (comp (partial stamped d) as-answer))
-    (stamped d (refusals (:decision d)))))
+    (approved run d)
+    (stamped d (refusals (:decision d) (:deny refusals)))))
 
 (defn- approval-request
   "L1 Promote: what the asker is asked about one call."
