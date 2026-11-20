@@ -50,11 +50,15 @@
 
 (defn- read-all
   "L2 Pipeline: Ok of the bundle once every pending document is read, or
-   the first refusal. Recursion depth is the number of documents."
-  [dir [bundle pending :as state]]
-  (if (empty? pending)
-    (answer/ok bundle)
-    (answer/bind (step dir state) #(read-all dir %))))
+   the first refusal. Folds `step` iteratively in constant stack, however
+   many entries are pending."
+  [dir state]
+  (loop [a (answer/ok state)]
+    (let [[bundle pending] (:ok a)]
+      (cond
+        (not (answer/ok? a)) a
+        (empty? pending)     (answer/ok bundle)
+        :else                (recur (step dir (:ok a)))))))
 
 (defn load-bundle
   "L3 Boundary: Ok Bundle of the OpenAPI document at `path` and every

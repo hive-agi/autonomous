@@ -36,6 +36,19 @@
       (spit (io/file d "gone.json") "{}")
       (is (= #{"a.json" "gone.json"} (set (keys (:docs (:ok (load/load-bundle (io/file d "a.json")))))))))))
 
+(defn- cross-referenced-docs
+  "`n` documents d0.json .. d<n-1>.json, each referring to every one of them."
+  [n]
+  (let [names (map #(str "d" % ".json") (range n))
+        body  (str "{" (apply str (interpose "," (map #(str "\"" % "\": {\"$ref\": \"" % "#/x\"}") names))) "}")]
+    (zipmap names (repeat body))))
+
+(deftest loading-many-cross-references-runs-in-constant-stack
+  (let [n 120
+        d (temp-dir (cross-referenced-docs n))]
+    (testing "n*n pending entries, nearly all duplicates, answer Ok without a StackOverflowError"
+      (is (= n (count (:docs (:ok (load/load-bundle (io/file d "d0.json"))))))))))
+
 (def ^:private op {:operation-id "getA" :method "get" :path "/a" :params [] :responses {"200" {}}})
 
 (deftest the-client-guard-needs-a-base-url
