@@ -267,6 +267,22 @@
         "an autonomous.edn app entry")
     (is (m/validate bs/Target (assoc target :credentials (credential-policy))))))
 
+(deftest a-remote-error-body-never-reaches-the-refusal
+  (let [[stub _ _] (open-stub)
+        listing? #(= "tools/list" (:method (json/read-json (:body %))))
+        echo (reify port/IHttpClient
+               (-request! [_ req]
+                 (if (listing? req)
+                   (json-response 403 {:error (str "refused " (get-in req [:headers "authorization"]))})
+                   (port/-request! stub req)))
+               (-open-stream! [_ req sink] (port/-open-stream! stub req sink)))
+        c    (channel/make (assoc target :credentials (credential-policy)
+                                  :credential-source (source) :http/client echo))
+        a    (manifest-as c "agent-a" #{:read})]
+    (is (= {:type :channel/remote-refused :status 403}
+           {:type (get-in a [:error :type]) :status (get-in a [:error :data :status])}))
+    (is (not (str/includes? (pr-str a) (tokens "agent-a"))) "a body echoing the token is not carried")))
+
 (deftest an-http-target-needs-a-url
   (is (not (m/validate bs/Target (dissoc target :url))) "a Target without one")
   (is (not (m/validate bs/Target (assoc target :url ""))) "an empty one")
