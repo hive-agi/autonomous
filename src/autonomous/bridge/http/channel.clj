@@ -67,10 +67,29 @@
     (when-let [close! (:close! old)] (try (close!) (catch Exception _closed nil)))
     (ses/close-session! client credentials target {:actor actor} old)))
 
+(defn forgotten
+  "Pure: sessions `by-actor` once stream `token` of `actor` ended: the
+   session holding that very stream loses it (compare-and-remove), and a
+   newer stream (after a renewal) is kept."
+  [by-actor actor token]
+  (if (identical? token (get-in by-actor [actor :stream-id]))
+    (update by-actor actor dissoc :close! :stream-id)
+    by-actor))
+
 (defn- forget-stream!
-  "Forget `actor`'s stream (the adapter is closing it)."
-  [ch actor]
-  (swap! (:sessions ch) update actor dissoc :close!))
+  "Forget `actor`'s stream `token` (the adapter is closing it)."
+  [ch actor token]
+  (swap! (:sessions ch) forgotten actor token))
+
+(defn- opened-stream
+  "Answer `r` of opening stream `token`, its Ok tagged with the token; a
+   stream that already ended (`closed` delivered) is a refusal, so a dead
+   stream is never recorded as held."
+  [r token closed]
+  (cond
+    (not (answer/ok? r)) r
+    (realized? closed)   (answer/refusal :channel/stream-ended "the remote stream ended at once")
+    :else                (update r :ok assoc :stream-id token)))
 
 (def ^:private no-stream-status
   "The status of a remote that offers no event stream at all."
