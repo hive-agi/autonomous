@@ -53,7 +53,8 @@
   (let [srv (:srv @st)]
     (boolean (and srv (string? tool-name)
                   (or (contains? (:builtins srv) tool-name)
-                      (answer/ok? (fleet/route-tool (:fleet srv) tool-name)))))))
+                      ;; ownership is the prefix alone: no actor's listing is needed
+                      (answer/ok? (fleet/route-tool (:fleet srv) nil tool-name)))))))
 
 (defn call
   "CallToolResult of `tool-name` with `params`, as the acting agent, keeping

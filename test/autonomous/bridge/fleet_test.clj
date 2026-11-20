@@ -137,6 +137,50 @@
     (is (= {:ok {:app "todo" :tool "todo_add" :runtime nil}} (:answer (call srv rw "todo_add" {}))))
     (is (= [1 ["todo_add"]] (server/tools-fingerprint srv rw)))))
 
+(def ^:private long-stem
+  "A tool-name stem long enough that <prefix>__<stem>... is cut at 64."
+  (apply str (repeat 60 "x")))
+
+(def ^:private per-actor-tools
+  "What the remote lists each actor: tools whose exposed names are both cut
+   and share their first 59 characters. agent-3 is refused outright."
+  {"agent-1" [(str long-stem "_one")]
+   "agent-2" [(str long-stem "_two")]})
+
+(defn- per-actor-responder
+  "A runtime that lists each actor its own tools, refuses an actor it does
+   not know, and counts its journal reads (a drain) in `journal-reads`."
+  [journal-reads]
+  (fn [{:keys [op tool actor]} _]
+    (case op
+      :manifest (if-let [ts (per-actor-tools actor)]
+                  (apply manifest "todo" ts)
+                  {:error {:type :channel/remote-refused :message "unknown agent"}})
+      :call     {:ok {:tool tool :by actor}}
+      :journal  (do (swap! journal-reads inc) {:ok {:epoch 1 :seq 0 :entries []}})
+      {:ok nil})))
+
+(deftest the-last-probe-is-kept-per-actor
+  (let [reads (atom 0)
+        l     (ledger/open {:ledger/kind :memory})
+        srv   (server/fleet-server (bf/make [(member "todo" (per-actor-responder reads) l)
+                                             (member "other" (app-responder "other" ["x"]) l)]
+                                            {:probe-ms 150}))
+        [one two refused] (map #(s/open-session % {:actor % :scopes #{:read :write}})
+                               ["agent-1" "agent-2" "agent-3"])
+        cut-name (fn [ses] (first (filter #(clojure.string/starts-with? % "todo__")
+                                          (map :name (server/list-tools srv ses)))))
+        exposed  (cut-name one)]
+    (is (= 64 (count exposed)) "agent-1's tool name is cut")
+    (cut-name two)
+    (is (= {:ok {:tool (first (per-actor-tools "agent-1")) :by "agent-1"}}
+           (:answer (call srv one exposed {})))
+        "a cut name resolves against the listing of the agent calling it, not the last prober")
+    (server/list-tools srv refused)
+    (reset! reads 0)
+    (call srv one "autonomous_ledger" {})
+    (is (pos? @reads) "another agent's refused probe does not mark the target down for agent-1")))
+
 (deftest a-target-coming-back-fires-list-changed
   (let [state  (atom :down)
         api    (app-responder "api" ["refund"])
