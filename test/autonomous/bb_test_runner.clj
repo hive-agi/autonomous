@@ -15,6 +15,7 @@
     autonomous.domain.primitives-trifecta-test
     autonomous.domain.fleet-trifecta-test
     autonomous.bridge.bridge-trifecta-test
+    autonomous.bridge.sources-strata-test
     autonomous.bridge.fleet-test
     autonomous.bridge.ws-test
     autonomous.bridge.ws-strata-test
@@ -22,6 +23,7 @@
     autonomous.bridge.http-test
     autonomous.bridge.http-smoke-test
     autonomous.mcp.transport-test
+    autonomous.mcp.protocol-strata-test
     autonomous.ring-test
     autonomous.e2e.check-trifecta-test
     autonomous.demo.plan-test
@@ -32,8 +34,13 @@
     autonomous.surface-transform-test
     autonomous.re-frame.model-trifecta-test
     autonomous.openapi-test
+    autonomous.openapi-derive-test
+    autonomous.openapi-surface-test
     autonomous.openapi-codec-test
+    autonomous.openapi-codec-strata-test
     autonomous.openapi-invoke-test
+    autonomous.openapi-boundary-strata-test
+    autonomous.openapi-pure-strata-test
     autonomous.asyncapi-core-test
     autonomous.asyncapi-source-test
     autonomous.bb-mcp.mount-test])
