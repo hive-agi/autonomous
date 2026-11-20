@@ -7,17 +7,25 @@
 
 (def default-cap 10000)
 
-(defn- trim [m cap]
+(defn- trim
+  "L1 Promote: entry map `m` keeping only its newest `cap` entries by :entry/at."
+  [m cap]
   (if (<= (count m) cap)
     m
     (let [keep-keys (->> (vals m) (sort-by :entry/at) (take-last cap) (map :entry/key))]
       (select-keys m keep-keys))))
 
+(defn- upsert
+  "L1 Promote: entry map `m` with `entries` upserted on :entry/key, trimmed
+   to `cap`."
+  [m entries cap]
+  (trim (into m (map (juxt :entry/key identity)) entries) cap))
+
 (defrecord MemoryLedger [store cap]
   port/ILedger
   (-append! [_ entries]
     (let [before (count @store)]
-      (swap! store (fn [m] (trim (into m (map (juxt :entry/key identity)) entries) cap)))
+      (swap! store upsert entries cap)
       (answer/ok (max 0 (- (count @store) before)))))
   (-query [_ q]
     (answer/ok (ledger/select-entries q (vals @store)))))

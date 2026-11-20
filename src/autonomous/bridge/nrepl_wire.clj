@@ -14,43 +14,45 @@
             [autonomous.bridge.eval-source :as src]
             [autonomous.bridge.port :as port]
             [autonomous.domain.answer :as answer]
-            [autonomous.domain.wire :as wire]
             [bb-mcp.tools.nrepl :as bb-nrepl]))
 
 (def default-timeout-ms 30000)
 
+(defn- wire-answer
+  "L1 Promote: the Answer of bb-mcp's eval result map, for nREPL `port`."
+  [port {:keys [result error? connect-failed?]}]
+  (cond
+    connect-failed? (answer/refusal :channel/connect-failed
+                                    (str "cannot reach nREPL on port " port) {:cause result})
+    error?          (answer/refusal :channel/eval-threw (str result))
+    :else           (answer/ok result)))
+
+(defn- eval-on-port
+  "L3 Boundary: the Answer of evaluating `code` on the nREPL at `port`."
+  [target port code]
+  (wire-answer port (bb-nrepl/eval-code {:host       (:nrepl/host target "localhost")
+                                         :port       port
+                                         :code       code
+                                         :timeout-ms (:timeout-ms target default-timeout-ms)})))
+
 (defn- eval!
-  "Ok of the printed value of `code` on `target`'s nREPL, or a refusal."
+  "L3 Boundary: Ok of the printed value of `code` on `target`'s nREPL, or a
+   refusal."
   [target code]
-  (let [p (endpoint/resolve-port target)]
-    (if (answer/refused? p)
-      p
-      (let [{:keys [result error? connect-failed?]}
-            (bb-nrepl/eval-code {:host       (:nrepl/host target "localhost")
-                                 :port       (:ok p)
-                                 :code       code
-                                 :timeout-ms (:timeout-ms target default-timeout-ms)})]
-        (cond
-          connect-failed? (answer/refusal :channel/connect-failed
-                                          (str "cannot reach nREPL on port " (:ok p)) {:cause result})
-          error?          (answer/refusal :channel/eval-threw (str result))
-          :else           (answer/ok result))))))
+  (answer/bind (endpoint/resolve-port target) #(eval-on-port target % code)))
 
 (defrecord WireChannel [target]
   port/IRuntimeChannel
   (-send [_ request runtime-id]
-    (let [mode (:nrepl/mode target)
-          res  (eval! target (src/request-source mode (:shadow/build target) request runtime-id))]
-      (if (answer/refused? res) res (src/parse-value mode (:ok res)))))
+    (let [mode (:nrepl/mode target)]
+      (answer/bind (eval! target (src/request-source mode (:shadow/build target) request runtime-id))
+                   #(src/parse-value mode %))))
 
   port/IRuntimeDirectory
   (-runtimes [_]
     (if (= :clj (:nrepl/mode target))
-      (answer/ok [{:runtime/id "jvm" :runtime/kind :clj :runtime/label "Clojure process"}])
-      (let [res (eval! target (src/runtimes-source (:shadow/build target)))]
-        (if (answer/refused? res)
-          res
-          (answer/ok (src/parse-runtimes (wire/read-edn (:ok res)))))))))
+      src/clj-runtimes
+      (src/runtimes-answer (eval! target (src/runtimes-source (:shadow/build target)))))))
 
 (defn channel
   "A WireChannel for nREPL `target`. Opens a connection per call."

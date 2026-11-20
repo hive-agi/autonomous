@@ -29,61 +29,96 @@
   [:entry/key :entry/target :entry/runtime :entry/seq :entry/at :entry/kind
    :entry/actor :entry/tool :entry/outcome :entry/data])
 
-(defn query-form
-  "Datalog for LedgerQuery `q`: equality clauses for the given fields, range
-   predicates for :since and :until. Answers [query args]. Pure."
+(def ^:private equality-attrs
+  "L1 Promote: LedgerQuery key -> the attribute it must equal."
+  [[:actor :entry/actor] [:kind :entry/kind] [:tool :entry/tool] [:target :entry/target]])
+
+(defn- equality-clauses
+  "L1 Promote: [attr ?var value] for each equality field `q` gives."
   [q]
-  (let [eqs    (for [[k attr] [[:actor :entry/actor] [:kind :entry/kind]
-                               [:tool :entry/tool] [:target :entry/target]]
-                     :when (some? (get q k))]
-                 [attr (symbol (str "?" (name k))) (get q k)])
-        ranges (cond-> []
-                 (:since q) (conj ['(>= ?at ?since) '?since (:since q)])
-                 (:until q) (conj ['(< ?at ?until) '?until (:until q)]))]
-    [(vec (concat [:find '[(pull ?e pattern) ...]
-                   :in '$ 'pattern]
-                  (map second eqs) (map second ranges)
-                  [:where '[?e :entry/key] '[?e :entry/at ?at]]
-                  (map (fn [[attr v]] ['?e attr v]) eqs)
-                  (map (fn [[pred]] [pred]) ranges)))
-     (concat (map last eqs) (map last ranges))]))
+  (for [[k attr] equality-attrs
+        :when (some? (get q k))]
+    [attr (symbol (str "?" (name k))) (get q k)]))
+
+(defn- range-clauses
+  "L1 Promote: [predicate ?var value] for :since and :until when `q` gives them."
+  [q]
+  (cond-> []
+    (:since q) (conj ['(>= ?at ?since) '?since (:since q)])
+    (:until q) (conj ['(< ?at ?until) '?until (:until q)])))
+
+(defn- datalog
+  "L1 Promote: the pull query binding `eqs` and `ranges` as inputs."
+  [eqs ranges]
+  (vec (concat [:find '[(pull ?e pattern) ...] :in '$ 'pattern]
+               (map second eqs) (map second ranges)
+               [:where '[?e :entry/key] '[?e :entry/at ?at]]
+               (map (fn [[attr v]] ['?e attr v]) eqs)
+               (map (fn [[pred]] [pred]) ranges))))
+
+(defn query-form
+  "L1 Promote: Datalog for LedgerQuery `q`: equality clauses for the given
+   fields, range predicates for :since and :until. Answers [query args]."
+  [q]
+  (let [eqs (equality-clauses q) ranges (range-clauses q)]
+    [(datalog eqs ranges) (concat (map last eqs) (map last ranges))]))
+
+(defn- entry-count
+  "L3 Boundary: how many entries database `db` holds."
+  [db]
+  (or (d/q '[:find (count ?e) . :where [?e :entry/key]] db) 0))
+
+(defn- append!
+  "L3 Boundary: upsert `entries` into `conn`; Ok of how many were new."
+  [conn entries]
+  (let [before (entry-count @conn)]
+    (d/transact conn {:tx-data (vec entries)})
+    (answer/ok (- (entry-count @conn) before))))
+
+(defn- query
+  "L3 Boundary: Ok of the entries in `conn` matching LedgerQuery `q`."
+  [conn q]
+  (let [[form args] (query-form q)]
+    (answer/ok (ledger/select-entries q (apply d/q form @conn pull-pattern args)))))
+
+(defn- guarded
+  "L3 Boundary: (f), or a refusal of `type` carrying what it threw."
+  [type f]
+  (try (f) (catch Exception e (answer/refusal type (ex-message e)))))
 
 (defrecord DatahikeLedger [conn]
   port/ILedger
-  (-append! [_ entries]
-    (try
-      (let [before (d/q '[:find (count ?e) . :where [?e :entry/key]] @conn)]
-        (d/transact conn {:tx-data (vec entries)})
-        (answer/ok (- (or (d/q '[:find (count ?e) . :where [?e :entry/key]] @conn) 0) (or before 0))))
-      (catch Exception e (answer/refusal :ledger/write-failed (ex-message e)))))
-  (-query [_ q]
-    (try
-      (let [[form args] (query-form q)]
-        (answer/ok (ledger/select-entries q (apply d/q form @conn pull-pattern args))))
-      (catch Exception e (answer/refusal :ledger/query-failed (ex-message e))))))
+  (-append! [_ entries] (guarded :ledger/write-failed #(append! conn entries)))
+  (-query [_ q] (guarded :ledger/query-failed #(query conn q))))
 
 (def default-config
   {:store {:backend :memory :id #uuid "00000000-0000-0000-0000-00000000a170"}
    :schema-flexibility :write
    :keep-history? true})
 
+(defn- file-store
+  "L1 Promote: the config of a file store at `path`, its id derived from
+   the path so a restart reopens the same ledger."
+  [^String path]
+  (assoc default-config :store {:backend :file :path path
+                                :id (java.util.UUID/nameUUIDFromBytes (.getBytes path "UTF-8"))}))
+
 (defn store-config
-  "Datahike config for ledger `cfg`: an explicit :datahike/config, a file
-   store at :datahike/path (its id derived from the path, so a restart
-   reopens the same ledger), else a fresh in-memory store."
+  "L1 Promote: Datahike config for ledger `cfg`: an explicit
+   :datahike/config, a file store at :datahike/path, else a fresh
+   in-memory store."
   [cfg]
   (cond
     (:datahike/config cfg) (:datahike/config cfg)
-    (:datahike/path cfg)   (let [p (:datahike/path cfg)]
-                             (assoc default-config :store
-                                    {:backend :file :path p
-                                     :id (java.util.UUID/nameUUIDFromBytes (.getBytes ^String p "UTF-8"))}))
+    (:datahike/path cfg)   (file-store (:datahike/path cfg))
     :else                  (assoc-in default-config [:store :id] (java.util.UUID/randomUUID))))
 
+(defn- connect!
+  "L3 Boundary: a connection to the database of `dcfg`, created and given
+   the ledger schema as needed."
+  [dcfg]
+  (when-not (d/database-exists? dcfg) (d/create-database dcfg))
+  (doto (d/connect dcfg) (d/transact {:tx-data schema})))
+
 (defmethod ledger/make :datahike [cfg]
-  (let [dcfg (store-config cfg)]
-    (when-not (d/database-exists? dcfg)
-      (d/create-database dcfg))
-    (let [conn (d/connect dcfg)]
-      (d/transact conn {:tx-data schema})
-      (->DatahikeLedger conn))))
+  (->DatahikeLedger (connect! (store-config cfg))))
