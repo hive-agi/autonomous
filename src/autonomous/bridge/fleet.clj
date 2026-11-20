@@ -50,10 +50,10 @@
   (s/on-target (:mode f) session target-id))
 
 (defn- probe-future
-  "The running look at target `tid` for session `ses`: the one already in
-   flight for the same target, scopes and runtime, else a new future."
+  "The running look at target `tid` for session `ses`: one already in flight
+   for the same actor, target, scopes and runtime, else a new future."
   [f tid ses]
-  (let [k [tid (:session/scopes ses) (:session/runtime ses)]
+  (let [k [tid (:session/actor ses) (:session/scopes ses) (:session/runtime ses)]
         ctx (member f tid)]
     (or (let [fut (get @(:inflight f) k)] (when (and fut (not (realized? fut))) fut))
         (let [fut (future (try (client/manifest ctx ses)

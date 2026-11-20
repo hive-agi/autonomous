@@ -98,6 +98,16 @@
   (-request! [_ req] (send req))
   (-open-stream! [_ req sink] (open-stream req sink)))
 
+(defrecord EnvironmentCredentials []
+  port/ICredentialSource
+  (-resolve-token! [_ {:keys [token-env]}]
+    (answer/ok (System/getenv token-env))))
+
+(defn credential-source
+  "An ICredentialSource reading only the environment variable a reference names."
+  []
+  (->EnvironmentCredentials))
+
 (defn client
   "The default IHttpClient of this runtime."
   [] (->JdkClient))

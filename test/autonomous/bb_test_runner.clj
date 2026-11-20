@@ -14,6 +14,7 @@
     autonomous.bridge.fleet-test
     autonomous.bridge.ws-test
     autonomous.bridge.http-test
+    autonomous.bridge.http-smoke-test
     autonomous.mcp.transport-test
     autonomous.ring-test
     autonomous.e2e.check-trifecta-test

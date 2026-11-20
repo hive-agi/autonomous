@@ -16,7 +16,12 @@
             [autonomous.domain.answer :as answer]
             [autonomous.mcp.json :as json]
             [clojure.string :as str]
-            [clojure.test :refer [deftest is testing]]))
+            [clojure.test :refer [deftest is testing]]
+            [autonomous.bridge.http :as http]
+            [autonomous.bridge.fleet :as bf]
+            [autonomous.mcp.server :as server]
+            [autonomous.cli :as cli]
+            [autonomous.config :as config]))
 
 (def ^:private target
   {:target/kind :http :target/id "todo" :url "http://remote.test/todo" :timeout-ms 2000})
@@ -63,22 +68,23 @@
         (result msg {:tools (visible-tools (get-in @state [:scopes actor]))})
         (json-response 404 {:error "not your session"})))))
 
-(deftype StubClient [state stream]
+(deftype StubClient [state streams]
   port/IHttpClient
   (-request! [_ req]
     (if-let [actor (actor-of req)]
       (on-post state actor req)
       (json-response 401 {:error "no token"})))
-  (-open-stream! [_ _req sink]
-    (reset! stream sink)
-    {:ok {:close! (fn [] (reset! stream nil))}}))
+  (-open-stream! [_ req sink]
+    (let [actor (actor-of req)]
+      (swap! streams assoc actor sink)
+      {:ok {:close! (fn [] (swap! streams dissoc actor))}})))
 
 (defn- open-stub
-  "A stub client over fresh state, plus that state and its stream cell."
+  "A stub client over fresh state, plus that state and its actor stream cells."
   []
-  (let [state  (atom {:sessions {} :calls [] :scopes {"agent-a" #{:read :write} "agent-b" #{:read}}})
-        stream (atom nil)]
-    [(->StubClient state stream) state stream]))
+  (let [state   (atom {:sessions {} :calls [] :scopes {"agent-a" #{:read :write} "agent-b" #{:read}}})
+        streams (atom {})]
+    [(->StubClient state streams) state streams]))
 
 (defn- as
   "The channel's answer as `actor` sends `req` with `scopes`."
@@ -119,13 +125,24 @@
 ;; -----------------------------------------------------------------------------
 ;; Contract
 
-(defn- auth-of [g] {"authorization" (str "Bearer " (tokens (:actor g)))})
+(defrecord Environment [values]
+  port/ICredentialSource
+  (-resolve-token! [_ {:keys [token-env]}] (answer/ok (get values token-env))))
+
+(defn- source []
+  (->Environment {"REMOTE_AGENT_A" "aut_a" "REMOTE_AGENT_B" "aut_b"}))
+
+(defn- credential-policy []
+  {"agent-a" {:token-env "REMOTE_AGENT_A"}
+   "agent-b" {:token-env "REMOTE_AGENT_B"}})
 
 (defn- ch
-  "A channel over a fresh stub, plus the stub's state."
+  "A channel over a fresh stub, plus the stub's state and actor streams."
   []
-  (let [[client state _] (open-stub)]
-    [(channel/make (assoc target :identity auth-of :http/client client)) state]))
+  (let [[client state streams] (open-stub)]
+    [(channel/make (assoc target :credentials (credential-policy)
+                          :credential-source (source) :http/client client))
+     state streams]))
 
 (deftest the-manifest-is-the-remote's-listing-for-the-agent
   (let [[c state] (ch)]
@@ -161,13 +178,74 @@
         spy  (reify port/IHttpClient
                (-request! [_ req] (swap! seen conj req) (port/-request! client req))
                (-open-stream! [_ req sink] (swap! seen conj req) (port/-open-stream! client req sink)))
-        c    (channel/make (assoc target :identity (constantly {"authorization" "Bearer aut_secret"})
-                              :http/client spy))]
+        c    (channel/make (assoc target :credentials (credential-policy)
+                                  :credential-source (source) :http/client spy))]
     (manifest-as c "agent-a" #{:read})
     (is (seq @seen))
     (is (every? #(not (str/includes? (:url %) "aut_")) @seen) "no token in any url")
-    (is (every? #(str/includes? (get-in % [:headers "authorization"]) "aut_secret") @seen)
-        "the token rides a header")))
+    (is (every? #(= "Bearer aut_a" (get-in % [:headers "authorization"])) @seen)
+        "the remote token rides a header")))
+
+(deftest remote-credentials-belong-to-the-calling-agent
+  (let [[client state _] (open-stub)
+        seen (atom [])
+        spy  (reify port/IHttpClient
+               (-request! [_ req] (swap! seen conj req) (port/-request! client req))
+               (-open-stream! [_ req sink] (swap! seen conj req) (port/-open-stream! client req sink)))
+        c    (channel/make (assoc target :credentials (credential-policy)
+                                  :credential-source (source) :http/client spy))
+        calls [["agent-a" "aut_a"] ["agent-b" "aut_b"]]]
+    (doseq [[actor token] calls]
+      (is (= {:ok {:by actor :tool "todo_list" :args {}}}
+             (as c actor #{:read :write} {:op :call :tool "todo_list"})))
+      (is (every? #(= (str "Bearer " token) (get-in % [:headers "authorization"])) @seen)
+          "no bridge or other-agent token crosses this boundary")
+      (is (= [{:actor actor :tool "todo_list"}] (:calls @state)))
+      (reset! seen [])
+      (swap! state assoc :calls []))))
+
+(deftest credential-config-promotes-references-only
+  (let [entry {:app "todo" :channel :http :url "http://remote.test"
+               :credentials (credential-policy)}
+        cfg (:ok (config/promote {:targets [entry]} {} {} nil {}))]
+    (is (= (credential-policy) (get-in cfg [:targets 0 :credentials])))
+    (is (= {:target/kind :http :target/id "todo" :url "http://remote.test"}
+           (cli/target-label (first (:targets cfg)))))))
+
+(deftest list-changed-refreshes-only-the-notified-actor
+  (let [[c _ streams] (ch)]
+    (is (= #{"todo_add" "todo_list"}
+           (set (map :name (:tools (:ok (manifest-as c "agent-a" #{:read :write})))))))
+    (is (= ["todo_list"]
+           (mapv :name (:tools (:ok (manifest-as c "agent-b" #{:read}))))))
+    (is (= #{"agent-a" "agent-b"} (set (keys @streams))))
+    ((get-in @streams ["agent-a" :text!])
+     (str "data: " (json/write {:jsonrpc "2.0" :method rpc/list-changed}) "\n\n"))
+    (is (= ["todo_add" "todo_list"]
+           (mapv :name (:tools (:ok (manifest-as c "agent-a" #{:read})))))
+        "A's remote token and refreshed view are used after SSE")
+    (is (= ["todo_list"]
+           (mapv :name (:tools (:ok (manifest-as c "agent-b" #{:read :write})))))
+        "B's remote view remains isolated")))
+
+(deftest fleet-refreshes-the-notified-target-without-crossing-actors
+  (let [[c state streams] (ch)
+        f   (bf/make [["todo" (client/context {:target target :channel c :drain :inline})]]
+                     {:mode :fleet :probe-ms 1000})
+        srv (server/fleet-server f)
+        a   (s/open-session "a" {:actor "agent-a" :scopes #{:read :write}})
+        b   (s/open-session "b" {:actor "agent-b" :scopes #{:read :write}})
+        names #(set (map :name (server/list-tools srv %)))]
+    (is (contains? (names a) "todo__todo_add"))
+    (is (not (contains? (names b) "todo__todo_add")))
+    (swap! state assoc-in [:scopes "agent-b"] #{:read :write})
+    ((get-in @streams ["agent-b" :text!])
+     (str "data: " (json/write {:jsonrpc "2.0" :method rpc/list-changed}) "\n\n"))
+    (is (contains? (names b) "todo__todo_add") "B's SSE refresh reaches the fleet")
+    (is (contains? (names a) "todo__todo_add"))
+    (is (not (contains? (names b) "todo__missing")))
+    (is (= {:ok {:by "agent-b" :tool "todo_add" :args {}}}
+           (:answer (server/call-tool srv b "todo__todo_add" {}))))))
 
 (deftest a-remote-make-builds-the-channel
   (is (satisfies? port/IRuntimeChannel (channel/make {:target/kind :http :target/id "mk"

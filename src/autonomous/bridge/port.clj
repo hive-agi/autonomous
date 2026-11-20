@@ -39,3 +39,9 @@
     "Answer of a held GET to `req` whose event text arrives at `sink`
      ({:text! (fn [s]) :close! (fn [])}), or a refusal. Ok of
      {:close! (fn [])} when the stream was opened; the caller closes it."))
+
+(defprotocol ICredentialSource
+  "Resolve a remote credential reference at a secret-store boundary."
+  (-resolve-token! [source reference]
+    "Ok of the secret string named by `reference`, or Ok nil when unset.
+     The reference, not the secret, belongs in configuration and logs."))

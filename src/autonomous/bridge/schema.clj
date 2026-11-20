@@ -41,16 +41,25 @@
    [:target/id :string]
    [:timeout-ms {:optional true} [:int {:min 100}]]])
 
+(def CredentialReference
+  "A remote credential by secret-store reference; a token value is never config."
+  [:map [:token-env :string]])
+
+(def CredentialPolicy
+  "Remote credential references by caller actor, with an optional :default."
+  [:map-of [:or :string [:= :default]] CredentialReference])
+
 (def HttpTarget
   "A remote app reached by URL over MCP-over-HTTP (its own /mcp, the handler
-   autonomous.ring mounts), so no nREPL and no inbound port. `:token-env`
-   names the environment variable holding the bearer sent with each call;
-   the token itself is never stored here."
+   autonomous.ring mounts), so no nREPL and no inbound port. Credentials
+   name environment variables; :credentials selects one by actor or :default,
+   falling back to the target-wide :token-env."
   [:map
    [:target/kind [:= :http]]
    [:target/id :string]
    [:url {:optional true} :string]
    [:token-env {:optional true} :string]
+   [:credentials {:optional true} CredentialPolicy]
    [:timeout-ms {:optional true} [:int {:min 100}]]])
 
 (def Target

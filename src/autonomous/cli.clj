@@ -56,11 +56,16 @@
                       "/autonomous/ws (runtime token required)"))
             nil)))))
 
-(defn- member-context [cfg ledger target]
+(defn member-context [cfg ledger target]
   (client/context {:target          target
                    :channel         (channel/make target)
                    :ledger          ledger
                    :call-timeout-ms (:call-timeout-ms cfg)}))
+
+(defn target-label
+  "The non-secret target facts startup may print."
+  [target]
+  (select-keys target [:target/kind :target/id :url :nrepl/host :nrepl/port :nrepl/port-file]))
 
 (defn build-server
   "MCP server for validated `cfg`: one target in single mode, or a fleet of
@@ -120,8 +125,8 @@
                            nil))]
             (when srv
               (if (:targets cfg)
-                (doseq [t (:targets cfg)] (err "autonomous: fleet target" (pr-str t)))
-                (err "autonomous: target" (pr-str (:target cfg)))))
+                (doseq [t (:targets cfg)] (err "autonomous: fleet target" (pr-str (target-label t))))
+                (err "autonomous: target" (pr-str (target-label (:target cfg))))))
             (cond
               (nil? srv) 2
               (start-ws! cfg) 3

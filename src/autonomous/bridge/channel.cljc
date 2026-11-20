@@ -29,4 +29,4 @@
 
 (defmethod make :default [target]
   (throw (ex-info (str "no channel for target kind " (:target/kind target))
-                  {:target target})))
+                  {:target/kind (:target/kind target)})))

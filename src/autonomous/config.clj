@@ -152,14 +152,14 @@
   {:target/kind :ws :target/id (or (:target-id opts) "app")})
 
 (defn http-target
-  "The :http Target an autonomous.edn app entry describes:
-   {:app \"x\" :channel :http :url \"http://...\" :token-env \"X_TOKEN\"}.
-   Entry keys: :app (the target id), :url, :token-env, :timeout-ms."
+  "Promote one remote app entry to an :http Target. Credentials select
+   environment references by actor, with :default as the fallback."
   [entry]
   {:target/kind :http
    :target/id   (str (:app entry))
    :url         (str (:url entry))
    :token-env   (some-> (:token-env entry) str)
+   :credentials (:credentials entry)
    :timeout-ms  (:timeout-ms entry)})
 
 (defn- ledger-config [opts]

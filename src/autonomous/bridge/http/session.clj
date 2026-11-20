@@ -45,37 +45,42 @@
 
 (defn open-session!
   "Ok of a session {:id :actor} opened for `grant` on `target`, or a
-   refusal. Runs initialize and the initialized notification."
-  [client target grant timeout-ms]
-  (let [ident (http/identity target)
-        init  (post client target (rpc/initialize-msg (rpc/next-id)) (ident grant) nil timeout-ms)]
-    (if (answer/refused? init)
-      init
-      (let [sid (get-in init [:ok :headers "mcp-session-id"])]
-        (if (str/blank? (str sid))
-          (answer/refusal :channel/remote-refused "the remote opened no MCP session")
-          (do (post client target (rpc/initialized-msg) (ident grant) sid timeout-ms)
-              (answer/ok {:id (str sid) :actor (:actor grant)})))))))
+   refusal. Resolves `source`'s credential reference before each exchange."
+  [client source target grant timeout-ms]
+  (answer/let-answer
+   [ident (http/identity target source grant)
+    init  (post client target (rpc/initialize-msg (rpc/next-id)) ident nil timeout-ms)
+    sid   (let [id (get-in init [:headers "mcp-session-id"])]
+            (if (str/blank? (str id))
+              (answer/refusal :channel/remote-refused "the remote opened no MCP session")
+              (answer/ok (str id))))]
+   (post client target (rpc/initialized-msg) ident sid timeout-ms)
+   (answer/ok {:id sid :actor (:actor grant)})))
 
 (defn close-session!
-  "Release session `ses` (a DELETE); a refusal is ignored, the stream and
-   the idle sweep clean up anyway."
-  [client target grant ses]
+  "Release session `ses` with the same caller's credential; cleanup proceeds
+   even when the remote has already forgotten it."
+  [client source target grant ses]
   (when ses
-    (port/-request! client {:method :delete :url (http/endpoint target)
-                            :headers (merge ((http/identity target) grant) {"mcp-session-id" (str (:id ses))})
-                            :timeout-ms 5000})))
+    (answer/let-answer
+     [ident (http/identity target source grant)]
+     (port/-request! client {:method :delete :url (http/endpoint target)
+                             :headers (assoc ident "mcp-session-id" (str (:id ses)))
+                             :timeout-ms 5000}))))
 
 (defn round
   "Answer of `msg` sent in session `ses` as `grant`: the JSON-RPC reply
-   unwrapped. A refusal is a transport or protocol failure, never thrown."
-  [client target grant ses msg timeout-ms]
+   unwrapped. A session is never lent to another actor."
+  [client source target grant ses msg timeout-ms]
   (let [ses (if (map? ses) ses {:id ses})]
-    (if-let [why (when (and (:actor ses) (not= (:actor ses) (:actor grant)))
-                   "this remote session belongs to another agent")]
-      (answer/refusal :channel/session-owner why)
-      (let [r (post client target msg ((http/identity target) grant) (:id ses) timeout-ms)]
-        (if (answer/refused? r) r (decode (:ok r)))))))
+    (answer/let-answer
+     [_     (if (and (:actor ses) (not= (:actor ses) (:actor grant)))
+              (answer/refusal :channel/session-owner
+                              "this remote session belongs to another agent")
+              (answer/ok nil))
+      ident (http/identity target source grant)
+      resp  (post client target msg ident (:id ses) timeout-ms)]
+     (decode resp))))
 
 ;; =============================================================================
 ;; The event stream
@@ -108,11 +113,13 @@
      :close! (fn [] (on-close))}))
 
 (defn open-stream!
-  "Transport: hold the session's event stream and dispatch messages to its callbacks."
-  [client target grant ses on-message on-close]
-  (port/-open-stream! client {:url (http/endpoint target)
-                              :headers (merge ((http/identity target) grant)
-                                              {"accept" rpc/sse-accept
-                                               "mcp-session-id" (str (:id ses))})
-                              :stream-timeout-ms (:timeout-ms target http/default-timeout-ms)}
-                      (sink on-message on-close)))
+  "Boundary: hold the caller's event stream and dispatch its messages to
+   `on-message`, with `on-close` notified when it ends."
+  [client source target grant ses on-message on-close]
+  (answer/let-answer
+   [ident (http/identity target source grant)]
+   (port/-open-stream! client {:url (http/endpoint target)
+                               :headers (merge ident {"accept" rpc/sse-accept
+                                                      "mcp-session-id" (str (:id ses))})
+                               :stream-timeout-ms (:timeout-ms target http/default-timeout-ms)}
+                       (sink on-message on-close))))

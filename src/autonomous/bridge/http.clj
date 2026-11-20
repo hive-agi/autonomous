@@ -1,23 +1,10 @@
 (ns autonomous.bridge.http
-  "Remote-MCP adapter of IRuntimeChannel and IRuntimeDirectory: the app is
-   reached over its own /mcp endpoint by URL (the handler autonomous.ring
-   mounts), so an app behind a firewall needs no nREPL and no inbound port.
+  "Remote-MCP identity, addressing and adapter selection.
 
-   One MCP session per AGENT: a remote binds a session to the actor that
-   opened it, so agents never share one. Each exchange carries the agent's
-   own identity from the target's :identity port, a fn of the grant
-   returning headers (a bearer from a token in the environment by default).
-   The token rides a header and nothing else: never the URL, never a log.
-
-   notifications/tools/list_changed on the remote's event stream marks the
-   cached listing stale, so the next look re-reads it; a remote that is down
-   refuses, and the fleet then hides only its own tools.
-
-   Strata: autonomous.bridge.rpc is the pure dialogue, the port is
-   autonomous.bridge.port/IHttpClient, autonomous.bridge.http.jdk is the
-   network."
+   Credential configuration contains environment REFERENCES, selected per
+   calling actor with an optional target default. ICredentialSource resolves
+   them at the Boundary; a secret never enters a request URL or a log."
   (:require [autonomous.bridge.port :as port]
-            [autonomous.bridge.rpc :as rpc]
             [autonomous.domain.answer :as answer]
             [clojure.string :as str]))
 
@@ -36,22 +23,46 @@
 ;; Identity
 ;; =============================================================================
 
-(defn token-of
-  "The bearer token of `target`, from its :token-env (\"X_TOKEN\") or :token."
-  [target]
-  (or (:token target) (some-> (:token-env target) System/getenv str not-empty)))
+(defn credential-reference
+  "Pure policy: the environment reference for `grant` on `target`, selecting
+   its actor before the target default, or the legacy target :token-env."
+  [target grant]
+  (let [credentials (:credentials target)]
+    (or (get credentials (:actor grant))
+        (get credentials :default)
+        (some-> (:token-env target) (hash-map :token-env)))))
+
+(defn- resolve-token!
+  "Boundary: Ok of the token named by `reference` from `source`, or nil
+   without one. The credential value is never part of configuration data."
+  [source reference]
+  (if reference
+    (answer/let-answer [token (port/-resolve-token! source reference)]
+      (answer/ok (some-> token str not-empty)))
+    (answer/ok nil)))
 
 (defn bearer-headers
-  "Identity headers of the default port: the target's bearer, read per call
-   so a new environment needs no rebuild. Empty when no token is set."
-  [target]
-  (if-let [t (token-of target)] {"authorization" (str "Bearer " t)} {}))
+  "Pure projection: authorization headers carrying `token`, empty without one."
+  [token]
+  (if token {"authorization" (str "Bearer " token)} {}))
 
 (defn identity
-  "The identity port of `target`: (fn [grant] headers). Default is the
-   target's bearer; an app with its own auth passes :identity."
+  "Boundary: Answer of identity headers for `grant`, using the target's
+   configured credential reference and the injected `source`."
+  [target source grant]
+  (answer/bind (resolve-token! source (credential-reference target grant))
+               #(answer/ok (bearer-headers %))))
+
+(def credential-source
+  "The ICredentialSource of this runtime, resolved at the network boundary."
+  (delay ((requiring-resolve 'autonomous.bridge.http.jdk/credential-source))))
+
+(defn default-credential-source
+  "The injected credential source, or the runtime environment source."
   [target]
-  (or (:identity target) (fn [_grant] (bearer-headers target))))
+  (or (:credential-source target) (force credential-source)))
+
+
 
 ;; =============================================================================
 ;; Addressing
