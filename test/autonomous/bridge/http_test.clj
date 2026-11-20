@@ -570,6 +570,27 @@
     (is (every? #(answer/ok? (deref % 5000 nil)) calls))
     (is (= 1 @opened) "one session was opened for the actor")))
 
+(defn- stream-opens-after-a-drop
+  "How many stream opens `agent-a` makes on a channel whose retry interval
+   is `retry-ms`, when its stream ends between two calls."
+  [retry-ms]
+  (let [[client _ streams] (open-stub)
+        opens (atom 0)
+        spy   (reify port/IHttpClient
+                (-request! [_ req] (port/-request! client req))
+                (-open-stream! [_ req sink] (swap! opens inc) (port/-open-stream! client req sink)))
+        c     (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                                   :stream-retry-ms retry-ms :http/client spy))
+        call  #(as c "agent-a" #{:read} {:op :call :tool "todo_list"})]
+    (call)
+    ((get-in @streams ["agent-a" :close!]))
+    (call)
+    @opens))
+
+(deftest a-dead-stream-is-reopened-on-the-next-look-rate-limited
+  (is (= 2 (stream-opens-after-a-drop 0)) "the next look reopens the ended stream")
+  (is (= 1 (stream-opens-after-a-drop 60000)) "not again within the retry interval"))
+
 (deftest a-stored-listing-is-fresh-only-at-its-own-revision
   (let [sl (assoc hc/empty-slot :revision 3)]
     (is (false? (:stale? (hc/stored sl {:v 1} 10 3))))

@@ -9,9 +9,9 @@
 
    An MCP session belongs to one agent and is renewed the single time a
    remote reports it forgotten (a restart); the renewed session opens a new
-   stream. A stream that ends while its session lives is not reopened:
-   until the session is renewed that agent's listing refreshes on the ttl
-   only.
+   stream. A stream that ends while its session lives is reopened by that
+   agent's next look, at most once per :stream-retry-ms; meanwhile its
+   listing refreshes on the ttl.
 
    Every method answers an Answer; nothing here throws."
   (:require [autonomous.bridge.http :as http]
@@ -73,12 +73,26 @@
   (swap! (:sessions ch) update actor dissoc :close!))
 
 (defn- listen!
-  "Hold `ses`'s event stream: a list_changed marks `actor`'s listing stale."
+  "Hold `ses`'s event stream: a list_changed marks `actor`'s listing stale.
+   The attempt is stamped :listen-at on the session, whatever its outcome."
   [ch client credentials target grant ses]
   (let [actor  (:actor grant)
         on-msg (fn [msg] (when (rpc/list-changed? msg) (swap! (slot ch actor) mark-stale)))
+        _      (swap! (:sessions ch) update actor assoc :listen-at (now))
         r      (ses/open-stream! client credentials target grant ses on-msg #(forget-stream! ch actor))]
     (when (answer/ok? r) (swap! (:sessions ch) update actor merge (:ok r)))))
+
+(def stream-retry-ms
+  "The least time between two attempts to hold one actor's event stream."
+  5000)
+
+(defn- revive-stream!
+  "Reopen the event stream of `grant`'s live session `ses` when it has
+   none, at most once per :stream-retry-ms of `target` for that actor."
+  [ch client credentials target grant ses]
+  (when (and (nil? (:close! ses))
+             (<= (:stream-retry-ms target stream-retry-ms) (- (now) (:listen-at ses 0))))
+    (listen! ch client credentials target grant ses)))
 
 (defn- open-session!
   "Ok of a session of `grant` on this remote, its stream held."
@@ -95,14 +109,19 @@
   (some-> (get @(:sessions ch) actor) answer/ok))
 
 (defn- session!
-  "Answer of `grant`'s live session, opened when there is none. The open
-   runs under the actor's lock and re-checks there, so concurrent looks by
-   one actor open one session."
+  "Answer of `grant`'s live session, opened when there is none, its dead
+   event stream reopened (rate-limited per actor). Both run under the
+   actor's lock and re-check there, so concurrent looks by one actor open
+   one session and one stream."
   [ch client credentials target grant]
-  (or (current-session ch (:actor grant))
-      (locking (actor-lock ch (:actor grant))
-        (or (current-session ch (:actor grant))
-            (open-session! ch client credentials target grant)))))
+  (let [actor (:actor grant)
+        ses   (get @(:sessions ch) actor)]
+    (if (and ses (:close! ses))
+      (answer/ok ses)
+      (locking (actor-lock ch actor)
+        (if-let [live (current-session ch actor)]
+          (do (revive-stream! ch client credentials target grant (:ok live)) live)
+          (open-session! ch client credentials target grant))))))
 
 (defn- renew!
   "Ok of a fresh session for `grant` in place of `gone`, the session the
