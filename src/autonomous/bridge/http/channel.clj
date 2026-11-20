@@ -72,15 +72,27 @@
   [ch actor]
   (swap! (:sessions ch) update actor dissoc :close!))
 
+(def ^:private no-stream-status
+  "The status of a remote that offers no event stream at all."
+  405)
+
+(defn listened
+  "Pure: session `ses` after a stream attempt answered `r` at `at`: its
+   :close! on success, :stream-none? when the remote has no stream (405,
+   never retried), and the attempt's completion stamped :listen-at."
+  [ses r at]
+  (cond-> (assoc ses :listen-at at)
+    (answer/ok? r)                                         (merge (:ok r))
+    (= no-stream-status (get-in r [:error :data :status])) (assoc :stream-none? true)))
+
 (defn- listen!
   "Hold `ses`'s event stream: a list_changed marks `actor`'s listing stale.
-   The attempt is stamped :listen-at on the session, whatever its outcome."
+   The session records the outcome once the attempt completes."
   [ch client credentials target grant ses]
   (let [actor  (:actor grant)
         on-msg (fn [msg] (when (rpc/list-changed? msg) (swap! (slot ch actor) mark-stale)))
-        _      (swap! (:sessions ch) update actor assoc :listen-at (now))
         r      (ses/open-stream! client credentials target grant ses on-msg #(forget-stream! ch actor))]
-    (when (answer/ok? r) (swap! (:sessions ch) update actor merge (:ok r)))))
+    (swap! (:sessions ch) update actor listened r (now))))
 
 (def stream-retry-ms
   "The least time between two attempts to hold one actor's event stream."
@@ -88,9 +100,10 @@
 
 (defn- revive-stream!
   "Reopen the event stream of `grant`'s live session `ses` when it has
-   none, at most once per :stream-retry-ms of `target` for that actor."
+   none, at most once per :stream-retry-ms of `target` for that actor, and
+   never when the remote said it offers no stream."
   [ch client credentials target grant ses]
-  (when (and (nil? (:close! ses))
+  (when (and (nil? (:close! ses)) (not (:stream-none? ses))
              (<= (:stream-retry-ms target stream-retry-ms) (- (now) (:listen-at ses 0))))
     (listen! ch client credentials target grant ses)))
 

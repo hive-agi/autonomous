@@ -173,7 +173,8 @@
           resp (.send ^HttpClient @shared (.build b) (HttpResponse$BodyHandlers/ofInputStream))]
       (if (<= 400 (.statusCode resp))
         (do (.close (.body resp))
-            (answer/refusal :channel/stream-refused (str "the remote stream answered " (.statusCode resp))))
+            (answer/refusal :channel/stream-refused (str "the remote stream answered " (.statusCode resp))
+                            {:status (.statusCode resp)}))
         (do (future (pump! (BufferedReader. (InputStreamReader. ^InputStream (.body resp) "UTF-8")) sink))
             (answer/ok {:close! (fn [] (try (.close (.body resp)) (catch Exception _closed nil)))}))))
     (catch Exception e

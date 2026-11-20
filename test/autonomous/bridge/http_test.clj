@@ -680,6 +680,23 @@
   (is (= 2 (stream-opens-after-a-drop 0)) "the next look reopens the ended stream")
   (is (= 1 (stream-opens-after-a-drop 60000)) "not again within the retry interval"))
 
+(deftest a-remote-without-a-stream-is-not-asked-again
+  (let [[client _ _] (open-stub)
+        opens (atom 0)
+        spy   (reify port/IHttpClient
+                (-request! [_ req] (port/-request! client req))
+                (-open-stream! [_ _req _sink]
+                  (swap! opens inc)
+                  (answer/refusal :channel/stream-refused "the remote stream answered 405" {:status 405})))
+        c     (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                                   :stream-retry-ms 0 :http/client spy))]
+    (dotimes [_ 3] (as c "agent-a" #{:read} {:op :call :tool "todo_list"}))
+    (is (= 1 @opens) "a 405 is terminal: the stream is never reopened"))
+  (testing "the attempt is stamped when it completes, with its outcome"
+    (is (= {:listen-at 9 :close! :c} (hc/listened {} {:ok {:close! :c}} 9)))
+    (is (= {:listen-at 9} (hc/listened {} (answer/refusal :x "y" {:status 503}) 9)))
+    (is (:stream-none? (hc/listened {} (answer/refusal :x "y" {:status 405}) 9)))))
+
 (deftest a-stored-listing-is-fresh-only-at-its-own-revision
   (let [sl (assoc hc/empty-slot :revision 3)]
     (is (false? (:stale? (hc/stored sl {:v 1} 10 3))))
