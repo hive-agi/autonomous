@@ -27,6 +27,12 @@
              :timeout-ms timeout-ms}]
     (port/-request! client req)))
 
+(defn- authenticated-post
+  "Answer of JSON-RPC `msg` as `grant`, resolving identity at the Boundary."
+  [client source target grant sid msg timeout-ms]
+  (answer/let-answer [ident (http/identity target source grant)]
+    (post client target msg ident sid timeout-ms)))
+
 (def ^:private gone-status 404)
 
 (defn- decode
@@ -43,18 +49,23 @@
                                 (catch Exception _not-json
                                   (answer/refusal :channel/bad-answer "the remote did not answer JSON-RPC")))))
 
+(defn- session-id
+  "Ok of the remote session header, or a refusal when it is missing."
+  [response]
+  (let [id (get-in response [:headers "mcp-session-id"])]
+    (if (str/blank? (str id))
+      (answer/refusal :channel/remote-refused "the remote opened no MCP session")
+      (answer/ok (str id)))))
+
 (defn open-session!
-  "Ok of a session {:id :actor} opened for `grant` on `target`, or a
-   refusal. Resolves `source`'s credential reference before each exchange."
+  "Ok of `grant`'s session, after initialize and the initialized notification."
   [client source target grant timeout-ms]
   (answer/let-answer
-   [ident (http/identity target source grant)
-    init  (post client target (rpc/initialize-msg (rpc/next-id)) ident nil timeout-ms)
-    sid   (let [id (get-in init [:headers "mcp-session-id"])]
-            (if (str/blank? (str id))
-              (answer/refusal :channel/remote-refused "the remote opened no MCP session")
-              (answer/ok (str id))))]
-   (post client target (rpc/initialized-msg) ident sid timeout-ms)
+   [init (authenticated-post client source target grant nil
+                             (rpc/initialize-msg (rpc/next-id)) timeout-ms)
+    sid  (session-id init)
+    _    (authenticated-post client source target grant sid
+                             (rpc/initialized-msg) timeout-ms)]
    (answer/ok {:id sid :actor (:actor grant)})))
 
 (defn close-session!

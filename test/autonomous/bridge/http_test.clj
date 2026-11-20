@@ -204,6 +204,14 @@
       (reset! seen [])
       (swap! state assoc :calls []))))
 
+(deftest the-default-remote-credential-is-a-reference
+  (let [t (assoc target :credentials {:default {:token-env "REMOTE_AGENT_A"}})]
+    (is (= {:token-env "REMOTE_AGENT_A"}
+           (http/credential-reference t {:actor "unlisted"})))
+    (is (= {:token-env "REMOTE_AGENT_B"}
+           (http/credential-reference (assoc t :credentials (credential-policy))
+                                      {:actor "agent-b"})))))
+
 (deftest credential-config-promotes-references-only
   (let [entry {:app "todo" :channel :http :url "http://remote.test"
                :credentials (credential-policy)}

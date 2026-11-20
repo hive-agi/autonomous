@@ -1,174 +1,234 @@
 (ns autonomous.bridge.http.channel
-  "The channel stratum: a defrecord over one remote app's /mcp.
-
-   A listing is cached per agent (the remote filters it by the actor's
-   scopes) until a notifications/tools/list_changed on that agent's event
-   stream, or the ttl, says otherwise. Concurrent looks share the one fetch
-   in flight, so a down remote costs one attempt, not one per agent.
-
-   An MCP session belongs to one agent and is renewed the single time a
-   remote reports it forgotten (a restart). Streams die with their session
-   and are reopened on the next look, so a remote that comes back is picked
-   up with no restart here.
-
-   Every method answers an Answer; nothing here throws."
+  "Remote MCP channel: one session, event stream and listing cache per
+   calling actor. tools/list_changed invalidates only that actor's cache.
+   Agent-facing operations answer an Answer through the injected ports."
   (:require [autonomous.bridge.http :as http]
             [autonomous.bridge.http.session :as ses]
             [autonomous.bridge.port :as port]
             [autonomous.bridge.rpc :as rpc]
             [autonomous.domain.answer :as answer]))
 
-(def default-ttl-ms 5000)
-
 (defn- now [] (System/currentTimeMillis))
 
 (defn new-state
-  "Empty channel state: MCP sessions and listings by actor."
-  [] {:sessions (atom {}) :slots (atom {})})
+  "Empty channel state: actor sessions, listing slots and session locks."
+  []
+  {:sessions (atom {}) :slots (atom {}) :locks (atom {})})
 
 (def empty-slot
-  "A cache slot with no listing, stale, and no fetch in flight."
-  {:manifest nil :at 0 :stale? true :fetching nil})
+  "An empty, stale listing slot at revision zero."
+  {:manifest nil :at 0 :stale? true :revision 0 :fetching nil})
 
 (defn- slot
-  "The cache slot (an atom) of `actor`, created empty."
-  [ch actor]
-  (get (swap! (:slots ch) #(if (contains? % actor) % (assoc % actor (atom empty-slot)))) actor))
+  "The listing cache atom of `actor`, created empty."
+  [channel actor]
+  (let [slots (get-in channel [:runtime-state :slots])]
+    (get (swap! slots #(if (contains? % actor) % (assoc % actor (atom empty-slot)))) actor)))
 
 (defn- fresh?
-  "True while slot `sl` may be reused: fetched, not stale, within `ttl-ms`."
-  [sl ttl-ms]
-  (and (some? (:manifest sl)) (not (:stale? sl)) (< (- (now) (:at sl)) ttl-ms)))
+  "True when `slot` has a fresh listing within `ttl-ms`."
+  [slot ttl-ms]
+  (and (some? (:manifest slot))
+       (not (:stale? slot))
+       (< (- (now) (:at slot)) ttl-ms)))
 
 ;; =============================================================================
 ;; Session of one agent, and its event stream
 ;; =============================================================================
 
 (defn- drop-session!
-  "Forget and release `actor`'s session; its stream closes with it."
-  [ch client credentials target actor]
-  (when-let [old (get @(:sessions ch) actor)]
-    (swap! (:sessions ch) dissoc actor)
-    (when-let [close! (:close! old)] (try (close!) (catch Exception _closed nil)))
-    (ses/close-session! client credentials target {:actor actor} old)))
+  "Boundary: forget and close the session currently owned by `actor`."
+  [{:keys [client credentials target] :as channel} actor]
+  (let [sessions (get-in channel [:runtime-state :sessions])]
+    (when-let [old (get @sessions actor)]
+      (swap! sessions dissoc actor)
+      (when-let [close! (:close! old)] (close!))
+      (ses/close-session! client credentials target {:actor actor} old))))
 
 (defn- forget-stream!
-  "Forget `actor`'s stream (the adapter is closing it)."
-  [ch actor]
-  (swap! (:sessions ch) update actor dissoc :close!))
+  "Mark `actor`'s stream closed and its cached listing stale."
+  [channel actor]
+  (swap! (get-in channel [:runtime-state :sessions]) update actor dissoc :close!)
+  (swap! (slot channel actor) #(-> % (assoc :stale? true) (update :revision inc))))
+
+(defn- invalidate!
+  "Advance `actor`'s listing revision after a remote tools/list_changed."
+  [channel actor msg]
+  (when (rpc/list-changed? msg)
+    (swap! (slot channel actor) #(-> % (assoc :stale? true) (update :revision inc)))))
 
 (defn- listen!
-  "Hold `ses`'s event stream: a list_changed marks `actor`'s listing stale."
-  [ch client credentials target grant ses]
-  (let [actor  (:actor grant)
-        on-msg (fn [msg] (when (rpc/list-changed? msg) (swap! (slot ch actor) assoc :stale? true)))
-        r      (ses/open-stream! client credentials target grant ses on-msg #(forget-stream! ch actor))]
-    (when (answer/ok? r) (swap! (:sessions ch) update actor merge (:ok r)))))
+  "Boundary: attach `session`'s stream to its actor's cache invalidation."
+  [{:keys [client credentials target] :as channel} grant session]
+  (let [actor (:actor grant)]
+    (ses/open-stream! client credentials target grant session
+                      #(invalidate! channel actor %)
+                      #(forget-stream! channel actor))))
+
+(declare open-session!)
+
+(defn- remember-stream!
+  "Hold the newly opened stream only while `session` is still current."
+  [channel actor session answer*]
+  (answer/bind answer*
+               (fn [{:keys [close!]}]
+                 (let [sessions (get-in channel [:runtime-state :sessions])]
+                   (when close! (swap! sessions assoc-in [actor :close!] close!))
+                   (answer/ok session)))))
+
+(defn- ensure-stream!
+  "Boundary: reopen a live session's closed stream, without changing identity."
+  [channel grant]
+  (let [sessions (get-in channel [:runtime-state :sessions])
+        session  (get @sessions (:actor grant))]
+    (when-not (:close! session)
+      (remember-stream! channel (:actor grant) session
+                        (listen! channel grant session)))))
 
 (defn- open-session!
-  "Ok of a session of `grant` on this remote, its stream held."
-  [ch client credentials target grant]
-  (let [r (ses/open-session! client credentials target grant (:timeout-ms target http/default-timeout-ms))]
-    (when (answer/ok? r)
-      (swap! (:sessions ch) assoc (:actor grant) (:ok r))
-      (listen! ch client credentials target grant (:ok r)))
-    r))
+  "Ok of `grant`'s newly opened session and its held event stream."
+  [{:keys [client credentials target] :as channel} grant]
+  (answer/let-answer
+   [session (ses/open-session! client credentials target grant
+                               (:timeout-ms target http/default-timeout-ms))]
+   (swap! (get-in channel [:runtime-state :sessions]) assoc (:actor grant) session)
+   (ensure-stream! channel grant)
+   (answer/ok session)))
+
+(defn- actor-lock
+  "The mutual-exclusion value of one actor's session transitions."
+  [channel actor]
+  (let [locks (get-in channel [:runtime-state :locks])]
+    (get (swap! locks #(if (contains? % actor) % (assoc % actor (Object.)))) actor)))
 
 (defn- session!
-  "Answer of `grant`'s live session, opened when there is none."
-  [ch client credentials target grant]
-  (if-let [ses (get @(:sessions ch) (:actor grant))]
-    (answer/ok ses)
-    (open-session! ch client credentials target grant)))
+  "Ok of `grant`'s existing session, or one opened under its actor lock."
+  [channel grant]
+  (let [actor (:actor grant)]
+    (locking (actor-lock channel actor)
+      (if-let [session (get-in channel [:runtime-state :sessions actor])]
+        (do (ensure-stream! channel grant) (answer/ok session))
+        (open-session! channel grant)))))
 
 (defn- renew!
-  "Ok of a fresh session for `grant`, the old one dropped."
-  [ch client credentials target grant]
-  (drop-session! ch client credentials target (:actor grant))
-  (open-session! ch client credentials target grant))
+  "Ok of `grant`'s new session after the remote forgot its predecessor."
+  [channel grant]
+  (locking (actor-lock channel (:actor grant))
+    (drop-session! channel (:actor grant))
+    (open-session! channel grant)))
 
 ;; =============================================================================
 ;; Listing
 ;; =============================================================================
 
 (defn- list-on
-  "Ok of {:tools :resources} the remote lists for `ses`."
-  [client credentials target grant ses]
+  "Ok of the remote tools and resources visible in `session`."
+  [{:keys [client credentials target]} grant session]
   (answer/bind
-   (ses/round client credentials target grant ses (rpc/list-msg (rpc/next-id))
+   (ses/round client credentials target grant session (rpc/list-msg (rpc/next-id))
               (:timeout-ms target http/default-timeout-ms))
    (fn [reply]
      (answer/ok {:tools (vec (get-in reply [:result :tools]))
                  :resources (vec (get-in reply [:result :resources]))}))))
 
 (defn- store!
-  "Record listing `r` as a fresh cache slot for `target`."
-  [sl r target]
-  (swap! sl assoc :manifest (rpc/manifest-of (:target/id target) (:url target)
-                                             (:tools (:ok r)) (:resources (:ok r)))
-         :at (now) :stale? false))
+  "Cache `listing` fresh only if its slot revision still matches `revision`."
+  [{:keys [target]} slot revision listing]
+  (swap! slot
+         #(if (= revision (:revision %))
+            (assoc % :manifest (rpc/manifest-of (:target/id target) (:url target)
+                                                (:tools listing) (:resources listing))
+                   :at (now) :stale? false)
+            %))
+  (:manifest @slot))
 
 ;; =============================================================================
 ;; Calls
 ;; =============================================================================
 
+(defn- retry-forgotten
+  "Answer of `f`, renewed once after a :channel/session-gone refusal."
+  [channel grant f answer*]
+  (if (= :channel/session-gone (get-in answer* [:error :type]))
+    (answer/bind (renew! channel grant) f)
+    answer*))
+
 (defn- with-session
-  "Railway: run `f` of a live session as `grant`, renewed the single time
-   the remote reports the session gone."
-  [ch client credentials target grant f]
-  (answer/bind (session! ch client credentials target grant)
-               (fn [ses]
-                 (let [r (f ses)]
-                   (if (= :channel/session-gone (get-in r [:error :type]))
-                     (answer/bind (renew! ch client credentials target grant) f)
-                     r)))))
+  "Answer railway over `grant`'s live session, with one renewal."
+  [channel grant f]
+  (answer/bind (session! channel grant)
+               #(retry-forgotten channel grant f (f %))))
 
 (defn- fetch!
-  "Ok of the listing for `grant`; a remote refusal keeps its cause."
-  [ch client credentials target grant]
-  (with-session ch client credentials target grant #(list-on client credentials target grant %)))
+  "Ok of `grant`'s listing from the channel's remote."
+  [channel grant]
+  (with-session channel grant #(list-on channel grant %)))
 
 (defn- ask
-  "Answer of message `msg` on `target` as `grant`, renewing a forgotten session."
-  [ch client credentials target grant msg]
-  (with-session ch client credentials target grant
-                #(ses/round client credentials target grant % (msg) (:timeout-ms target http/default-timeout-ms))))
+  "Answer of `message-fn` on the remote as `grant`."
+  [{:keys [client credentials target] :as channel} grant message-fn]
+  (with-session channel grant
+    #(ses/round client credentials target grant % (message-fn)
+                (:timeout-ms target http/default-timeout-ms))))
 
-(defn call!
-  "Answer of the remote tool `tool` with `args` as `grant`."
-  [ch client credentials target grant tool args]
-  (answer/bind (ask ch client credentials target grant #(rpc/call-msg (rpc/next-id) tool args))
+(defn- call!
+  "Answer of remote `tool` called with `args` as `grant`."
+  [channel grant tool args]
+  (answer/bind (ask channel grant #(rpc/call-msg (rpc/next-id) tool args))
                rpc/answer-of))
 
-(defn read!
-  "Answer of the remote resource `uri` as `grant`: its first content entry."
-  [ch client credentials target grant uri]
-  (answer/bind (ask ch client credentials target grant #(rpc/read-msg (rpc/next-id) uri))
+(defn- read!
+  "Answer of remote resource `uri` read as `grant`."
+  [channel grant uri]
+  (answer/bind (ask channel grant #(rpc/read-msg (rpc/next-id) uri))
                #(answer/ok (first (get-in % [:result :contents])))))
 
 ;; =============================================================================
 ;; The agent-facing look
 ;; =============================================================================
 
+(defn- cached-manifest
+  "Answer of a fresh listing in `slot`, or nil when it must be refreshed."
+  [target slot]
+  (when (fresh? slot (:ttl-ms target http/manifest-ttl-ms))
+    (answer/ok (:manifest slot))))
+
+(defn- refresh-manifest!
+  "Boundary: fetch and cache `grant`'s listing at the observed revision."
+  [channel grant slot*]
+  (let [revision (:revision @slot*)
+        session  (session! channel grant)]
+    (ensure-stream! channel grant)
+    (answer/let-answer [session session
+                        listing (list-on channel grant session)]
+      (answer/ok (store! channel slot* revision listing)))))
+
+(defn- await-manifest
+  "Answer of the actor's existing fetch, bounded by the target timeout."
+  [{:keys [target]} fetch]
+  (deref fetch (:timeout-ms target http/default-timeout-ms)
+         (answer/refusal :channel/timeout "no listing in time")))
+
 (defn manifest!
-  "Answer of `target`'s Manifest for `grant`, reused while fresh."
-  [ch client credentials target grant]
-  (let [slot* (slot ch (:actor grant))
-        st    @slot*
-        wait  (:fetching st)]
-    (cond
-      (fresh? st (:ttl-ms target default-ttl-ms)) (answer/ok (:manifest st))
-      (and wait (not (realized? wait)))
-      (deref wait (:timeout-ms target http/default-timeout-ms)
-             (answer/refusal :channel/timeout "no listing in time"))
-      :else
-      (let [p (promise)]
-        (swap! slot* assoc :fetching p)
-        (try
-          (deliver p (answer/let-answer [listing (fetch! ch client credentials target grant)]
-                       (answer/ok (:manifest (store! slot* {:ok listing} target)))))
-          @p
-          (finally (swap! slot* assoc :fetching nil)))))))
+  "Answer of the remote Manifest visible to `grant`, with one shared fetch
+   per actor and revision-safe invalidation on list_changed."
+  [{:keys [target] :as channel} grant]
+  (let [slot* (slot channel (:actor grant))
+        state @slot*]
+    (or (cached-manifest target state)
+        (if-let [fetch (:fetching state)]
+          (await-manifest channel fetch)
+          (locking slot*
+            (or (cached-manifest target @slot*)
+                (if-let [fetch (:fetching @slot*)]
+                  (await-manifest channel fetch)
+                  (let [fetch (promise)]
+                    (swap! slot* assoc :fetching fetch)
+                    (try
+                      (let [result (refresh-manifest! channel grant slot*)]
+                        (deliver fetch result)
+                        result)
+                      (finally (swap! slot* assoc :fetching nil)))))))))))
 
 ;; =============================================================================
 ;; The channel
@@ -179,21 +239,23 @@
   [req]
   {:actor (:actor req) :scopes (:scopes req)})
 
-(defrecord HttpChannel [target client credentials ch]
+(defn- dispatch
+  "Answer of channel request `req`, using the remote's MCP operation mapping."
+  [channel {:keys [op tool args uri] :as req}]
+  (let [grant  (grant-of req)
+        remote (get rpc/remote-tools op)]
+    (cond
+      (= :manifest op) (manifest! channel grant)
+      (= :call op)     (call! channel grant tool args)
+      (= :read op)     (read! channel grant uri)
+      remote           (call! channel grant remote (rpc/remote-args op req))
+      :else            (answer/refusal :unknown-op
+                                       "a remote MCP app serves manifest, call, read and built-in tools"
+                                       {:op op :known (vec (keys rpc/remote-tools))}))))
+
+(defrecord HttpChannel [target client credentials runtime-state]
   port/IRuntimeChannel
-  (-send [this req _runtime-id]
-    (let [g      (grant-of req)
-          op     (:op req)
-          remote (get rpc/remote-tools op)]
-      (cond
-        (= :manifest op) (manifest! ch client credentials target g)
-        (= :call op)     (call! ch client credentials target g (:tool req) (:args req))
-        (= :read op)     (read! ch client credentials target g (:uri req))
-        remote           (call! ch client credentials target g remote (rpc/remote-args op req))
-        :else            (answer/refusal :unknown-op
-                                         (str "a remote MCP app serves manifest, call, read and the "
-                                              "built-in tools; " op " is not one of them")
-                                         {:known (vec (keys rpc/remote-tools))}))))
+  (-send [this req _runtime-id] (dispatch this req))
 
   port/IRuntimeDirectory
   (-runtimes [_]
