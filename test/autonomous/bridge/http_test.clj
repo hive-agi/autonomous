@@ -372,6 +372,32 @@
         (is (str/includes? (get-in a [:error :message]) agent-a-env) "the refusal names the env var")
         (is (empty? @seen) "nothing was sent")))))
 
+(defn- spied
+  "A channel on `t` over a fresh stub, plus the requests it sent."
+  [t]
+  (let [[client _ _] (open-stub)
+        seen (atom [])
+        spy  (reify port/IHttpClient
+               (-request! [_ req] (swap! seen conj req) (port/-request! client req))
+               (-open-stream! [_ req sink] (swap! seen conj req) (port/-open-stream! client req sink)))]
+    [(channel/make (assoc t :credential-source (source) :http/client spy)) seen]))
+
+(def ^:private stranger "agent-z")
+
+(deftest an-actor-with-no-credential-entry-never-goes-anonymous
+  (let [[c seen] (spied (assoc target :credentials (credential-policy)))
+        a        (manifest-as c stranger #{:read})]
+    (is (= {:type :channel/credential-missing :data {:actor stranger :target (:target/id target)}}
+           (select-keys (:error a) [:type :data]))
+        (pr-str a))
+    (is (not-any? #(str/includes? (pr-str a) %) (vals tokens)) "no credential value is named")
+    (is (empty? @seen) "nothing was sent"))
+  (testing "a target with no credential configuration at all stays anonymous"
+    (let [[c seen] (spied target)]
+      (manifest-as c stranger #{:read})
+      (is (seq @seen))
+      (is (not-any? #(get-in % [:headers "authorization"]) @seen)))))
+
 (deftest credential-config-promotes-references-only
   (let [entry {:app "todo" :channel :http :url remote-url
                :credentials (credential-policy)}

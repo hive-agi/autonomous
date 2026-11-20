@@ -78,11 +78,25 @@
   [token]
   (if token {"authorization" (str "Bearer " token)} {}))
 
+(defn- selected-reference
+  "Ok of `grant`'s credential reference on `target`, nil for a target with
+   no credential configuration at all. A target that configures
+   :credentials fails closed: an actor matching no entry, with no :default
+   and no legacy :token-env, is refused naming only actor and target id."
+  [target grant]
+  (let [reference (credential-reference target grant)]
+    (if (and (nil? reference) (seq (:credentials target)))
+      (answer/refusal :channel/credential-missing
+                      (str "no credential is configured for agent " (:actor grant)
+                           " on " (:target/id target) ", and no :default: refusing to go anonymous")
+                      {:actor (:actor grant) :target (:target/id target)})
+      (answer/ok reference))))
+
 (defn identity
   "Boundary: Answer of identity headers for `grant`, using the target's
    configured credential reference and the injected `source`."
   [target source grant]
-  (answer/bind (resolve-token! source (credential-reference target grant))
+  (answer/bind (answer/bind (selected-reference target grant) #(resolve-token! source %))
                (fn [token]
                  (if (and token (not (url/bearer-allowed? (:url target))))
                    (answer/refusal :channel/insecure-transport
