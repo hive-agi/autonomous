@@ -304,6 +304,57 @@
           (is @(:closed b))
           (is (not (contains? (:streams @st) sid))))))))
 
+(def ^:private peer-tokens
+  "Two agents holding the same scopes, so only their actor tells them apart."
+  {"agent-c" "aut_agent_c_token" "agent-d" "aut_agent_d_token"})
+
+(def ^:private peer-cfg
+  {:tokens (mapv (fn [[actor t]] (auth/token-entry t actor [:read :write])) peer-tokens)
+   :clock  (constantly 0)})
+
+(defn- per-actor-fleet
+  "A fleet server of one app whose tools are (tools-of actor) for each caller,
+   as a remote app that filters its listing per agent does."
+  [tools-of]
+  (let [respond (fn [{:keys [op actor]} _]
+                  (if (= :manifest op)
+                    {:ok {:protocol 1 :version 1 :app {:name "todo" :description "todo"}
+                          :tools (mapv (fn [t] {:name t :description t :input-schema {:type "object"}})
+                                       (tools-of actor))
+                          :resources []}}
+                    {:ok {}}))]
+    (server/fleet-server
+     (bf/make [["todo" (client/context {:target {:target/id "todo"} :channel (->StubChannel respond)
+                                        :ledger (ledger/open {:ledger/kind :memory})
+                                        :drain :inline :call-timeout-ms 100})]]
+              {:mode :fleet :probe-ms 150}))))
+
+(defn- open-peer-stream!
+  "A sink holding `actor`'s event stream on server `s` with state `st`."
+  [s st actor]
+  (let [h    (bearer (get peer-tokens actor))
+        sid  (get-in (http/route s st peer-cfg {:method "POST" :path "/mcp" :headers h
+                                                :body (json/write (rpc 1 "initialize" {}))})
+                     [:headers "Mcp-Session-Id"])
+        open (http/route s st peer-cfg {:method "GET" :path "/mcp"
+                                        :headers (assoc h "mcp-session-id" sid "accept" "text/event-stream")})
+        k    (sink)]
+    (http/attach-stream! st (:stream open) (:sink k))
+    k))
+
+(deftest http-streams-push-list-changed-per-actor
+  (let [tools (atom (zipmap (keys peer-tokens) (repeat ["todo_add"])))
+        s     (per-actor-fleet #(get @tools %))
+        st    (http/new-state)
+        sinks (into {} (map (fn [actor] [actor (open-peer-stream! s st actor)])) (keys peer-tokens))
+        counts #(update-vals sinks pushed)]
+    (doseq [actor (keys peer-tokens)]
+      (testing (str "only " actor " is told its own tools moved, though the scopes are the same")
+        (let [before (counts)]
+          (swap! tools update actor conj "todo_more")
+          (http/push-tick! s st peer-cfg)
+          (is (= (update before actor inc) (counts))))))))
+
 (deftest http-is-a-ring-handler
   (let [s   (srv)
         st  (http/new-state)

@@ -245,9 +245,11 @@
   (update-state! state assoc :streams {}))
 
 (defn- fp-key
-  "What a session's tool fingerprint depends on: its scopes and pins."
+  "What a session's tool fingerprint depends on: its actor, scopes and
+   pins. The actor is part of it because a remote app lists tools per
+   agent: two agents with the same scopes may still see different tools."
   [session]
-  (select-keys session [:session/scopes :session/runtime :session/runtimes]))
+  (select-keys session [:session/actor :session/scopes :session/runtime :session/runtimes]))
 
 (defn push-tick!
   "One look by the pusher: for every open stream, the tool fingerprint its
