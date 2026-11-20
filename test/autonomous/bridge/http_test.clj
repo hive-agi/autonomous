@@ -175,6 +175,22 @@
     (is (= {:lines ["a" "b"] :chars 2 :dropped? false}
            (-> ses/empty-event (ses/add-line "a") (ses/add-line "b"))))))
 
+(defn- dispatched-through-pump
+  "The methods a session sink dispatches when pump! reads `text`."
+  [text]
+  (let [[sink seen] (recording-sink)]
+    (jdk/pump! (java.io.BufferedReader. (java.io.StringReader. text)) sink)
+    (map :method (:messages @seen))))
+
+(def ^:private list-changed-line
+  (str "data: " (json/write {:jsonrpc "2.0" :method rpc/list-changed})))
+
+(deftest every-sse-line-end-completes-an-event
+  (doseq [[why eol] [["LF" "\n"] ["CRLF" "\r\n"] ["lone CR" "\r"]]]
+    (testing why
+      (is (= [rpc/list-changed]
+             (dispatched-through-pump (str ": open" eol eol list-changed-line eol eol)))))))
+
 (deftest a-stream-line-past-the-cap-closes-the-stream
   (let [ok (pumped "data: a\n\ndata: b\n" 16)]
     (is (= ["data: a\n" "\n" "data: b\n"] (:text ok)))

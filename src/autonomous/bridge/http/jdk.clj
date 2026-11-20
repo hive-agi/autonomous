@@ -81,10 +81,24 @@
    longer line closes the stream; it is never buffered."
   (* 1024 1024))
 
+(defn- after-cr!
+  "Boundary: after a \r read from `r`, consume the \n of a \r\n pair; a
+   lone \r leaves the next character unread. `r` must support mark."
+  [^Reader r]
+  (.mark r 1)
+  (when-not (= 10 (.read r)) (.reset r)))
+
+(defn- overflow
+  "The refusal of a line past `cap` characters."
+  [cap]
+  (answer/refusal :channel/stream-overflow
+                  (str "a remote stream line passed " cap " characters: the stream is closed")))
+
 (defn- line-of
-  "Boundary: Ok of the next line of `r` without its newline, Ok nil at EOF,
-   or a :channel/stream-overflow refusal once the line passes `cap`
-   characters. Never holds more than `cap` characters."
+  "Boundary: Ok of the next line of `r` without its end, Ok nil at EOF, or
+   a :channel/stream-overflow refusal once the line passes `cap`
+   characters. A line ends at \r\n, \n or a lone \r, as SSE allows. Never
+   holds more than `cap` characters."
   [^Reader r cap]
   (let [sb (StringBuilder.)]
     (loop []
@@ -92,9 +106,8 @@
         (cond
           (neg? c)              (answer/ok (when (pos? (.length sb)) (str sb)))
           (= 10 c)              (answer/ok (str sb))
-          (>= (.length sb) cap) (answer/refusal :channel/stream-overflow
-                                                (str "a remote stream line passed " cap
-                                                     " characters: the stream is closed"))
+          (= 13 c)              (do (after-cr! r) (answer/ok (str sb)))
+          (>= (.length sb) cap) (overflow cap)
           :else                 (do (.append sb (char c)) (recur)))))))
 
 (defn pump!
