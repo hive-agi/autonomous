@@ -31,18 +31,34 @@
   {:contract-test/echo {:description "Echo" :input [:map [:text :string]]
                         :output [:map [:text :string]] :expose true}})
 
+(defn- checks-by-id
+  "The Checks of `report` keyed by :check id."
+  [report]
+  (into {} (map (juxt :check identity)) (:checks report)))
+
+(defn- human-app
+  "The host's own in-process path: what a human's request gets."
+  [request]
+  {:text (:text request)})
+
+(def ^:private human-request {:text "human"})
+
 (defn fixture
-  "Healthy host with explicit opted-in, unexposed and empty sources."
-  []
-  {:source exposed
-   :unexposed-source {:contract-test/hidden (assoc (:contract-test/echo exposed) :expose false)}
-   :empty-source {}
-   :exposed-tools #{"contract-test_echo"}
-   :samples {"contract-test_echo" {:text "hello"}}
-   :human-call (constantly :human)
-   :mount (fn [] :mounted)
-   :host (fn [_ input _] (answer/ok input))
-   :generated-samples 3})
+  "Healthy host with explicit opted-in, unexposed and empty sources.
+   :human-call sends the human's request to whatever app is serving;
+   :mount puts `wrap` (default: leave the app as it is) in front of it."
+  ([] (fixture identity))
+  ([wrap]
+   (let [serving (atom human-app)]
+     {:source exposed
+      :unexposed-source {:contract-test/hidden (assoc (:contract-test/echo exposed) :expose false)}
+      :empty-source {}
+      :exposed-tools #{"contract-test_echo"}
+      :samples {"contract-test_echo" {:text "hello"}}
+      :human-call #(@serving human-request)
+      :mount #(swap! serving wrap)
+      :host (fn [_ input _] (answer/ok input))
+      :generated-samples 3})))
 
 (deftest check-adapter-answers-data-for-a-healthy-adapter
   (let [report (contract/check-adapter echo-adapter (fixture))]
@@ -52,16 +68,23 @@
             :decorators-preserve-schemas :codecs-total]
            (mapv :check (:checks report))))))
 
+(deftest a-mount-that-changes-the-human-path-fails-the-contract
+  (let [by-id (checks-by-id (contract/check-adapter echo-adapter
+                                                    (fixture (fn [_] (constantly :hijacked)))))]
+    (is (false? (:ok? (:human-code-path by-id)))
+        "the human path is called after the mount, not read from a value taken before it")))
+
 (deftest source-kind-is-a-valid-adapter-reference
-  (let [report (contract/check-adapter :contract-test/source (fixture))]
-    (is (:ok? (first (:checks report))))
-    (is (:ok? (nth (:checks report) 2)))
+  (let [report (contract/check-adapter :contract-test/source (fixture))
+        by-id (checks-by-id report)]
+    (is (:ok? (:opt-in-only by-id)))
+    (is (:ok? (:unmount-empty by-id)))
     (is (not (:ok? report)) "a Source key alone declares no Codec")
-    (is (false? (:ok? (last (:checks report)))))))
+    (is (false? (:ok? (:codecs-total by-id))))))
 
 (deftest an-adapter-without-a-codec-skips-the-round-trip
   (let [report (contract/check-adapter (dissoc echo-adapter :kind :codec) (fixture))
-        by-id (into {} (map (juxt :check identity)) (:checks report))]
+        by-id (checks-by-id report)]
     (is (:ok? (:schema-round-trip by-id))
         (str "a Source without a Codec has no round trip to fail: "
              (pr-str (:detail (:schema-round-trip by-id)))))
@@ -92,26 +115,30 @@
     (contract/assert-contract report)
     (is (:ok? report) "the :invoke port is the host; the other kind is not the Codec's")))
 
-(deftest hostile-codecs-become-failed-check-data
-  (let [hostile (assoc echo-adapter :codec
-                       {:encode (fn [_ _] (throw (ex-info "hostile" {})))
-                        :decode (fn [_ _] {:not-an-answer true})})
-        report (contract/check-adapter hostile (fixture))
-        decode-hostile (assoc echo-adapter :codec {:decode (fn [_ _] {:not-an-answer true})})
-        decode-report (contract/check-adapter decode-hostile (fixture))]
-    (is (not (:ok? report)))
-    (is (false? (:ok? (nth (:checks report) 3))) "encode failure breaks the sample round trip")
-    (is (:ok? (last (:checks report))) "encode exceptions become SPI refusals")
-    (is (:ok? (last (:checks decode-report))) "a missing encoder becomes an SPI refusal")
-    (is (not (:ok? decode-report)) "the sample round trip requires a successful encode")))
+(defn- codec-checks
+  "The Checks of echo-adapter with its codec ports overridden by `ports`."
+  [ports]
+  (checks-by-id (contract/check-adapter (update echo-adapter :codec merge ports) (fixture))))
+
+(def ^:private not-an-answer (fn [_ _] {:not-an-answer true}))
+
+(deftest hostile-codecs-fail-codecs-total
+  (doseq [[why ports] [["a throwing encoder" {:encode (fn [_ _] (throw (ex-info "hostile" {})))}]
+                       ["a non-Answer encoder" {:encode not-an-answer}]
+                       ["a missing encoder" {:encode nil}]
+                       ["a non-Answer decoder" {:decode not-an-answer}]
+                       ["a throwing decoder" {:decode (fn [_ _] (throw (ex-info "hostile" {})))}]]]
+    (is (false? (:ok? (:codecs-total (codec-checks ports))))
+        (str why " is not total: the SPI guard refused for it")))
+  (is (false? (:ok? (:schema-round-trip (codec-checks {:encode not-an-answer}))))
+      "an encode failure breaks the sample round trip"))
 
 (deftest fixture-failures-are-contained-as-check-data
   (let [report (contract/check-adapter echo-adapter
                                        (assoc (fixture) :human-call
                                               (fn [] (throw (ex-info "human failed" {})))))]
     (is (not (:ok? report)))
-    (is (= :human-code-path (:check (second (:checks report)))))
-    (is (false? (:ok? (second (:checks report)))))))
+    (is (false? (:ok? (:human-code-path (checks-by-id report)))))))
 
 (deftest generated-arguments-really-cross-the-codec
   (let [seen (atom [])

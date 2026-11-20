@@ -94,6 +94,14 @@
     (is (string? pending))
     (is (= {:ok {:user "ana" :token "<redacted>"}} (poll-until-settled pending)))))
 
+(deftest redact-output-reaches-through-seqs-and-lists
+  (a/decorate! (decorator/each-tool (decorator/redact-output [[:accounts 0 :token]])))
+  (doseq [[id shape] [[:t/lazy #(map identity %)] [:t/listed #(apply list %)]]]
+    (let [tool-name (a/reg-tool id {:description "Accounts" :read-only? true
+                                    :handler (fn [_ _] {:accounts (shape [{:token "s3cret"}])})})]
+      (is (= {:ok {:accounts [{:token "<redacted>"}]}} (call tool-name {}))
+          (str "the secret never reaches the wire through " id)))))
+
 (deftest a-redaction-that-breaks-the-output-schema-is-refused
   (a/decorate! (decorator/each-tool (decorator/redact-output [[:token]] 0)))
   (is (= :output/invalid-redaction (get-in (call "t_account" {}) [:error :type]))))
@@ -137,6 +145,37 @@
   (let [before (registry/snapshot)]
     (is (thrown? clojure.lang.ExceptionInfo (a/reg-tool :t/late late-spec)))
     (is (= before (registry/snapshot)) "a refused registration changes nothing")))
+
+(def ^:private admin-only (decorator/each-tool (decorator/require-scope :admin)))
+
+(def ^:private admin {:actor "root" :scopes [:admin]})
+
+(deftest a-tool-registered-after-require-scope-is-forbidden-without-it
+  (a/decorate! admin-only)
+  (a/reg-tool :t/late late-spec)
+  (is (= :forbidden (get-in (call "t_late" {}) [:error :type])))
+  (is (= {:ok :late} (a/rpc (merge admin {:op :call :tool "t_late" :args {}})))))
+
+(deftest re-registering-an-id-keeps-its-scope-and-its-redaction
+  (a/decorate! admin-only redacted)
+  (a/reg-tool :t/account {:description "Account again" :read-only? true
+                          :handler (fn [_ _] {:user "bia" :token "an0ther"})})
+  (is (= :forbidden (get-in (call "t_account" {}) [:error :type])))
+  (is (= {:ok {:user "bia" :token "<redacted>"}}
+         (a/rpc (merge admin {:op :call :tool "t_account" :args {}})))))
+
+(def ^:private longest-name
+  "A valid tool name of exactly 64 characters: no prefix fits in front of it."
+  (apply str (repeat 64 "n")))
+
+(deftest a-name-the-prefix-breaks-refuses-the-registration-not-the-prefix
+  (a/decorate! (decorator/prefix-names "app_"))
+  (let [before (registry/snapshot)]
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (a/reg-tool :t/long (assoc late-spec :name longest-name))))
+    (is (= before (registry/snapshot)) "the refused registration changes nothing")
+    (is (= #{"app_t_echo" "app_t_account" "app_t_later"} (tool-names))
+        "the surface keeps its prefixed names")))
 
 (deftest unregistering-follows-the-decorators
   (a/decorate! (decorator/prefix-names "app_"))

@@ -53,6 +53,18 @@
         (is (= :invoke (:plan/action (decision/plan-call s "d_read" {} g 0))))
         (is (= ["d_read"] (mapv :name (:tools (manifest/project s g)))))))))
 
+(defn- construction-error
+  "The :autonomous/error `f` throws when called, nil when it returns."
+  [f]
+  (try (f) nil
+       (catch #?(:clj clojure.lang.ExceptionInfo :cljs ExceptionInfo) e
+         (:autonomous/error (ex-data e)))))
+
+(deftest require-scope-refuses-a-scope-that-is-not-a-keyword
+  (doseq [bad ["admin" nil [:admin] #{:admin}]]
+    (is (= :invalid-scope (construction-error #(decorator/require-scope bad)))
+        (str "never a decorator that requires nothing: " (pr-str bad)))))
+
 (deftest prefix-names-through-decorate
   (let [s (:ok (surface/decorate fixture [(decorator/prefix-names "fleet_")]))]
     (is (= #{"fleet_d_read" "fleet_d_write"} (set (keys (:tools s)))))

@@ -31,7 +31,7 @@
      :members  (into {} members)
      :probe-ms (or probe-ms default-probe-ms)
      :inflight (atom {})
-     :last     (atom {})}))
+     :last     (atom {})})) ; {[target-id actor] Probe}
 
 (defn from-context
   "The single-mode fleet of client context `ctx` (the bridge as it always
@@ -50,10 +50,10 @@
   (s/on-target (:mode f) session target-id))
 
 (defn- probe-future
-  "The running look at target `tid` for session `ses`: the one already in
-   flight for the same target, scopes and runtime, else a new future."
+  "The running look at target `tid` for session `ses`: one already in flight
+   for the same actor, target, scopes and runtime, else a new future."
   [f tid ses]
-  (let [k [tid (:session/scopes ses) (:session/runtime ses)]
+  (let [k [tid (:session/actor ses) (:session/scopes ses) (:session/runtime ses)]
         ctx (member f tid)]
     (or (let [fut (get @(:inflight f) k)] (when (and fut (not (realized? fut))) fut))
         (let [fut (future (try (client/manifest ctx ses)
@@ -71,6 +71,12 @@
     (answer/ok? a)    {:target tid :status :up :at at :manifest (:ok a)}
     :else             {:target tid :status :down :at at :error (:error a)}))
 
+(defn- last-key
+  "Key of the last probe of target `tid` as `session` sees it: per actor,
+   since a remote lists (and may refuse) each agent on its own."
+  [tid session]
+  [tid (:session/actor session)])
+
 (defn probe
   "Probes of every target, in fleet order, for `session`. All targets are
    asked at once; each answer is awaited until one shared deadline
@@ -84,7 +90,7 @@
         probes   (mapv (fn [[tid fut]]
                          (classify tid (deref fut (max 0 (- deadline (now))) ::slow) start))
                        futs)]
-    (swap! (:last f) merge (into {} (map (juxt :target identity)) probes))
+    (swap! (:last f) merge (into {} (map (fn [p] [(last-key (:target p) session) p])) probes))
     probes))
 
 (defn surface
@@ -97,19 +103,20 @@
            :fingerprint (fleet/fingerprint probes))))
 
 (defn- known-tools
-  "Tool names target `tid` had at its last probe."
-  [f tid]
-  (map :name (get-in @(:last f) [tid :manifest :tools])))
+  "Tool names target `tid` listed `session`'s actor at its last probe."
+  [f session tid]
+  (map :name (get-in @(:last f) [(last-key tid session) :manifest :tools])))
 
 (defn route-tool
-  "Ok {:target :local} of exposed tool name `exposed`. A name cut at 64
-   characters is resolved against the target's tools at its last probe."
-  [f exposed]
+  "Ok {:target :local} of exposed tool name `exposed` for `session`. A name
+   cut at 64 characters is resolved against the tools the target listed
+   that session's actor at its last probe."
+  [f session exposed]
   (let [r (fleet/route-tool (:view f) exposed)]
     (if (and (answer/ok? r) (= :fleet (:mode f)) (fleet/cut? exposed))
       (let [tid (get-in r [:ok :target])]
         (answer/ok {:target tid
-                    :local (or (fleet/resolve-local (fleet/prefix tid) exposed (known-tools f tid))
+                    :local (or (fleet/resolve-local (fleet/prefix tid) exposed (known-tools f session tid))
                                (get-in r [:ok :local]))}))
       r)))
 
@@ -117,7 +124,7 @@
   "Answer of calling exposed tool `exposed` with `args` as `session`, from
    the owning target. A Pending id comes back qualified by the target."
   [f session exposed args]
-  (let [r (route-tool f exposed)]
+  (let [r (route-tool f session exposed)]
     (if (answer/refused? r)
       r
       (let [{:keys [target local]} (:ok r)]
@@ -161,7 +168,7 @@
   [f session q]
   (let [tids (if (:target q)
                [(:target q)]
-               (remove #(= :down (get-in @(:last f) [% :status])) (:order f)))
+               (remove #(= :down (get-in @(:last f) [(last-key % session) :status])) (:order f)))
         ctxs (map #(member f %) tids)]
     (if-not (some :ledger ctxs)
       (client/ledger-query (member f (first (:order f))) session q)

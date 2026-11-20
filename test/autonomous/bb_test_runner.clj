@@ -18,6 +18,8 @@
     autonomous.bridge.sources-strata-test
     autonomous.bridge.fleet-test
     autonomous.bridge.ws-test
+    autonomous.bridge.http-test
+    autonomous.bridge.http-smoke-test
     autonomous.mcp.transport-test
     autonomous.mcp.protocol-strata-test
     autonomous.ring-test
