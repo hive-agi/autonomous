@@ -43,14 +43,12 @@
 (deftest re-frame-event-codec-satisfies-the-contract
   (let [report (contract/check-adapter
                 (merge adapter/re-frame-adapter adapter/event-adapter) (fixture))]
-    (doseq [{:keys [check ok? detail]} (:checks report)]
-      (is ok? (str check " " (pr-str detail))))))
+    (contract/assert-contract report)))
 
 (deftest re-frame-subscription-codec-satisfies-the-contract
   (let [report (contract/check-adapter
                 (merge adapter/re-frame-adapter adapter/subscription-adapter) (fixture))]
-    (doseq [{:keys [check ok? detail]} (:checks report)]
-      (is ok? (str check " " (pr-str detail))))))
+    (contract/assert-contract report)))
 
 (deftest existing-registration-uses-the-codec-path
   (registry/with-instance (registry/make-runtime)

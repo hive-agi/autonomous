@@ -10,7 +10,7 @@
             [malli.core :as m]
             [malli.error :as me]
             [malli.generator :as mg]
-            #?(:clj [clojure.test :as t]))
+            #?(:clj [clojure.test :as t] :cljs [cljs.test :as t :include-macros true]))
   #?(:cljs (:require-macros [autonomous.domain.answer :as answer])))
 
 (def Check
@@ -45,7 +45,7 @@
   [adapter]
   (if (qualified-keyword? adapter) {:source-kind adapter} adapter))
 
-(defn- derive
+(defn- derive-from
   "L3 Boundary: derive one Surface through the SPI."
   [adapter fixture source]
   (spi/derive-surface (or (:source-kind fixture) (:source-kind adapter))
@@ -55,7 +55,7 @@
   "L3 Collect: reuse the derivation shared by all checks in one run."
   [adapter fixture]
   (if-let [cached (::surface fixture)] @cached
-      (derive adapter fixture (:source fixture))))
+      (derive-from adapter fixture (:source fixture))))
 
 (defn- no-affordances
   "L3 Contract: a derived value has no tools or resources."
@@ -66,7 +66,7 @@
   "L3 Contract: no opt-in derives no affordances; the opted-in source
    derives exactly the fixture's :exposed-tools names."
   [adapter fixture]
-  (let [unexposed (no-affordances (derive adapter fixture (:unexposed-source fixture)))
+  (let [unexposed (no-affordances (derive-from adapter fixture (:unexposed-source fixture)))
         exposed (surface-answer adapter fixture)
         names (answer/bind exposed #(answer/ok (set (keys (:tools %)))))]
     (from-results :opt-in-only
@@ -89,7 +89,7 @@
   "L3 Contract: the fixture's :empty-source derives exactly empty-surface,
    including empty tool and resource maps."
   [adapter fixture]
-  (let [a (derive adapter fixture (:empty-source fixture))]
+  (let [a (derive-from adapter fixture (:empty-source fixture))]
     (result :unmount-empty (= (answer/ok surface/empty-surface) a)
             {:expected surface/empty-surface :actual a})))
 
@@ -276,15 +276,14 @@
    :generated-samples. No global registry is read or written."
   [adapter fixture]
   (let [spec (declaration adapter)
-        shared (assoc fixture ::surface (delay (derive spec fixture (:source fixture))))
+        shared (assoc fixture ::surface (delay (derive-from spec fixture (:source fixture))))
         results (mapv #(run-check % spec shared) checks)]
     {:ok? (every? :ok? results) :checks results}))
 
-#?(:clj
-   (defn assert-contract
-     "clojure.test boundary: assert every failed Check with its full detail.
-      Answers the original Contract value."
-     [contract]
-     (doseq [{:keys [check ok? detail]} (:checks contract)]
-       (t/is ok? (str check " " (pr-str detail))))
-     contract))
+(defn assert-contract
+  "clojure.test / cljs.test boundary: assert every Check with its full
+   detail. Answers the original Contract value."
+  [contract]
+  (doseq [{:keys [check ok? detail]} (:checks contract)]
+    (t/is ok? (str check " " (pr-str detail))))
+  contract)
