@@ -12,7 +12,8 @@
             [autonomous.domain.schema :as s]
             [malli.core :as m]
             [malli.error :as me]
-            [autonomous.domain.affordance :as affordance]))
+            [autonomous.domain.affordance :as affordance])
+  #?(:cljs (:require-macros [autonomous.domain.answer :as answer])))
 
 (def Interceptor
   "L1 call interceptor. :enter and :leave take context; :error takes

@@ -9,6 +9,8 @@
   '[autonomous.domain.answer-railway-test
     autonomous.surface-test
     autonomous.spi-test
+    autonomous.contract-test
+    autonomous.ring-contract-test
     autonomous.domain.decision-trifecta-test
     autonomous.domain.primitives-trifecta-test
     autonomous.domain.fleet-trifecta-test

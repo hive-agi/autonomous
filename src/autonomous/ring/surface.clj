@@ -154,36 +154,32 @@
 
 (defn route->spec
   "Ok of the ToolSpec of route entry `e` (kind :ring/route), or a refusal.
-   The description comes from `:autonomous {:description}`, the route's
-   :description or :summary, else the method and path. `:autonomous
-   {:scope s}` (or :scopes) replaces the default scopes (read for GET,
-   write otherwise); `:autonomous {:result f}` replaces the default
-   response-to-answer fn for this route."
+   :autonomous accepts :description, :result, :output, :scope(s), :id,
+   :title, :name and :read-only?; other metadata comes from route data."
   [e several-methods?]
   (let [{:keys [path method data]} e
         auto (:autonomous data)
         id   (route-id e several-methods?)
         ps   (compile-parameters id (:parameters data))]
-    (if (answer/refused? ps)
-      ps
-      (answer/ok
-       (cond-> {:id             id
-                :kind           :ring/route
-                :description    (or (:description auto) (:description data) (:summary data)
-                                    (str (str/upper-case (name method)) " " path))
-                :input          (get-in ps [:ok :input])
-                :read-only?     (if (contains? auto :read-only?)
-                                  (boolean (:read-only? auto))
-                                  (contains? read-only-methods method))
-                :ring/method    (if (= :any method)
-                                  (if (get-in data [:parameters :body]) :post :get)
-                                  method)
-                :ring/path      path
-                :ring/placement (get-in ps [:ok :placement])}
-         (scopes-of auto) (assoc :scopes (scopes-of auto))
-         (:title auto)    (assoc :title (:title auto))
-         (:name auto)     (assoc :name (:name auto))
-         (:result auto)   (assoc :ring/result (:result auto)))))))
+    (answer/bind ps
+      (fn [{:keys [input placement]}]
+        (answer/ok
+         (cond-> {:id id :kind :ring/route
+                  :description (or (:description auto) (:description data) (:summary data)
+                                   (str (str/upper-case (name method)) " " path))
+                  :input input
+                  :read-only? (if (contains? auto :read-only?)
+                                (boolean (:read-only? auto))
+                                (contains? read-only-methods method))
+                  :ring/method (if (= :any method)
+                                 (if (get-in data [:parameters :body]) :post :get)
+                                 method)
+                  :ring/path path :ring/placement placement}
+           (scopes-of auto) (assoc :scopes (scopes-of auto))
+           (:title auto) (assoc :title (:title auto))
+           (:name auto) (assoc :name (:name auto))
+           (:output auto) (assoc :output (:output auto))
+           (:result auto) (assoc :ring/result (:result auto))))))))
 
 ;; =============================================================================
 ;; The surface value
