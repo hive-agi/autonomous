@@ -24,11 +24,13 @@
   (:require [autonomous.core :as core]
             [autonomous.domain.wire :as wire]
             [autonomous.re-frame.model :as model]
-            [autonomous.runtime.invoke :as invoke]
             [re-frame.core :as rf]
             [re-frame.db :as rf-db]
             [re-frame.registrar :as registrar]
-            [reagent.ratom :as ratom]))
+            [reagent.ratom :as ratom]
+            [autonomous.domain.answer :as answer]
+            [autonomous.spi :as spi]
+            [autonomous.surface :as surface]))
 
 (defn- registered? [kind id]
   (some? (registrar/get-handler kind id)))
@@ -58,18 +60,81 @@
     (:result-path tool) (get-in @rf-db/app-db (:result-path tool))
     :else               {:dispatched (wire/->wire event)}))
 
-(defmethod invoke/invoke-kind :re-frame/event [tool args grant]
-  (let [event ((:args->event tool) args)]
-    (when-not (registered? :event (first event)) (refuse-unregistered :event (first event)))
-    (let [tagged (model/tag-event event grant)]
-      (if (:async? tool)
-        (do (rf/dispatch tagged) {:queued (wire/->wire event)})
-        (do (rf/dispatch-sync tagged) (result-of tool args event))))))
+(defn- event-call
+  "L3 Pipeline: dispatch an encoded event and produce its declared result."
+  [tool args event grant]
+  (when-not (registered? :event (first event)) (refuse-unregistered :event (first event)))
+  (if (:async? tool)
+    (do (rf/dispatch (model/tag-event event grant)) {:queued (wire/->wire event)})
+    (do (rf/dispatch-sync (model/tag-event event grant)) (result-of tool args event))))
 
-(defmethod invoke/invoke-kind :re-frame/sub [tool args _grant]
-  (let [query ((:args->query tool) args)]
-    (when-not (registered? :sub (first query)) (refuse-unregistered :sub (first query)))
-    (read-sub query)))
+(defn- subscription-call
+  "L3 Pipeline: read an encoded query through a component lifecycle."
+  [query]
+  (when-not (registered? :sub (first query)) (refuse-unregistered :sub (first query)))
+  (read-sub query))
+
+(def event-codec
+  "L3 Codec for a re-frame event tool: encode {:event :args}; dispatch
+   output becomes its declared result."
+  {:encode (fn [tool args]
+             (if (fn? (:args->event tool))
+               (answer/ok {:event ((:args->event tool) args) :args args})
+               (answer/refusal :re-frame/invalid-call "event tool needs :args->event")))
+   :decode (fn [_ value] (answer/ok value))})
+
+(def subscription-codec
+  "L3 Codec for a re-frame subscription tool: args become a query; the
+   subscription's value is the decoded result."
+  {:encode (fn [tool args]
+             (if (fn? (:args->query tool))
+               (answer/ok ((:args->query tool) args))
+               (answer/refusal :re-frame/invalid-call "subscription tool needs :args->query")))
+   :decode (fn [_ value] (answer/ok value))})
+
+(defn- invoke-event
+  "L3 Boundary: dispatch an encoded event through re-frame."
+  [tool {:keys [event args]} grant]
+  (answer/ok (event-call tool args event grant)))
+
+(defn- invoke-subscription
+  "L3 Boundary: read an encoded query through re-frame."
+  [_tool query _grant]
+  (answer/ok (subscription-call query)))
+
+(defn- exposed-specs
+  "L3 Collect: only explicitly exposed event and subscription declarations."
+  [{:keys [events subs]}]
+  (concat (map (fn [[id spec]] [id (assoc spec :kind :re-frame/event)])
+               (filter (comp :expose val) events))
+          (map (fn [[id spec]] [id (assoc spec :kind :re-frame/sub :read-only? true)])
+               (filter (comp :expose val) subs))))
+
+(defn- declaration-specs
+  "L3 Promote: compile exposed re-frame declarations into ToolSpecs."
+  [source]
+  (surface/compile-tools (exposed-specs source)))
+
+(def re-frame-adapter
+  "L3 Source of explicit {:events {id spec} :subs {id spec}} declarations.
+   Each spec opts in with :expose true; codec adapters are `event-adapter`
+   and `subscription-adapter`."
+  {:source-kind :autonomous.re-frame/declarations
+   :derive (fn [source opts]
+             (answer/let-answer [tools (declaration-specs source)]
+               (surface/->surface {:app (:app opts {:name "app"}) :tools tools})))})
+
+(def event-adapter
+  "L3 re-frame event Codec and its host dispatch port."
+  {:kind :re-frame/event :codec event-codec :invoke invoke-event})
+
+(def subscription-adapter
+  "L3 re-frame subscription Codec and its host query port."
+  {:kind :re-frame/sub :codec subscription-codec :invoke invoke-subscription})
+
+(spi/register-adapter! re-frame-adapter)
+(spi/register-adapter! event-adapter)
+(spi/register-adapter! subscription-adapter)
 
 (defn reg-event-tool
   "Expose re-frame event `event-id` as a tool.
