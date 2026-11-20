@@ -149,6 +149,39 @@
     (is (not (re-find #"\p{Cntrl}" (:actor seen))))
     (is (.startsWith ^String (:actor seen) "evil[2J"))))
 
+(deftest a-deny-is-journaled-with-its-approver
+  (approving! [{:decision :deny :approver "bob"}] 1000)
+  (let [id (:pending (call {:amount 10}))
+        _  (poll-until-settled id)
+        e  (settled-entry id)]
+    (is (= :approval-denied (:outcome e)))
+    (is (= {:decision :deny :approver "bob"} (dissoc (:approval e) :ms)))))
+
+(defrecord LateAsker [verdict]
+  approval/Asker
+  (-ask! [_ _] verdict))
+
+(deftest a-verdict-after-the-timeout-never-runs-the-tool
+  (let [verdict (promise)]
+    (a/decorate! (a/each-tool (decorator/require-approval {:asker (->LateAsker verdict) :timeout-ms 20})))
+    (let [id (:pending (call {:amount 10}))]
+      (is (= :approval-timeout (get-in (poll-until-settled id) [:error :type])))
+      (deliver verdict {:decision :approve :approver "ana"})
+      (Thread/sleep 50)
+      (is (zero? @runs))
+      (is (= :approval-timeout (:outcome (settled-entry id))) "the settled entry still says timeout"))))
+
+(deftest redact-output-composes-with-approval
+  (a/reg-tool :pay {:description "Move money" :input [:map [:amount :int]]
+                    :handler (fn [args _] (swap! runs inc) {:paid (:amount args) :receipt "secret"})})
+  (a/decorate! (a/each-tool (comp (decorator/redact-output [[:receipt]])
+                                  (decorator/require-approval
+                                   {:asker (approval/queue-asker [{:decision :approve :approver "ana"}])
+                                    :timeout-ms 1000}))))
+  (let [id (:pending (call {:amount 3}))]
+    (is (= {:ok {:paid 3 :receipt "<redacted>"}} (poll-until-settled id)))
+    (is (= "ana" (get-in (settled-entry id) [:approval :approver])))))
+
 (deftest an-ungated-tool-cannot-forge-an-approval-entry
   (let [forged (vary-meta (answer/complete (answer/ok {:paid 1}))
                           assoc :autonomous/approval {:decision :approve :approver "me" :ms 0})]
