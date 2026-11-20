@@ -10,14 +10,18 @@
             [clojure.string :as str]))
 
 (defn parse
-  "Document of `text`: JSON when it starts with { or [, else YAML."
+  "L3 Boundary: document of `text`: JSON when it starts with { or [, else
+   YAML. Throws on text that is neither."
   [text]
   (doc/normalize
    (if (re-find #"^\s*[\{\[]" text)
      (json/read-str text)
      ((requiring-resolve 'clj-yaml.core/parse-string) text :keywords false))))
 
-(defn- read-doc [dir name]
+(defn- read-doc
+  "L3 Boundary: Ok of document `name` read from `dir`, or a refusal naming
+   the missing or unparseable file."
+  [dir name]
   (let [f (io/file dir name)]
     (if (.isFile f)
       (try (answer/ok (parse (slurp f)))
@@ -25,22 +29,42 @@
              (answer/refusal :openapi/unreadable (str "cannot parse " name ": " (ex-message e)))))
       (answer/refusal :openapi/missing-file (str "no file " (str f) " (a $ref points at it)")))))
 
+(defn- skip?
+  "L1 Promote: true for a document name already read or naming a URL,
+   which is never fetched."
+  [bundle n]
+  (or (contains? (:docs bundle) n) (str/includes? n "://")))
+
+(defn- add-doc
+  "L2 Pipeline: one read step: Ok of [bundle pending] with document `n`
+   read from `dir` and the documents it refers to queued, or a refusal."
+  [dir [bundle pending] n]
+  (answer/bind (read-doc dir n)
+               #(answer/ok [(assoc-in bundle [:docs n] %)
+                            (concat pending (doc/referenced-docs n %))])))
+
+(defn- step
+  "L2 Pipeline: Ok of the next [bundle pending], `n` taken off `pending`."
+  [dir [bundle [n & more]]]
+  (if (skip? bundle n) (answer/ok [bundle more]) (add-doc dir [bundle more] n)))
+
+(defn- read-all
+  "L2 Pipeline: Ok of the bundle once every pending document is read, or
+   the first refusal. Folds `step` iteratively in constant stack, however
+   many entries are pending."
+  [dir state]
+  (loop [a (answer/ok state)]
+    (let [[bundle pending] (:ok a)]
+      (cond
+        (not (answer/ok? a)) a
+        (empty? pending)     (answer/ok bundle)
+        :else                (recur (step dir (:ok a)))))))
+
 (defn load-bundle
-  "Bundle of the OpenAPI document at `path` and every document its $refs
-   reach, transitively, read relative to its directory. A $ref to a URL is
-   not fetched (it stays unresolved)."
+  "L3 Boundary: Ok Bundle of the OpenAPI document at `path` and every
+   document its $refs reach, transitively, read relative to its directory,
+   or a refusal. A $ref to a URL is not fetched (it stays unresolved)."
   [path]
   (let [f    (io/file path)
-        dir  (.getParentFile (.getAbsoluteFile f))
         root (.getName f)]
-    (loop [b       {:root root :docs {}}
-           pending [root]]
-      (if-let [n (first pending)]
-        (if (or (contains? (:docs b) n) (str/includes? n "://"))
-          (recur b (rest pending))
-          (let [d (read-doc dir n)]
-            (if (answer/refused? d)
-              d
-              (recur (assoc-in b [:docs n] (:ok d))
-                     (concat (rest pending) (doc/referenced-docs n (:ok d)))))))
-        (answer/ok b)))))
+    (read-all (.getParentFile (.getAbsoluteFile f)) [{:root root :docs {}} [root]])))

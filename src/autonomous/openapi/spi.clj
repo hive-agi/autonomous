@@ -12,13 +12,14 @@
 (def source-kind :autonomous.openapi/spec)
 
 (defn derive-surface
-  "The method body: Ok Surface or a refusal."
+  "L3 Source: the method body: Ok Surface of `source` with `opts`, or a
+   refusal."
   [_kind source opts]
   (openapi/surface source opts))
 
 (defn register!
-  "Install the method when autonomous.spi is on the classpath. Answers
-   true when it did."
+  "L3 Boundary: install the method on autonomous.spi/derive-surface when
+   autonomous.spi is on the classpath. Answers true when it did."
   []
   (if-let [mm (try (some-> (requiring-resolve 'autonomous.spi/derive-surface) deref)
                    (catch Exception _absent nil))]
