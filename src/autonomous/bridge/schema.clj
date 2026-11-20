@@ -53,7 +53,7 @@
    (constantly false)])
 
 (def ^:private CleanUrl
-  [:and :string
+  [:and [:string {:min 1}]
    [:fn {:error/message "a remote url carries no userinfo, query or fragment: credentials are references"}
     url/clean?]])
 
@@ -78,7 +78,7 @@
    [:map
     [:target/kind [:= :http]]
     [:target/id :string]
-    [:url {:optional true} CleanUrl]
+    [:url CleanUrl]
     [:token-env {:optional true} :string]
     [:token {:optional true} no-literal-token]
     [:credentials {:optional true} CredentialPolicy]

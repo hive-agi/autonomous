@@ -267,6 +267,12 @@
         "an autonomous.edn app entry")
     (is (m/validate bs/Target (assoc target :credentials (credential-policy))))))
 
+(deftest an-http-target-needs-a-url
+  (is (not (m/validate bs/Target (dissoc target :url))) "a Target without one")
+  (is (not (m/validate bs/Target (assoc target :url ""))) "an empty one")
+  (is (some? (:error (config/promote {:targets [{:app "todo" :channel :http}]} {} {} nil {})))
+      "an autonomous.edn app entry without one is refused, not promoted to \"\""))
+
 (deftest every-jdk-type-hint-resolves-to-its-class
   (let [jdk-ns (the-ns 'autonomous.bridge.http.jdk)
         tags   (for [v (vals (ns-interns jdk-ns))

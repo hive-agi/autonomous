@@ -157,7 +157,8 @@
   [entry]
   {:target/kind :http
    :target/id   (str (:app entry))
-   :url         (str (:url entry))
+   ;; a missing url stays missing, so validation refuses it
+   :url         (some-> (:url entry) str)
    :token-env   (some-> (:token-env entry) str)
    ;; carried so validation refuses it: a credential is a reference only
    :token       (:token entry)
