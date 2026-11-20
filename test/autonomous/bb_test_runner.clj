@@ -15,9 +15,11 @@
     autonomous.domain.primitives-trifecta-test
     autonomous.domain.fleet-trifecta-test
     autonomous.bridge.bridge-trifecta-test
+    autonomous.bridge.sources-strata-test
     autonomous.bridge.fleet-test
     autonomous.bridge.ws-test
     autonomous.mcp.transport-test
+    autonomous.mcp.protocol-strata-test
     autonomous.ring-test
     autonomous.e2e.check-trifecta-test
     autonomous.demo.plan-test
