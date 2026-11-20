@@ -221,3 +221,43 @@
    first invalid result is an :invalid-surface refusal."
   [surface decorators]
   (answer/reduce-answer (fn [s d] (decorated (d s))) surface decorators))
+
+;; =============================================================================
+;; Registration: one affordance in or out of a surface.
+;; =============================================================================
+
+(defn put-tool
+  "L1: Ok of `surface` with compiled `tool` under its :name, replacing a
+   tool of the same :id there. A different tool holding that name is a
+   :name-clash refusal."
+  [surface {:keys [id name] :as tool}]
+  (let [other (get-in surface [:tools name])]
+    (if (and other (not= (:id other) id))
+      (answer/refusal :name-clash (str "tool name " name " is already used by " (:id other))
+                      {:name name})
+      (answer/ok (assoc-in surface [:tools name] tool)))))
+
+(defn drop-tools
+  "L1: `surface` without every tool whose MCP name or id is in `ks`."
+  [surface ks]
+  (let [gone? (set ks)]
+    (update surface :tools
+            #(into {} (remove (fn [[n t]] (or (gone? n) (gone? (:id t))))) %))))
+
+(defn put-resource
+  "L1: `surface` with compiled resource `r` at `uri`, replacing any there."
+  [surface uri r]
+  (assoc-in surface [:resources uri] r))
+
+(defn drop-resource
+  "L1: `surface` without the resource at `uri`."
+  [surface uri]
+  (update surface :resources dissoc uri))
+
+(defn set-app
+  "L1: Ok of `surface` describing the app as `info`; an :invalid-app
+   refusal when `info` is not an AppInfo."
+  [surface info]
+  (if-let [e (m/explain s/AppInfo info)]
+    (answer/refusal :invalid-app "invalid app info" (me/humanize e))
+    (answer/ok (assoc surface :app info))))

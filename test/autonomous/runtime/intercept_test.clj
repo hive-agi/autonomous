@@ -106,3 +106,31 @@
     (is (thrown? clojure.lang.ExceptionInfo (a/decorate! #(dissoc % :tools))))
     (is (thrown? clojure.lang.ExceptionInfo (a/decorate! (decorator/each-tool #(assoc % :name "x")))))
     (is (= before (registry/surface-value)) "a refusal changes nothing")))
+
+(defn- tool-names [] (set (keys (:tools (registry/surface-value)))))
+
+(def ^:private late-spec {:description "Late" :handler (fn [_ _] :late)})
+
+(deftest decorators-apply-to-later-registrations
+  (a/decorate! (decorator/prefix-names "app_"))
+  (a/reg-tool :t/late late-spec)
+  (is (contains? (tool-names) "app_t_late"))
+  (is (not (contains? (tool-names) "t_late")))
+  (is (= {:ok :late} (call "app_t_late" {}))))
+
+(deftest re-registering-after-a-rename-replaces-the-tool
+  (a/decorate! (decorator/prefix-names "app_"))
+  (a/reg-tool :t/echo {:description "Echo again" :handler (fn [_ _] :again)})
+  (is (= #{"app_t_echo" "app_t_account" "app_t_later"} (tool-names)) "no unprefixed twin")
+  (is (= {:ok :again} (call "app_t_echo" {}))))
+
+(deftest a-registration-a-decorator-refuses-changes-nothing
+  (a/decorate! (decorator/each-tool #(cond-> % (= :t/late (:id %)) (assoc :name "other"))))
+  (let [before (registry/snapshot)]
+    (is (thrown? clojure.lang.ExceptionInfo (a/reg-tool :t/late late-spec)))
+    (is (= before (registry/snapshot)) "a refused registration changes nothing")))
+
+(deftest unregistering-follows-the-decorators
+  (a/decorate! (decorator/prefix-names "app_"))
+  (a/unreg-tool :t/echo)
+  (is (= #{"app_t_account" "app_t_later"} (tool-names))))

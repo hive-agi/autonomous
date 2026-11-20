@@ -36,6 +36,12 @@
    :pending     {}
    :next-id     0})
 
+(defn- holding
+  "State `st` holding `surface` as its base with no decorators, so the
+   exposed surface is the base itself."
+  [st surface]
+  (assoc st :base surface :decorators [] :surface surface))
+
 (defprotocol IRuntime
   "L2 read seam: what an adapter may ask of a running instance. Reads
    answer values; mutation stays with this namespace's `!` functions."
@@ -44,14 +50,16 @@
 
 #?(:clj (ns-unmap *ns* 'Runtime))
 
-(defrecord ^{:doc "L2: one running instance. `state` is an atom of {:surface Surface
-   :epoch :version :journal :lease :pending :next-id}: the surface value
-   changes on deploy or reload, the rest on every call. Two runtimes
-   share nothing. Deref answers the snapshot."}
+(defrecord ^{:doc "L2: one running instance. `state` is an atom of {:base Surface
+   :decorators [Surface -> Surface] :surface Surface :epoch :version
+   :journal :call-detail :lease :pending :next-id}. :base is what was
+   registered, :surface what agents see: always the base passed through
+   the decorators. The surface changes on deploy or reload, the rest on
+   every call. Two runtimes share nothing. Deref answers the snapshot."}
   Runtime [state]
   IRuntime
   (-snapshot [_] (let [{:keys [surface] :as st} @state]
-                   (merge (dissoc st :surface) surface)))
+                   (merge (dissoc st :surface :base :decorators) surface)))
   (-surface [_] (:surface @state))
   #?@(:clj  [clojure.lang.IDeref (deref [rt] (-snapshot rt))]
       :cljs [IDeref (-deref [rt] (-snapshot rt))]))
@@ -75,7 +83,7 @@
        (throw (ex-info (str "invalid surface: " (get-in s [:error :message]))
                        {:autonomous/error (get-in s [:error :type])
                         :problems (get-in s [:error :data])})))
-     (->Runtime (atom (assoc (fresh-state) :surface (:ok s)))))))
+     (->Runtime (atom (holding (fresh-state) (:ok s)))))))
 
 (defonce ^{:doc "The ONE process-wide runtime the facade API (reg-tool, reg-resource,
    use!, the re-frame adapter) acts on. Adapters that own their instance
@@ -119,11 +127,12 @@
   (-snapshot (or *state* default-runtime)))
 
 (defn clear!
-  "Forget everything: the surface (tools, resources, interceptors) and
-   the runtime state (journal, lease, pending results). For tests and
-   for a reload that registers from scratch."
+  "Forget everything: the registered surface (tools, resources,
+   interceptors), its decorators and the runtime state (journal, lease,
+   pending results). For tests and for a reload that registers from
+   scratch."
   []
-  (reset! (state-ref) (assoc (fresh-state) :surface surface/empty-surface))
+  (reset! (state-ref) (holding (fresh-state) surface/empty-surface))
   nil)
 
 (defn surface-value
@@ -143,75 +152,85 @@
 (defn- bump [st] (update st :version inc))
 
 ;; =============================================================================
+;; Transitions: the base changes, the exposed surface follows
+;; =============================================================================
+
+(defn- exposed
+  "Ok of state `st` whose :surface is its :base passed through its
+   :decorators; the refusal of surface/decorate otherwise. Pure."
+  [st]
+  (answer/bind (surface/decorate (:base st) (:decorators st))
+               #(answer/ok (assoc st :surface %))))
+
+(defn- rebased
+  "Ok of state `st` with base (f base) and the surface recomputed; the
+   first refusal of f or of the decorators otherwise. Pure."
+  [st f]
+  (answer/bind (f (:base st)) #(exposed (assoc st :base %))))
+
+(defn- transition!
+  "Boundary: replace the bound state with the Ok of (f state), bumping the
+   version; a refusal throws as an author error and changes nothing."
+  [f]
+  (swap! (state-ref) #(bump (unwrap! (f %))))
+  nil)
+
+(defn- update-base!
+  "Boundary: replace the registered surface with the Ok of (f base) and
+   recompute the exposed one in the same swap. Throws, changing nothing,
+   when f or a decorator refuses."
+  [f]
+  (transition! #(rebased % f)))
+
+;; =============================================================================
 ;; Affordances
 ;; =============================================================================
 
-(defn- clashing-id
-  "Id of a DIFFERENT tool already registered under `tool`'s name."
-  [st tool]
-  (let [other (get-in st [:surface :tools (:name tool)])]
-    (when (and other (not= (:id other) (:id tool))) (:id other))))
-
 (defn add-tool!
-  "Register tool `id` from author `spec`; answers its MCP name. Throws on an
-   invalid spec or a name another tool already uses."
+  "Register tool `id` from author `spec`, replacing an earlier registration
+   of the same id; answers its MCP name. Throws, changing nothing, on an
+   invalid spec, a name another tool already uses, or a decorator that
+   refuses the resulting surface."
   [id spec]
   (let [tool (unwrap! (affordance/->tool id spec))]
-    (swap! (state-ref)
-           (fn [st]
-             (when-let [other (clashing-id st tool)]
-               (throw (ex-info (str "tool name " (:name tool) " is already used by " other)
-                               {:autonomous/error :name-clash :name (:name tool)})))
-             (bump (assoc-in st [:surface :tools (:name tool)] tool))))
+    (update-base! #(surface/put-tool % tool))
     (:name tool)))
 
 (defn remove-tool!
-  "Unregister the tool with id or MCP name `x`."
+  "Unregister the tool with id or MCP name `x` (its registered name)."
   [x]
-  (swap! (state-ref)
-         (fn [st]
-           (let [names (for [[n t] (get-in st [:surface :tools]) :when (or (= n x) (= (:id t) x))] n)]
-             (bump (update-in st [:surface :tools] #(apply dissoc % names))))))
-  nil)
+  (update-base! #(answer/ok (surface/drop-tools % [x]))))
 
 (defn add-resource!
   "Register resource `uri` from author `spec`; answers the uri."
   [uri spec]
   (let [r (unwrap! (affordance/->resource uri spec))]
-    (swap! (state-ref) #(bump (assoc-in % [:surface :resources uri] r)))
+    (update-base! #(answer/ok (surface/put-resource % uri r)))
     uri))
 
-(defn remove-resource! [uri]
-  (swap! (state-ref) #(bump (update-in % [:surface :resources] dissoc uri)))
-  nil)
+(defn remove-resource!
+  "Unregister the resource at `uri`."
+  [uri]
+  (update-base! #(answer/ok (surface/drop-resource % uri))))
 
 (defn set-app!
-  "Describe the application to agents (AppInfo)."
+  "Describe the application to agents (AppInfo). Throws on an invalid one."
   [info]
-  (when-let [e (m/explain s/AppInfo info)]
-    (throw (ex-info "invalid app info" {:autonomous/error :invalid-app :problems (me/humanize e)})))
-  (swap! (state-ref) #(bump (assoc-in % [:surface :app] info)))
-  nil)
-
-(defn- update-surface!
-  "Boundary: replace the bound surface with the Ok of (f surface), bumping
-   the version; a refusal throws as an author error and changes nothing."
-  [f]
-  (swap! (state-ref) #(bump (assoc % :surface (unwrap! (f (:surface %))))))
-  nil)
+  (update-base! #(surface/set-app % info)))
 
 (defn add-interceptor!
   "Append Interceptor `ic` (autonomous.surface/Interceptor) to the call
    chain. Throws on an invalid interceptor or a :name already in the chain."
   [ic]
-  (update-surface! #(surface/add-interceptor % ic)))
+  (update-base! #(surface/add-interceptor % ic)))
 
 (defn decorate!
-  "Replace the surface with the result of Surface -> Surface fns
-   `decorators`, applied left to right. Throws, changing nothing, when any
-   result is not a valid Surface."
+  "Append Surface -> Surface fns `decorators` to the runtime's decorators.
+   They apply, left to right after the earlier ones, to every surface the
+   runtime exposes from now on, including later registrations. Throws,
+   changing nothing, when any result is not a valid Surface."
   [decorators]
-  (update-surface! #(surface/decorate % decorators)))
+  (transition! #(exposed (update % :decorators into decorators))))
 
 (defn- legacy-name
   "A chain :name for the next use! wrapper of `surface`, unique in its chain."
@@ -223,7 +242,7 @@
    Appends one legacy link to the call chain; the last wrapper registered
    runs outermost."
   [mw]
-  (update-surface! #(surface/add-interceptor % (chain/legacy-link (legacy-name %) mw))))
+  (update-base! #(surface/add-interceptor % (chain/legacy-link (legacy-name %) mw))))
 
 ;; =============================================================================
 ;; Journal and lease
