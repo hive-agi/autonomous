@@ -71,11 +71,27 @@ To rotate, mint again, replace the Secret and restart both deployments.
 ```sh
 kubectl apply --dry-run=server -f deploy/playground/playground.yaml
 kubectl apply -f deploy/playground/playground.yaml
+kubectl apply -f deploy/playground/envoy-egress.yaml
 kubectl -n autonomous-playground rollout status deploy/bridge deploy/todo
 ```
+
+`envoy-egress.yaml` lives in `envoy-gateway-system`: the eg-blw proxy's
+egress is an allowlist (one CiliumNetworkPolicy per destination), and without
+this entry Envoy answers 503 with a connection timeout. It allows only
+`todo:8090` and `bridge:7891`, not the bridge's websocket port.
+
+## Check the sandbox
+
+From the bridge pod (babashka) and the backend pod, every connection out times
+out (internet, the Kubernetes API, the LAN and node addresses, other
+namespaces) except the backend to `bridge:7890`; the root filesystem refuses
+writes and no service-account token is mounted. Path traversal, shell strings,
+script tags and forged event-stream lines sent over HTTP are refused or stored
+as plain text. Verified 2026-11-20.
 
 ## Take it down
 
 ```sh
 kubectl delete namespace autonomous-playground
+kubectl -n envoy-gateway-system delete cnp envoy-blw-to-autonomous-playground
 ```
