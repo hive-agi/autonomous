@@ -15,17 +15,23 @@
             [autonomous.domain.answer :as answer]
             [clojure.string :as str]))
 
+(defn protocol-headers
+  "Pure: the headers every request to a remote carries: `ident`, the MCP
+   protocol version, `accept`, and session `sid` when there is one."
+  [ident accept sid]
+  (cond-> (assoc ident "accept" accept "mcp-protocol-version" rpc/protocol-version)
+    sid (assoc "mcp-session-id" (str sid))))
+
 (defn- post
   "Answer of JSON-RPC message `msg` to `target`'s endpoint with `ident`
    headers, in session `sid` (none when nil)."
   [client target msg ident sid timeout-ms]
-  (let [req {:method :post
-             :url (http/endpoint target)
-             :headers (cond-> (assoc ident "content-type" "application/json")
-                        sid (assoc "mcp-session-id" (str sid)))
-             :body (rpc/json-text msg)
-             :timeout-ms timeout-ms}]
-    (port/-request! client req)))
+  (port/-request! client {:method :post
+                          :url (http/endpoint target)
+                          :headers (assoc (protocol-headers ident rpc/post-accept sid)
+                                          "content-type" "application/json")
+                          :body (rpc/json-text msg)
+                          :timeout-ms timeout-ms}))
 
 (def ^:private gone-status 404)
 
@@ -67,7 +73,7 @@
     (answer/let-answer
      [ident (http/identity target source grant)]
      (port/-request! client {:method :delete :url (http/endpoint target)
-                             :headers (assoc ident "mcp-session-id" (str (:id ses)))
+                             :headers (protocol-headers ident rpc/post-accept (:id ses))
                              :timeout-ms 5000}))))
 
 (defn round
@@ -106,13 +112,22 @@
       (swap! buf (constantly rest-))
       (run! on-message (rpc/read-messages events)))))
 
+(defn- report-failed!
+  "Boundary: report refusal `a` that closed a remote stream on stderr. Its
+   message is the adapter's own text, never the remote's."
+  [a]
+  (binding [*out* *err*]
+    (println "[autonomous] remote stream closed:" (get-in a [:error :message]))))
+
 (defn- sink
   "Sink for port/-open-stream!: `on-message` gets each completed JSON-RPC
-   message, `on-close` runs once at the end."
+   message, `on-close` runs once at the end, and a refusal that closed the
+   stream (an overflowing line) is reported."
   [on-message on-close]
   (let [buf (atom "")]
-    {:text! (partial feed! buf on-message)
-     :close! (fn [] (on-close))}))
+    {:text!   (partial feed! buf on-message)
+     :failed! report-failed!
+     :close!  (fn [] (on-close))}))
 
 (defn open-stream!
   "Boundary: hold the caller's event stream and dispatch its messages to
@@ -121,7 +136,6 @@
   (answer/let-answer
    [ident (http/identity target source grant)]
    (port/-open-stream! client {:url (http/endpoint target)
-                               :headers (merge ident {"accept" rpc/sse-accept
-                                                      "mcp-session-id" (str (:id ses))})
+                               :headers (protocol-headers ident rpc/sse-accept (:id ses))
                                :stream-timeout-ms (:timeout-ms target http/default-timeout-ms)}
                        (sink on-message on-close))))

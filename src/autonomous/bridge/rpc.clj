@@ -19,6 +19,10 @@
 
 (def sse-accept "text/event-stream")
 
+(def post-accept
+  "What a POST accepts: Streamable HTTP lets the remote answer JSON or SSE."
+  "application/json, text/event-stream")
+
 (defn request
   "A JSON-RPC request map of `method` with `params`."
   [id method params]
@@ -126,12 +130,21 @@
       (contains? res :structuredContent) (answer/ok body)
       :else                          (answer/ok (or (content-text res) {})))))
 
-(defn message-of
-  "The JSON-RPC message in reply body `body`: a direct object, or the first
-   message of a batch/stream body. Throws when it is not JSON."
+(defn- sse-body?
+  "True when reply body `body` is SSE framing rather than bare JSON."
   [body]
-  (let [v (json/read-json (str body))]
-    (if (map? v) v (first v))))
+  (let [t (str/triml (str body))]
+    (or (str/starts-with? t "data:") (str/starts-with? t ":") (str/starts-with? t "event:"))))
+
+(defn message-of
+  "The JSON-RPC message in reply body `body`: a direct object, the first
+   message of a batch, or the first message of an SSE-framed reply (a POST
+   accepts text/event-stream). Throws when it holds no JSON."
+  [body]
+  (if (sse-body? body)
+    (or (first (read-messages body)) (throw (ex-info "no JSON-RPC message in the stream" {})))
+    (let [v (json/read-json (str body))]
+      (if (map? v) v (first v)))))
 
 ;; =============================================================================
 ;; Manifest

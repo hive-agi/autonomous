@@ -22,7 +22,7 @@
             [autonomous.mcp.server :as server]
             [autonomous.bridge.schema :as bs]
             [autonomous.bridge.url :as url]
-            [autonomous.bridge.http.jdk]
+            [autonomous.bridge.http.jdk :as jdk]
             [autonomous.cli :as cli]
             [autonomous.config :as config]
             [malli.core :as m]))
@@ -129,7 +129,31 @@
          (rpc/read-messages (str ": stream open\n\ndata: {\"jsonrpc\":\"2.0\","
                                  "\"method\":\"notifications/tools/list_changed\"}\n\n"))))
   (is (empty? (rpc/read-messages ": keepalive\n\n")))
-  (is (= 1 (count (rpc/read-messages "data: {\"a\":1}\ndata: not json\n\n")))))
+  (is (= 1 (count (rpc/read-messages "data: {\"a\":1}\ndata: not json\n\n"))))
+  (testing "a POST reply framed as SSE reads as its first message"
+    (is (= {:jsonrpc "2.0" :id 1 :result {}}
+           (rpc/message-of ": hi\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n")))))
+
+(defn- pumped
+  "What pump! hands a recording sink from `text` with line cap `cap`."
+  [text cap]
+  (let [seen (atom {:text [] :failed [] :closed 0})
+        sink {:text!   #(swap! seen update :text conj %)
+              :failed! #(swap! seen update :failed conj %)
+              :close!  #(swap! seen update :closed inc)}]
+    (jdk/pump! (java.io.StringReader. text) sink cap)
+    @seen))
+
+(deftest a-stream-line-past-the-cap-closes-the-stream
+  (let [ok (pumped "data: a\n\ndata: b\n" 16)]
+    (is (= ["data: a\n" "\n" "data: b\n"] (:text ok)))
+    (is (empty? (:failed ok)))
+    (is (= 1 (:closed ok))))
+  (let [over (pumped (str "data: a\n" (apply str (repeat 40 "x")) "\ndata: late\n") 16)]
+    (is (= ["data: a\n"] (:text over)) "nothing past the long line is read")
+    (is (= [:channel/stream-overflow] (map #(get-in % [:error :type]) (:failed over))))
+    (is (= 1 (:closed over)) "the stream is closed once"))
+  (is (= (* 1024 1024) jdk/max-line-chars)))
 
 (deftest a-listing-becomes-a-manifest
   (let [m (rpc/manifest-of "todo" "http://r/todo" tools [{:uri "app://db" :mimeType "x"}])]
@@ -405,6 +429,16 @@
     (is (empty? @seen) "nothing was sent"))
   (testing "and the schema refuses an empty policy"
     (is (not (m/validate bs/Target (assoc target :credentials {}))))))
+
+(deftest every-request-names-its-protocol-and-what-it-accepts
+  (let [[c seen] (spied (assoc target :credentials (credential-policy)))]
+    (manifest-as c "agent-a" #{:read})
+    (is (<= 3 (count @seen)) "initialize, initialized, the stream and tools/list")
+    (is (every? #(= rpc/protocol-version (get-in % [:headers "mcp-protocol-version"])) @seen))
+    (is (every? #(contains? #{"application/json, text/event-stream" "text/event-stream"}
+                            (get-in % [:headers "accept"]))
+                @seen))
+    (is (some #(= "application/json, text/event-stream" (get-in % [:headers "accept"])) @seen))))
 
 (deftest credential-config-promotes-references-only
   (let [entry {:app "todo" :channel :http :url remote-url

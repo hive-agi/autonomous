@@ -9,7 +9,7 @@
             [autonomous.bridge.rpc :as rpc]
             [autonomous.domain.answer :as answer]
             [clojure.string :as str])
-  (:import (java.io BufferedReader InputStreamReader)
+  (:import (java.io BufferedReader InputStream InputStreamReader Reader)
            (java.net URI)
            (java.net.http HttpClient HttpClient$Redirect HttpRequest HttpRequest$Builder HttpRequest$BodyPublisher
                           HttpRequest$BodyPublishers HttpResponse HttpResponse$BodyHandlers)
@@ -76,18 +76,43 @@
 ;; The stream: a GET held open, its lines handed to a sink
 ;; =============================================================================
 
-(defn- pump!
-  "Read the stream body of `resp` into `sink` line by line until EOF or an
-   error, then close it. A stream needs its own thread."
-  [^HttpResponse resp sink]
-  (try
-    (with-open [r (BufferedReader. (InputStreamReader. (.body resp) "UTF-8"))]
-      (loop []
-        (when-let [l (.readLine r)]
-          ((:text! sink) (str l "\n"))
-          (recur))))
-    (catch Exception _client-gone nil)
-    (finally (try ((:close! sink)) (catch Exception _closed nil)))))
+(def max-line-chars
+  "The longest SSE line a remote stream may send: 1 MiB of characters. A
+   longer line closes the stream; it is never buffered."
+  (* 1024 1024))
+
+(defn- line-of
+  "Boundary: Ok of the next line of `r` without its newline, Ok nil at EOF,
+   or a :channel/stream-overflow refusal once the line passes `cap`
+   characters. Never holds more than `cap` characters."
+  [^Reader r cap]
+  (let [sb (StringBuilder.)]
+    (loop []
+      (let [c (.read r)]
+        (cond
+          (neg? c)              (answer/ok (when (pos? (.length sb)) (str sb)))
+          (= 10 c)              (answer/ok (str sb))
+          (>= (.length sb) cap) (answer/refusal :channel/stream-overflow
+                                                (str "a remote stream line passed " cap
+                                                     " characters: the stream is closed"))
+          :else                 (do (.append sb (char c)) (recur)))))))
+
+(defn pump!
+  "Boundary: hand reader `r`'s lines to `sink` until EOF, an error, or a
+   line past `cap` characters (default max-line-chars), which is reported
+   to the sink's optional :failed! as a refusal. The reader and the sink
+   are closed once at the end. A stream needs its own thread."
+  ([r sink] (pump! r sink max-line-chars))
+  ([^Reader r sink cap]
+   (try
+     (with-open [r r]
+       (loop []
+         (let [a (line-of r cap)]
+           (cond
+             (answer/refused? a) (when-let [failed! (:failed! sink)] (failed! a))
+             (some? (:ok a))     (do ((:text! sink) (str (:ok a) "\n")) (recur))))))
+     (catch Exception _client-gone nil)
+     (finally (try ((:close! sink)) (catch Exception _closed nil))))))
 
 (defn- open-stream
   "Answer Ok {:close! (fn [])} of a held GET `req`; `sink` gets the text as
@@ -99,7 +124,7 @@
       (if (<= 400 (.statusCode resp))
         (do (.close (.body resp))
             (answer/refusal :channel/stream-refused (str "the remote stream answered " (.statusCode resp))))
-        (do (future (pump! resp sink))
+        (do (future (pump! (BufferedReader. (InputStreamReader. ^InputStream (.body resp) "UTF-8")) sink))
             (answer/ok {:close! (fn [] (try (.close (.body resp)) (catch Exception _closed nil)))}))))
     (catch Exception e
       (transport-failed e))))
