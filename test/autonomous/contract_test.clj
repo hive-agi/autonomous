@@ -92,18 +92,28 @@
     (contract/assert-contract report)
     (is (:ok? report) "the :invoke port is the host; the other kind is not the Codec's")))
 
-(deftest hostile-codecs-become-failed-check-data
-  (let [hostile (assoc echo-adapter :codec
-                       {:encode (fn [_ _] (throw (ex-info "hostile" {})))
-                        :decode (fn [_ _] {:not-an-answer true})})
-        report (contract/check-adapter hostile (fixture))
-        decode-hostile (assoc echo-adapter :codec {:decode (fn [_ _] {:not-an-answer true})})
-        decode-report (contract/check-adapter decode-hostile (fixture))]
-    (is (not (:ok? report)))
-    (is (false? (:ok? (nth (:checks report) 3))) "encode failure breaks the sample round trip")
-    (is (:ok? (last (:checks report))) "encode exceptions become SPI refusals")
-    (is (:ok? (last (:checks decode-report))) "a missing encoder becomes an SPI refusal")
-    (is (not (:ok? decode-report)) "the sample round trip requires a successful encode")))
+(defn- checks-by-id
+  "The Checks of `report` keyed by :check id."
+  [report]
+  (into {} (map (juxt :check identity)) (:checks report)))
+
+(defn- codec-checks
+  "The Checks of echo-adapter with its codec ports overridden by `ports`."
+  [ports]
+  (checks-by-id (contract/check-adapter (update echo-adapter :codec merge ports) (fixture))))
+
+(def ^:private not-an-answer (fn [_ _] {:not-an-answer true}))
+
+(deftest hostile-codecs-fail-codecs-total
+  (doseq [[why ports] [["a throwing encoder" {:encode (fn [_ _] (throw (ex-info "hostile" {})))}]
+                       ["a non-Answer encoder" {:encode not-an-answer}]
+                       ["a missing encoder" {:encode nil}]
+                       ["a non-Answer decoder" {:decode not-an-answer}]
+                       ["a throwing decoder" {:decode (fn [_ _] (throw (ex-info "hostile" {})))}]]]
+    (is (false? (:ok? (:codecs-total (codec-checks ports))))
+        (str why " is not total: the SPI guard refused for it")))
+  (is (false? (:ok? (:schema-round-trip (codec-checks {:encode not-an-answer}))))
+      "an encode failure breaks the sample round trip"))
 
 (deftest fixture-failures-are-contained-as-check-data
   (let [report (contract/check-adapter echo-adapter

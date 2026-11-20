@@ -225,10 +225,18 @@
                          (when-let [sample (sample-args fixture tool)] [sample])
                          malformed-args))))
 
+(def ^:private guard-refusals
+  "Refusal types autonomous.spi's guard emits when a codec port throws,
+   is missing or answers a non-Answer. The guard keeps the runtime safe,
+   but the codec itself failed to be total, so the contract fails it."
+  #{:codec/encode :codec/decode})
+
 (defn- answer-receipt
-  "L3 Contract: require one codec crossing to answer Ok or a refusal."
+  "L3 Contract: require one codec crossing to answer Ok or the codec's own
+   refusal, never one the SPI guard had to make for it."
   [stage tool-name args a]
-  (result :codecs/total (m/validate [:or s/Ok s/Refusal] a)
+  (result :codecs/total (and (m/validate [:or s/Ok s/Refusal] a)
+                             (not (guard-refusals (get-in a [:error :type]))))
           {:stage stage :tool tool-name :args args :answer a}))
 
 (defn- encode-receipt
@@ -269,8 +277,10 @@
 
 (defn codecs-total
   "L3 Contract: generated, fixture and malformed arguments encode to Ok or
-   a refusal; every fixture decode output decodes to Ok or a refusal. SPI
-   guards contain port exceptions and reject Pending or non-Answers."
+   a refusal; every fixture decode output decodes to Ok or a refusal. The
+   refusal must be the codec's own: a throw, a missing port, Pending or a
+   non-Answer, which the SPI guard turns into :codec/encode or
+   :codec/decode, fails the check."
   [adapter fixture]
   (answer-receipt->check :codecs-total
     (answer/bind (surface-answer adapter fixture)
