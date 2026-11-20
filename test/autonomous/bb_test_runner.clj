@@ -21,6 +21,9 @@
     autonomous.demo.plan-test
     autonomous.runtime.rpc-test
     autonomous.runtime.registry-test
+    autonomous.runtime.chain-test
+    autonomous.runtime.intercept-test
+    autonomous.surface-transform-test
     autonomous.re-frame.model-trifecta-test
     autonomous.openapi-test
     autonomous.openapi-codec-test

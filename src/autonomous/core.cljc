@@ -15,7 +15,8 @@
         :handler (fn [{:keys [text]} _grant] (add! text))})"
   (:require [autonomous.runtime.invoke :as invoke]
             [autonomous.runtime.registry :as registry]
-            [autonomous.runtime.rpc :as rpc]))
+            [autonomous.runtime.rpc :as rpc]
+            [autonomous.decorator :as decorator]))
 
 (defn reg-tool
   "Register (or replace) a tool. `id` is a keyword; its MCP name derives
@@ -59,9 +60,31 @@
 
 (defn use!
   "Add middleware around every invocation:
-   (fn [handler] (fn [tool args grant] ...))."
+   (fn [handler] (fn [tool args grant] ...)). A shim over the call chain:
+   each wrapper becomes one link; the last registered runs outermost."
   [mw]
   (registry/add-middleware! mw))
+
+(defn intercept!
+  "Append one Interceptor map {:name kw :enter? :leave? :error?}
+   (autonomous.surface/Interceptor) to the call chain. :enter and :leave
+   take the call context {:tool :args :grant}, :error takes [context
+   refusal]; each returns the context. Throws on an invalid interceptor or
+   a :name already in the chain."
+  [interceptor]
+  (registry/add-interceptor! interceptor))
+
+(defn decorate!
+  "Replace the surface with the result of Surface -> Surface fns, applied
+   left to right (see autonomous.decorator; lift a Tool -> Tool fn with
+   `each-tool`). Throws, changing nothing, when a result is not a valid
+   Surface."
+  [& decorators]
+  (registry/decorate! decorators))
+
+(def each-tool
+  "Lift a Tool -> Tool fn to a Surface -> Surface fn; see autonomous.decorator."
+  decorator/each-tool)
 
 (defn journal!
   "Append an application event to the journal agents read (e.g. what the
