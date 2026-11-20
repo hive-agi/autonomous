@@ -123,41 +123,6 @@
      Asker
      (-ask! [this request] (future (read-verdict this request)))))
 
-(defn- hive-verdict
-  "L1 Promote: the Verdict for hive ask's reply {:decision str :by str};
-   its timeout reply is `::timeout`, which `ask!` reads as a timeout."
-  [{:keys [timeout decision by]}]
-  (if timeout
-    ::timeout
-    {:decision (if (yes? decision) :approve :deny) :approver (or by "hive")}))
-
-(defn- hive-question
-  "L1 Promote: the one-line question hive ask shows for `request`."
-  [{:keys [tool actor]}]
-  (str "Approve " actor "'s call of " tool "?"))
-
-#?(:cljs nil
-   :default
-   (defrecord HiveAsker [ask-fn agent-id timeout-ms]
-     Asker
-     (-ask! [_ request]
-       (future (hive-verdict (ask-fn agent-id (hive-question request) ["yes" "no"]
-                                     :expects :confirm :timeout-ms timeout-ms
-                                     :context (pr-str request)))))))
-
-#?(:cljs nil
-   :default
-   (defn hive-asker
-     "L1 adapter (clj, optional hive): asks the operator through hive's
-      human ask (hive-mcp.hivemind.messaging/ask!, resolved when the asker is
-      made, so the library loads without hive). Options :agent-id (default
-      \"autonomous\"), :timeout-ms (default 300000) and :ask-fn, a function
-      of the same signature replacing hive's. Throws when hive is absent."
-     ([] (hive-asker {}))
-     ([{:keys [ask-fn agent-id timeout-ms] :or {agent-id "autonomous" timeout-ms 300000}}]
-      (->HiveAsker (or ask-fn (requiring-resolve 'hive-mcp.hivemind.messaging/ask!))
-                   agent-id timeout-ms))))
-
 #?(:cljs nil
    :default
    (defn stdin-asker

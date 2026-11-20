@@ -30,24 +30,6 @@
   (doseq [v [{:decision :approve :approver "a"} {:decision :deny :approver "b"} nil]]
     (is (m/validate approval/Decision (ask (approval/queue-asker (if v [v] [])) 20)))))
 
-(defn- hive-asker [reply asked]
-  (approval/hive-asker {:agent-id "ling-1" :timeout-ms 100
-                        :ask-fn (fn [& args] (swap! asked conj args) reply)}))
-
-(deftest the-hive-asker-maps-hive-ask-replies-to-decisions
-  (let [asked (atom [])]
-    (is (= {:decision :approve :approver "pedro"}
-           (dissoc (ask (hive-asker {:decision "yes" :by "pedro"} asked) 500) :ms)))
-    (is (= ["ling-1" "Approve agent's call of pay?" ["yes" "no"]] (take 3 (first @asked))))
-    (is (= {:decision :deny :approver "pedro"}
-           (dissoc (ask (hive-asker {:decision "no" :by "pedro"} asked) 500) :ms)))
-    (is (= :timeout (:decision (ask (hive-asker {:timeout true :ask-id "x"} asked) 500))))))
-
-(deftest the-hive-asker-needs-hive-only-when-made-without-an-ask-fn
-  (is (thrown? Exception
-               (approval/hive-asker {}))
-      "hive-mcp is not on this classpath, so resolving its ask! fails loudly"))
-
 (defn- stdin-asker [typed out]
   (approval/stdin-asker {:in (BufferedReader. (StringReader. typed)) :out out :approver "op"}))
 
