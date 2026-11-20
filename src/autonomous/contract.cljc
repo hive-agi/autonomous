@@ -129,11 +129,11 @@
         input (schema-receipt :schema/input tool-name args (:input tool))
         a (when (and (:codec adapter) (:ok? input)) (invoke-sample adapter fixture tool args))]
     [tool-name
-     (if-not (:ok? input) input
-             (if-not (:codec adapter) (result :schema/round-trip true :codec :undeclared)
-                     (if (answer/refused? a)
-                       (result :schema/round-trip false {:tool tool-name :answer a})
-                       (output-receipt tool-name tool a))))]))
+     (cond
+       (not (:ok? input)) input
+       (not (:codec adapter)) (result :schema/round-trip true {:tool tool-name :codec :undeclared})
+       (answer/refused? a) (result :schema/round-trip false {:tool tool-name :answer a})
+       :else (output-receipt tool-name tool a))]))
 
 (defn- round-trip-receipts
   "L3 Contract: every tool's sample crosses its declared ports."

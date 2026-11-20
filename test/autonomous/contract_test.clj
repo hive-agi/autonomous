@@ -59,6 +59,14 @@
     (is (not (:ok? report)) "a Source key alone declares no Codec")
     (is (false? (:ok? (last (:checks report)))))))
 
+(deftest an-adapter-without-a-codec-skips-the-round-trip
+  (let [report (contract/check-adapter (dissoc echo-adapter :kind :codec) (fixture))
+        by-id (into {} (map (juxt :check identity)) (:checks report))]
+    (is (:ok? (:schema-round-trip by-id))
+        (str "a Source without a Codec has no round trip to fail: "
+             (pr-str (:detail (:schema-round-trip by-id)))))
+    (is (false? (:ok? (:codecs-total by-id))) "codecs-total still requires a :codec")))
+
 (deftest hostile-codecs-become-failed-check-data
   (let [hostile (assoc echo-adapter :codec
                        {:encode (fn [_ _] (throw (ex-info "hostile" {})))
