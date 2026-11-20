@@ -11,13 +11,14 @@
 (def promoted-keys #{:seq :at :kind :actor :tool :outcome})
 
 (defn entry-key
-  "Identity of a journal entry across reloads: a reloaded runtime restarts
-   its sequence, so the time joins it."
+  "L1 Promote: identity of a journal entry across reloads: a reloaded
+   runtime restarts its sequence, so the time joins it."
   [target runtime {:keys [seq at]}]
   (str target "|" runtime "|" at "|" seq))
 
 (defn ->ledger-entry
-  "LedgerEntry for journal `entry` drained from `runtime` of `target`."
+  "L1 Promote: LedgerEntry for journal `entry` drained from `runtime` of
+   `target`; an optional field with a falsy value is left out."
   [target runtime entry]
   (cond-> {:entry/key     (entry-key target runtime entry)
            :entry/target  target
@@ -31,9 +32,9 @@
     (:outcome entry) (assoc :entry/outcome (:outcome entry))))
 
 (defn ->view
-  "What an agent reads for a LedgerEntry. Where it came from sits under
-   :source and the entry's own fields under :data, so an app field never
-   collides with a promoted one."
+  "L1 Promote: what an agent reads for a LedgerEntry. Where it came from
+   sits under :source and the entry's own fields under :data, so an app
+   field never collides with a promoted one."
   [e]
   (let [data (wire/read-edn (:entry/data e))]
     (cond-> {:source {:target (:entry/target e) :runtime (:entry/runtime e)}
@@ -43,18 +44,24 @@
       (:entry/outcome e) (assoc :outcome (:entry/outcome e))
       (seq data)         (assoc :data data))))
 
+(def ^:private query-clauses
+  "LedgerQuery key and (fn [query-value entry] bool), in the order they
+   are checked; a closed set."
+  [[:actor  (fn [v e] (= v (:entry/actor e)))]
+   [:kind   (fn [v e] (= v (:entry/kind e)))]
+   [:tool   (fn [v e] (= v (:entry/tool e)))]
+   [:target (fn [v e] (= v (:entry/target e)))]
+   [:since  (fn [v e] (>= (:entry/at e) v))]
+   [:until  (fn [v e] (< (:entry/at e) v))]])
+
 (defn matches?
-  "True when LedgerEntry `e` satisfies LedgerQuery `q`."
+  "L1 Promote: true when LedgerEntry `e` satisfies every clause LedgerQuery
+   `q` gives; an absent (nil) clause matches anything."
   [q e]
-  (and (or (nil? (:actor q))  (= (:actor q) (:entry/actor e)))
-       (or (nil? (:kind q))   (= (:kind q) (:entry/kind e)))
-       (or (nil? (:tool q))   (= (:tool q) (:entry/tool e)))
-       (or (nil? (:target q)) (= (:target q) (:entry/target e)))
-       (or (nil? (:since q))  (>= (:entry/at e) (:since q)))
-       (or (nil? (:until q))  (< (:entry/at e) (:until q)))))
+  (every? (fn [[k pred]] (let [v (get q k)] (or (nil? v) (pred v e)))) query-clauses))
 
 (defn select-entries
-  "Entries matching `q`, newest first, at most (:limit q 100)."
+  "L1 Promote: entries matching `q`, newest first, at most (:limit q 100)."
   [q entries]
   (->> entries
        (filter #(matches? q %))
@@ -63,27 +70,38 @@
        vec))
 
 (defmulti make
-  "An ILedger for config {:ledger/kind ...}. Adapters add a method."
+  "L3 Boundary: an ILedger for config {:ledger/kind ...}. Adapters add a
+   method (an open set)."
   :ledger/kind)
 
 (def ^:private adapter-ns
   {:memory   'autonomous.bridge.ledger.memory
    :datahike 'autonomous.bridge.ledger.datahike})
 
-(defn open
-  "Load the adapter namespace this library ships for `cfg`'s kind (a third
-   party loads its own), then `make` it. An adapter this runtime cannot
-   load (datahike on babashka or ClojureWasm) throws ex-info with
-   :autonomous/error :ledger/unavailable and a message that says where it
-   runs."
+(defn- unavailable
+  "L3 Boundary: the :ledger/unavailable ex-info for an adapter of `cfg`'s
+   kind that failed to load with `load-failure`."
+  [cfg load-failure]
+  (ex-info (str "ledger " (name (:ledger/kind cfg)) " cannot load on this runtime ("
+                (ex-message load-failure) "); use --ledger memory, or run the bridge "
+                "on the JVM with the adapter's alias (clojure -M:datahike:serve)")
+           {:autonomous/error :ledger/unavailable :ledger/kind (:ledger/kind cfg)}
+           load-failure))
+
+(defn- load-adapter!
+  "L3 Boundary: require the adapter namespace this library ships for
+   `cfg`'s kind, if any; throws `unavailable` when it cannot load."
   [cfg]
   (when-let [ns-sym (adapter-ns (:ledger/kind cfg))]
-    (try
-      (require ns-sym)
-      (catch Exception load-failure
-        (throw (ex-info (str "ledger " (name (:ledger/kind cfg)) " cannot load on this runtime ("
-                             (ex-message load-failure) "); use --ledger memory, or run the bridge "
-                             "on the JVM with the adapter's alias (clojure -M:datahike:serve)")
-                        {:autonomous/error :ledger/unavailable :ledger/kind (:ledger/kind cfg)}
-                        load-failure)))))
+    (try (require ns-sym)
+         (catch Exception e (throw (unavailable cfg e))))))
+
+(defn open
+  "L3 Boundary: load the adapter namespace this library ships for `cfg`'s
+   kind (a third party loads its own), then `make` it. An adapter this
+   runtime cannot load (datahike on babashka or ClojureWasm) throws ex-info
+   with :autonomous/error :ledger/unavailable and a message that says where
+   it runs."
+  [cfg]
+  (load-adapter! cfg)
   (make cfg))
