@@ -15,6 +15,19 @@
 
 (defn- resolve [bundle node] (odoc/resolved bundle node))
 
+(defn- resolved-map
+  "The map a document node resolves to, or nil for a malformed node."
+  [bundle node]
+  (let [resolved (resolve bundle node)]
+    (when (map? resolved) resolved)))
+
+(defn- message-view
+  "The tap-facing view of one resolved message map."
+  [mname m]
+  {:name mname
+   :content-type (get m "contentType")
+   :schema (some-> (get m "payload") schema/->malli)})
+
 (defn- address-of
   "Subject of channel `id` resolved to `ch`: its 3.x `address`, else the key."
   [id ch]
@@ -24,33 +37,29 @@
 (defn- message
   "Message map of name `mname` resolved to `m`, or nil when it is not one."
   [bundle mname m]
-  (let [m (resolve bundle m)]
-    (when (map? m)
-      {:name         mname
-       :content-type (get m "contentType")
-       :schema       (some-> (get m "payload") schema/->malli)})))
+  (some->> (resolved-map bundle m) (message-view mname)))
 
 (defn- messages
   "Every message of channel `ch`, unresolved refs inlined."
   [bundle ch]
   (into [] (keep (fn [[mname m]] (message bundle mname m))) (get ch "messages")))
 
-(defn- channel-of [[id ch]]
-  (fn [bundle]
-    (let [ch (resolve bundle ch)]
-      (when (map? ch)
-        {:channel-id  id
-         :address     (address-of id ch)
-         :description (get ch "description")
-         :messages    (messages bundle ch)}))))
+(defn- channel-of
+  "Channel of entry `[id ch]`, or nil for a malformed channel node."
+  [bundle [id ch]]
+  (when-let [ch (resolved-map bundle ch)]
+    {:channel-id id
+     :address (address-of id ch)
+     :description (get ch "description")
+     :messages (messages bundle ch)}))
 
 (defn channels
   "Every channel of `bundle` as {:channel-id :address :description :messages},
-   in document order.
-     :messages [{:name :content-type :schema}] with :schema a malli form, nil
-   when the message declares no payload."
+   in document order. :messages entries carry :name, :content-type and a
+   malli :schema, nil when the message declares no payload."
   [bundle]
-  (into [] (keep #(% bundle)) (map channel-of (get (odoc/root-doc bundle) "channels"))))
+  (into [] (keep #(channel-of bundle %))
+        (get (odoc/root-doc bundle) "channels")))
 
 (defn by-address
   "Channels of `bundle` keyed by their address; the first wins when two
@@ -69,7 +78,7 @@
    declares one, or nil when the channel is unknown or carries no payload
    (a wildcard tap over subjects the document does not name has none)."
   [bundle address]
-  (some (fn [m] (:schema m)) (:messages (get (by-address bundle) address))))
+  (some :schema (:messages (get (by-address bundle) address))))
 
 (defn channel
   "Ok channel of `address`, or a refusal naming the declared subjects."

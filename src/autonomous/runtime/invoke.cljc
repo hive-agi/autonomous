@@ -71,7 +71,8 @@
     (answer/pending id)))
 
 (defn settle
-  "Answer for value `x`: Ok now, or Pending when it is still being computed."
+  "Answer for tool value `x`: Ok now, or Pending when it is still being
+   computed. Tool values are opaque, so an :ok key in one is not unwrapped."
   [x]
   (if (thenable? x) (settle-later! x) (answer/ok (wire/->wire x))))
 
@@ -99,17 +100,32 @@
                        :ms      (- (registry/now-ms) t0)})
     ans))
 
+(defn- resource-value
+  "The value of resource result `x`. A Resource may answer an Answer directly;
+   a plain value is the legacy read contract."
+  [x]
+  (cond
+    (answer/ok? x) (:ok x)
+    (answer/refused? x) x
+    :else x))
+
+(defn- read-result
+  "The runtime read envelope for resource result `x`."
+  [uri mime x]
+  (let [value (resource-value x)]
+    (if (answer/refused? value)
+      value
+      (answer/ok {:uri uri :mime mime :value value}))))
+
 (defn read!
-  "Plan and run a read of resource `uri` for `grant`."
+  "Plan and run a read of resource `uri` for `grant`. Both a plain resource
+   value and an Answer from the resource become one runtime read envelope."
   [uri grant]
   (let [plan (decision/plan-read (registry/snapshot) uri grant)]
     (case (:plan/action plan)
       :refuse (:refusal plan)
       :read   (let [r (:resource plan)]
                 (try
-                  (let [a (settle ((:read r) grant))]
-                    (if (answer/ok? a)
-                      (answer/ok {:uri uri :mime (:mime r) :value (:ok a)})
-                      a))
+                  (read-result uri (:mime r) ((:read r) grant))
                   (catch #?(:clj Throwable :cljs :default) e
                     (answer/from-exception e)))))))
