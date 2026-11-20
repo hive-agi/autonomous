@@ -158,3 +158,36 @@
     (is (:fleet? (:ok (main/fleet-config {} {} {:port "7002" :target-id "stock"} nil {})))))
   (is (= "/p/autonomous.edn" (main/config-path {} {"BB_MCP_CALLER_CWD" "/p"})))
   (is (= "/f.edn" (main/config-path {} {"AUTONOMOUS_FLEET" "/f.edn" "BB_MCP_CALLER_CWD" "/p"}))))
+
+(deftest the-newest-probe-of-a-target-wins-by-any-actor
+  (let [keep-newest #'fa/keep-newest
+        latest #'fa/latest-by-target]
+    (is (= {"a" {:at 2 :status :down}}
+           (keep-newest {"a" {:at 2 :status :down}} [["a" "x"] {:at 1 :status :up}])))
+    (is (= {"a" {:at 2 :status :up}}
+           (keep-newest {"a" {:at 2 :status :down}} [["a" "x"] {:at 2 :status :up}])))
+    (is (= {"a" {:at 2 :status :up}}
+           (keep-newest {"a" {:at 2 :status :up}} [["a" "x"] {:at 2 :status :down}])))
+    (is (= {"a" {:at 3 :status :down}}
+           (keep-newest {"a" {:at 2 :status :up}} [["a" "x"] {:at 3 :status :down}])))
+    (is (= {"a" :down "b" :up}
+           (latest {["a" "x"] {:at 1 :status :up} ["a" "y"] {:at 3 :status :down}
+                    ["b" "x"] {:status :up}})))))
+
+(deftest addon-config-merges-nested-config-later-winning
+  (let [cfg #'fa/addon-config]
+    (is (= {:actor "rt" :scopes #{:read} :addon/config {:actor "rt"}}
+           (cfg {:actor "seed" :addon/config {:scopes #{:read}}} {:addon/config {:actor "rt"}})))
+    (is (= "nested-seed" (:actor (cfg {:actor "seed" :addon/config {:actor "nested-seed"}} {}))))))
+
+(deftest a-transport-awaits-list-and-init-answers-only
+  (let [kind #'host/pending-kind]
+    (is (= :list (kind {:id 1 :method "tools/list"})))
+    (is (= :init (kind {:id 1 :method "initialize"})))
+    (is (nil? (kind {:method "tools/list"})))
+    (is (nil? (kind {:id 1 :method "tools/call"})))))
+
+(deftest the-fleet-file-names-its-own-actor-unless-local
+  (let [actor #'main/fleet-actor]
+    (is (= "head" (actor {:stdio/actor "local"} "head")))
+    (is (= "file" (actor {:stdio/actor "file"} "head")))))
