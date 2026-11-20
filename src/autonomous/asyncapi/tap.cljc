@@ -27,11 +27,23 @@
   "Messages kept per subject when a resource names none."
   50)
 
-(defn- entry [n subject payload validate at]
-  (let [problems        (when validate (some-> (validate payload) me/humanize))
-        non-conforming? (some? problems)]
-    (cond-> {:seq n :subject subject :payload payload :at at :conforms? (not non-conforming?)}
-      non-conforming? (assoc :problems problems))))
+(defn- validation-problems
+  "Human-readable schema problems of `payload`, nil when it conforms or the
+   tap declares no schema."
+  [validate payload]
+  (when validate (some-> (validate payload) me/humanize)))
+
+(defn- message-entry
+  "One retained message, with non-conformance reported alongside its payload."
+  [n subject payload at problems]
+  (cond-> {:seq n :subject subject :payload payload :at at
+           :conforms? (nil? problems)}
+    problems (assoc :problems problems)))
+
+(defn- entry
+  "Validate `payload` and collect one retained message entry."
+  [n subject payload validate at]
+  (message-entry n subject payload at (validation-problems validate payload)))
 
 (defn tap
   "An empty tap of `filter` keeping at most `capacity` messages. `validate`
@@ -41,21 +53,38 @@
   ([filter capacity validate]
    {:filter filter :capacity capacity :cursor 0 :dropped 0 :validate validate :messages []}))
 
+(defn- next-seq
+  "The sequence `msg` must carry, or nil when it is a redelivery, a gap, or
+   not an integer."
+  [tap {:keys [seq]}]
+  (let [expected (inc (:cursor tap))]
+    (cond
+      (nil? seq) expected
+      (and (integer? seq) (= expected seq)) seq
+      :else nil)))
+
+(defn- keep-last
+  "The current ring plus `e`, bounded by `capacity`."
+  [messages capacity e]
+  (conj (vec (take-last (dec capacity) messages)) e))
+
+(defn- append
+  "Append entry `e`, advancing the cursor and counting ring evictions."
+  [{:keys [capacity] :as t} e]
+  (let [evicted (max 0 (- (inc (count (:messages t))) capacity))]
+    (-> t
+        (assoc :cursor (:seq e))
+        (update :dropped + evicted)
+        (update :messages keep-last capacity e))))
+
 (defn admit
   "`tap` with message `msg` ({:subject :payload :at}) admitted. Answers
-   [tap admitted?]: a message whose subject the filter does not match, or
-   the same seq admitted twice (a redelivery), is not admitted."
-  [tap {:keys [subject payload at] :as msg}]
-  (let [n (or (get msg :seq) (inc (:cursor tap)))]
-    (if (contains? (into #{} (map :seq) (:messages tap)) n)
-      [tap false]
-      (let [e    (entry n subject payload (:validate tap) at)
-            over (max 0 (- (inc (count (:messages tap))) (:capacity tap)))]
-        [(-> tap
-             (assoc :cursor n)
-             (update :dropped + over)
-             (update :messages #(conj (vec (take-last (dec (:capacity tap)) %)) e)))
-         true]))))
+   [tap admitted?]. Only the next contiguous integer sequence on this tap's
+   subject is admitted: redeliveries and gaps leave the tap untouched."
+  [{:keys [filter validate] :as t} {:keys [subject payload at] :as msg}]
+  (if-let [n (and (= subject filter) (next-seq t msg))]
+    [(append t (entry n subject payload validate at)) true]
+    [t false]))
 
 (defn- gap
   "Messages dropped between reading `cursor` and the oldest kept message."
@@ -67,14 +96,16 @@
 (defn since
   "What a reader at `cursor` has not seen: {:messages [...] :cursor n
    :dropped k}. At most `limit` messages, oldest first; the answer's cursor
-   is the seq of the last one, or `cursor` when there is nothing new."
+   is the seq of the last one, or `cursor` when there is nothing new.
+   :dropped counts only messages lost from the ring, never unread ones held
+   for a later page."
   ([tap cursor] (since tap cursor (:capacity tap)))
   ([tap cursor limit]
    (let [after (filterv #(< cursor (:seq %)) (:messages tap))
          page  (vec (take (max 1 limit) after))]
      {:messages page
       :cursor   (if (seq page) (:seq (peek page)) cursor)
-      :dropped  (+ (gap tap cursor) (max 0 (- (count after) (count page))))})))
+      :dropped  (gap tap cursor)})))
 
 (defn view
   "The full current ring, oldest first. For a resource that asks for

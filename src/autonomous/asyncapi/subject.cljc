@@ -26,14 +26,24 @@
 
 (defn- bad-token? [t] (str/blank? t))
 
+(defn- whitespace-token? [t]
+  (boolean (re-find #"[\s\x00]" t)))
+
+(defn- partial-wildcard? [wildcard t]
+  (and (str/includes? t wildcard) (not= wildcard t)))
+
 (defn problems
   "Why `filter` is not a usable NATS filter: a vector of keywords, empty when
-   it is one. `*` may sit in any position; `>` must be last."
+   it is one. Tokens are nonblank, `*` and `>` occupy a whole token, and `>`
+   must be last."
   [filter]
   (let [ts (tokens filter)]
     (cond
-      (nil? ts)                     [:blank]
-      (some bad-token? ts)          [:empty-token]
+      (nil? ts) [:blank]
+      (some bad-token? ts) [:empty-token]
+      (some whitespace-token? ts) [:whitespace-or-null]
+      (some #(partial-wildcard? wildcard-one %) ts) [:wildcard-not-a-token]
+      (some #(partial-wildcard? wildcard-rest %) ts) [:wildcard-not-a-token]
       (some #{wildcard-rest} (butlast ts)) [:wildcard-rest-not-last]
       :else [])))
 
@@ -62,14 +72,17 @@
       :else                       false)))
 
 (defn matches?
-  "True when concrete `subject` is published under `filter`."
+  "True when concrete `subject` is published under valid `filter`. A subject
+   is concrete only when it is valid and contains no wildcard token."
   [filter subject]
-  (let [ps (tokens filter) s (tokens subject)]
-    (and (seq ps) (seq s) (not-any? bad-token? ps) (not-any? bad-token? s)
-         (match-tokens ps s))))
+  (and (valid? filter)
+       (valid? subject)
+       (not-any? #{wildcard-one wildcard-rest} (tokens subject))
+       (match-tokens (tokens filter) (tokens subject))))
 
 (defn literal?
-  "True when `filter` names one subject and no token is a wildcard."
+  "True when `filter` is valid and names one concrete subject, with no
+   wildcard token."
   [filter]
-  (let [ts (tokens filter)]
-    (and (seq ts) (not-any? #{wildcard-one wildcard-rest} ts))))
+  (and (valid? filter)
+       (not-any? #{wildcard-one wildcard-rest} (tokens filter))))
