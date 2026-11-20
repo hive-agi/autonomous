@@ -100,22 +100,21 @@
                        :ms      (- (registry/now-ms) t0)})
     ans))
 
-(defn- resource-value
-  "The value of resource result `x`. A Resource may answer an Answer directly;
-   a plain value is the legacy read contract."
+(defn- resource-answer
+  "Answer for resource result `x`: an Ok (value wire-normalized), Pending or
+   refusal map as given; any other value, thenables included, through
+   `settle`."
   [x]
   (cond
-    (answer/ok? x) (:ok x)
-    (answer/refused? x) x
-    :else x))
+    (not (map? x))                               (settle x)
+    (answer/ok? x)                               (answer/ok (wire/->wire (:ok x)))
+    (or (answer/pending? x) (answer/refused? x)) x
+    :else                                        (settle x)))
 
 (defn- read-result
-  "The runtime read envelope for resource result `x`."
+  "The runtime read envelope of resource `uri` for result `x`."
   [uri mime x]
-  (let [value (resource-value x)]
-    (if (answer/refused? value)
-      value
-      (answer/ok {:uri uri :mime mime :value value}))))
+  (answer/bind (resource-answer x) #(answer/ok {:uri uri :mime mime :value %})))
 
 (defn read!
   "Plan and run a read of resource `uri` for `grant`. Both a plain resource

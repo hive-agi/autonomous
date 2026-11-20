@@ -119,6 +119,20 @@
     (call rw "echo_args" {:text "x"})
     (is (= [["echo_args" "agent-1"]] @seen))))
 
+(deftest resource-reads-settle-any-value
+  (a/reg-resource "app://count" {:description "A number" :read (fn [_] 42)})
+  (a/reg-resource "app://later" {:description "Computed later" :read (fn [_] (future {:n 1}))})
+  (a/reg-resource "app://answer" {:description "Answers itself" :read (fn [_] {:ok #{:a}})})
+  (let [read (fn [uri] (a/rpc (merge rw {:op :read :uri uri})))]
+    (testing "a plain value that is not a map is Ok"
+      (is (= 42 (get-in (read "app://count") [:ok :value]))))
+    (testing "a thenable is Pending, then settles"
+      (let [r (read "app://later")]
+        (is (string? (:pending r)))
+        (is (= {:n 1} (:ok (poll-until-settled (:pending r)))))))
+    (testing "an Ok Answer is unwrapped once and wire-normalized"
+      (is (= (wire/->wire #{:a}) (get-in (read "app://answer") [:ok :value]))))))
+
 (deftest registration-fails-loudly
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #"needs a :handler"
                         (a/reg-tool :x {:description "x"})))
