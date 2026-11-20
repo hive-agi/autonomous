@@ -30,7 +30,8 @@
             [reagent.ratom :as ratom]
             [autonomous.domain.answer :as answer]
             [autonomous.spi :as spi]
-            [autonomous.surface :as surface]))
+            [autonomous.surface :as surface])
+  (:require-macros [autonomous.domain.answer :as answer]))
 
 (defn- registered? [kind id]
   (some? (registrar/get-handler kind id)))
