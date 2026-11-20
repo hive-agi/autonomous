@@ -138,6 +138,24 @@
     (is (thrown? clojure.lang.ExceptionInfo (a/reg-tool :t/late late-spec)))
     (is (= before (registry/snapshot)) "a refused registration changes nothing")))
 
+(def ^:private admin-only (decorator/each-tool (decorator/require-scope :admin)))
+
+(def ^:private admin {:actor "root" :scopes [:admin]})
+
+(deftest a-tool-registered-after-require-scope-is-forbidden-without-it
+  (a/decorate! admin-only)
+  (a/reg-tool :t/late late-spec)
+  (is (= :forbidden (get-in (call "t_late" {}) [:error :type])))
+  (is (= {:ok :late} (a/rpc (merge admin {:op :call :tool "t_late" :args {}})))))
+
+(deftest re-registering-an-id-keeps-its-scope-and-its-redaction
+  (a/decorate! admin-only redacted)
+  (a/reg-tool :t/account {:description "Account again" :read-only? true
+                          :handler (fn [_ _] {:user "bia" :token "an0ther"})})
+  (is (= :forbidden (get-in (call "t_account" {}) [:error :type])))
+  (is (= {:ok {:user "bia" :token "<redacted>"}}
+         (a/rpc (merge admin {:op :call :tool "t_account" :args {}})))))
+
 (def ^:private longest-name
   "A valid tool name of exactly 64 characters: no prefix fits in front of it."
   (apply str (repeat 64 "n")))
