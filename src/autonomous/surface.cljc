@@ -150,3 +150,74 @@
    :app-clash). Identity: `empty-surface`. Associative on disjoint names."
   [& surfaces]
   (answer/reduce-answer merge-two empty-surface surfaces))
+
+;; =============================================================================
+;; Transformation: a surface's chain grows by one link; decorators map it.
+;; =============================================================================
+
+(defn- chain-names
+  "L1: the :name of every link in `surface`'s call chain."
+  [surface]
+  (into #{} (map :name) (:interceptors surface)))
+
+(defn- valid-interceptor
+  "L1 Promote: Ok of `ic` when it is an Interceptor, else :invalid-interceptor."
+  [ic]
+  (if-let [e (m/explain Interceptor ic)]
+    (answer/refusal :invalid-interceptor "not a valid interceptor" (me/humanize e))
+    (answer/ok ic)))
+
+(defn- unique-link
+  "L1 Promote: Ok of `ic` when no link of `surface` has its :name, else :name-clash."
+  [surface ic]
+  (if (contains? (chain-names surface) (:name ic))
+    (answer/refusal :name-clash (str "interceptor " (:name ic) " is already in the chain")
+                    {:name (:name ic)})
+    (answer/ok ic)))
+
+(defn add-interceptor
+  "L1: Ok of `surface` with Interceptor `ic` appended to its call chain.
+   Refuses :invalid-interceptor (schema) or :name-clash (a link of that
+   :name is already in the chain)."
+  [surface ic]
+  (answer/let-answer [ic (valid-interceptor ic)
+                      ic (unique-link surface ic)]
+    (answer/ok (update surface :interceptors conj ic))))
+
+(defn- keyed-by-name?
+  "L1: true when every tool is keyed by its own :name."
+  [surface]
+  (every? (fn [[k tool]] (= k (:name tool))) (:tools surface)))
+
+(defn- whole
+  "L1 Promote: Ok of validated `s` when `value` needed no part filled in;
+   else an :invalid-surface refusal naming the missing parts."
+  [value s]
+  (if (= s value)
+    (answer/ok s)
+    (answer/refusal :invalid-surface "a decorator dropped a part of the surface"
+                    {:missing (vec (remove #(contains? value %) (keys empty-surface)))})))
+
+(defn- rekeyed
+  "L1 Promote: Ok of `s` when every tool is keyed by its own :name; else
+   an :invalid-surface refusal naming the mismatched keys."
+  [s]
+  (if (keyed-by-name? s)
+    (answer/ok s)
+    (answer/refusal :invalid-surface "a decorator renamed a tool without rekeying it"
+                    {:mismatched (vec (sort (for [[k t] (:tools s) :when (not= k (:name t))] k)))})))
+
+(defn- decorated
+  "L1 Promote: Ok of a decorator's result when it is a whole, valid
+   Surface whose tools are keyed by name; else :invalid-surface."
+  [value]
+  (answer/let-answer [s (->surface value)
+                      s (whole value s)]
+    (rekeyed s)))
+
+(defn decorate
+  "L1: Ok of `surface` passed through each Surface -> Surface fn of
+   `decorators`, left to right, every intermediate result validated. The
+   first invalid result is an :invalid-surface refusal."
+  [surface decorators]
+  (answer/reduce-answer (fn [s d] (decorated (d s))) surface decorators))

@@ -10,6 +10,14 @@
   [scope]
   (fn [tool] (cond-> tool (keyword? scope) (update :scopes conj scope))))
 
+(defn each-tool
+  "L1 lift: Tool -> Tool fn `f` as a Surface -> Surface fn applying it to
+   every tool under the tool's existing key. Renaming is a Surface ->
+   Surface concern (see `prefix-names`)."
+  [f]
+  (fn [surface]
+    (update surface :tools #(into {} (map (fn [[k tool]] [k (f tool)])) %))))
+
 (defn- prefixed-tool
   "L1 Promote: rekey a tool and its advertised name together."
   [prefix [name tool]]
