@@ -6,6 +6,7 @@
             [autonomous.domain.journal :as journal]
             [autonomous.domain.wire :as wire]
             [autonomous.thenable :as thenable]
+            [clojure.string :as str]
             [malli.core :as m]))
 
 (defn require-scope
@@ -64,18 +65,31 @@
     (approved run d)
     (stamped d (refusals (:decision d) (:deny refusals)))))
 
+(defn- shown-actor
+  "L1 Promote: `actor` fit to show a human: no control characters, at most
+   64 characters."
+  [actor]
+  (let [clean (str/replace (str actor) #"\p{Cntrl}" "")]
+    (subs clean 0 (min 64 (count clean)))))
+
 (defn- approval-request
-  "L1 Promote: what the asker is asked about one call."
-  [tool args grant]
-  {:tool (:name tool) :args args :actor (:actor grant) :session (:session grant)})
+  "L1 Promote: what the asker is asked about one call: the tool name, the
+   args in wire form with the journal's `redact` paths masked, the actor
+   (see shown-actor) and the session."
+  [tool args grant redact]
+  {:tool    (:name tool)
+   :args    (journal/redact-paths (wire/->wire (or args {})) redact)
+   :actor   (shown-actor (:actor grant))
+   :session (:session grant)})
 
 (defn gate
   "L1 Pipeline: (run) for a tool without require-approval; else a thenable
    of the complete Answer the human's Decision leads to (see
-   require-approval), carrying that Decision as :autonomous/approval."
-  [tool args grant run]
+   require-approval), carrying that Decision as :autonomous/approval. The
+   human sees the args with CallDetail `redact` paths masked."
+  [tool args grant redact run]
   (if-let [{:keys [asker timeout-ms]} (::approval tool)]
-    (thenable/chain (approval/ask! asker (approval-request tool args grant) timeout-ms)
+    (thenable/chain (approval/ask! asker (approval-request tool args grant redact) timeout-ms)
                     (partial decided run))
     (run)))
 

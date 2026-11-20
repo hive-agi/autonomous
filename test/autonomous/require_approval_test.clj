@@ -135,6 +135,19 @@
       (is (= :error (get-in (settled-entry id) [:approval :decision])))
       (is (zero? @runs)))))
 
+(deftest the-human-sees-redacted-args-and-a-clean-short-actor
+  (a/journal-calls! {:redact [[:pin]]})
+  (let [asker (approving! [{:decision :deny :approver "bob"}] 1000)
+        actor (str "evil\u001b[2J\n" (apply str (repeat 80 "x")))
+        id    (:pending (call {:actor actor :scopes [:write]} {:amount 10 :pin "1234"}))
+        _     (poll-until-settled id)
+        seen  (first @(:requests asker))]
+    (is (= "pay" (:tool seen)))
+    (is (= {:amount 10 :pin "<redacted>"} (:args seen)) "never the raw pin")
+    (is (= 64 (count (:actor seen))))
+    (is (not (re-find #"\p{Cntrl}" (:actor seen))))
+    (is (.startsWith ^String (:actor seen) "evil[2J"))))
+
 (deftest bad-options-throw-at-construction
   (is (thrown? clojure.lang.ExceptionInfo (decorator/require-approval {:asker :nope :timeout-ms 10})))
   (is (thrown? clojure.lang.ExceptionInfo

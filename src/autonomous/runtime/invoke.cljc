@@ -93,7 +93,8 @@
    (autonomous.decorator/gate), settled through its output projection
    (autonomous.decorator/project-output)."
   [{:keys [tool args grant] :as ctx}]
-  (settle (decorator/gate tool args grant #((chain/handler ctx invoke-kind) tool args grant))
+  (settle (decorator/gate tool args grant (:redact (:call-detail (registry/snapshot)))
+                          #((chain/handler ctx invoke-kind) tool args grant))
           (partial decorator/project-output tool)))
 
 (defn- run-invoke
