@@ -42,13 +42,28 @@
         (get credentials :default)
         (some-> (:token-env target) (hash-map :token-env)))))
 
+(defn- visible-ascii?
+  "True when every character of `s` is visible ASCII (0x21-0x7E), the only
+   characters a bearer token may hold."
+  [s]
+  (every? #(<= 0x21 (int %) 0x7E) s))
+
 (defn- resolve-token!
   "Boundary: Ok of the token named by `reference` from `source`, or nil
-   without one. The credential value is never part of configuration data."
+   without one. The credential value is never part of configuration data,
+   and a refusal names only the reference, never the value: a token with a
+   control character (a trailing newline from an env file) is refused here,
+   before an HTTP library can echo it in an error."
   [source reference]
   (if reference
     (answer/let-answer [token (port/-resolve-token! source reference)]
-      (answer/ok (some-> token str not-empty)))
+      (let [t (some-> token str not-empty)]
+        (if (and t (not (visible-ascii? t)))
+          (answer/refusal :channel/credential-invalid
+                          (str "the credential in " (:token-env reference)
+                               " holds a character outside visible ASCII (a trailing newline?)")
+                          {:token-env (:token-env reference)})
+          (answer/ok t))))
     (answer/ok nil)))
 
 (defn bearer-headers

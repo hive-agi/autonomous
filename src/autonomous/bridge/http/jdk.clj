@@ -49,6 +49,17 @@
   [req]
   (let [b (:body req)] (if (map? b) (rpc/json-text b) b)))
 
+(defn- transport-failed
+  "The refusal of exception `e` thrown while building or sending a request.
+   An IllegalArgumentException comes from building it (a header or url the
+   JDK refuses) and its message quotes the offending value, which may be a
+   credential: only its class is reported."
+  [^Exception e]
+  (answer/refusal :channel/transport-failed
+                  (if (instance? IllegalArgumentException e)
+                    (str "the request could not be built (" (.getName (class e)) ")")
+                    (or (ex-message e) (str e)))))
+
 (defn- send
   "Answer of sending `req`, its body taken as text or JSON."
   [req]
@@ -59,7 +70,7 @@
           b    (builder req (:method req) pub (:timeout-ms req))]
       (response-of (.send ^HttpClient @shared (.build b) (HttpResponse$BodyHandlers/ofString))))
     (catch Exception e
-      (answer/refusal :channel/transport-failed (or (ex-message e) (str e))))))
+      (transport-failed e))))
 
 ;; =============================================================================
 ;; The stream: a GET held open, its lines handed to a sink
@@ -91,7 +102,7 @@
         (do (future (pump! resp sink))
             (answer/ok {:close! (fn [] (try (.close (.body resp)) (catch Exception _closed nil)))}))))
     (catch Exception e
-      (answer/refusal :channel/transport-failed (or (ex-message e) (str e))))))
+      (transport-failed e))))
 
 (defrecord JdkClient []
   port/IHttpClient

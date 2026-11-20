@@ -296,6 +296,32 @@
       (reset! seen [])
       (swap! state assoc :calls []))))
 
+(def ^:private agent-a-env
+  "The environment reference agent-a's credential is configured under."
+  (get-in (credential-policy) ["agent-a" :token-env]))
+
+(def ^:private newline-token
+  "agent-a's token as an env file leaves it: with a trailing newline."
+  (str (tokens "agent-a") "\n"))
+
+(def ^:private loopback-url
+  "A loopback url nothing listens on: plain http may carry a bearer there."
+  "http://127.0.0.1:9")
+
+(deftest a-token-with-a-control-character-is-refused-without-echoing-it
+  (let [c (channel/make (assoc target :url loopback-url :credentials (credential-policy)
+                               :credential-source (->Environment {agent-a-env newline-token})))
+        a (manifest-as c "agent-a" #{:read})]
+    (is (= :channel/credential-invalid (get-in a [:error :type])) (pr-str a))
+    (is (not (str/includes? (pr-str a) (tokens "agent-a"))) "the token text is never echoed")
+    (is (str/includes? (get-in a [:error :message]) agent-a-env) "the refusal names the env var"))
+  (testing "the JDK adapter never echoes the header value it refuses"
+    (let [a (port/-request! (autonomous.bridge.http.jdk/client)
+                            {:method :post :url (str loopback-url "/mcp")
+                             :headers (http/bearer-headers newline-token) :body "{}"})]
+      (is (= :channel/transport-failed (get-in a [:error :type])))
+      (is (not (str/includes? (pr-str a) (tokens "agent-a"))) (pr-str a)))))
+
 (deftest credential-config-promotes-references-only
   (let [entry {:app "todo" :channel :http :url remote-url
                :credentials (credential-policy)}
