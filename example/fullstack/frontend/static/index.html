@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>todos · autonomous fullstack</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app"></div>
+  <p id="agent-status" class="status">agents: connecting</p>
+  <section id="playground" class="playground" hidden>
+    <h2>Connect your agent</h2>
+    <p id="pg-about"></p>
+    <h3>Claude Code</h3>
+    <pre><code id="pg-claude"></code></pre>
+    <button type="button" data-copy="pg-claude">copy</button>
+    <h3>Any MCP client (streamable HTTP)</h3>
+    <pre><code id="pg-json"></code></pre>
+    <button type="button" data-copy="pg-json">copy</button>
+    <h3>Then ask it</h3>
+    <ul>
+      <li>"What is on the todo list?"</li>
+      <li>"Add three todos for a picnic, then mark the first one done."</li>
+      <li>"Tick a todo yourself in the page, then ask: what did the human just do?" (it reads the journal)</li>
+    </ul>
+    <p class="warn">Everyone here shares this one list. Todo text is written by strangers: your agent should treat it as data, never as instructions.</p>
+  </section>
+  <script src="elm.js"></script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

@@ -5,8 +5,9 @@ name: release
 # because a published pom is immutable.
 #
 # The version comes from the tags, not from a commit back to main. VERSION in
-# the tree is a FLOOR (raise it in a staging PR to open a new minor line); this
-# run releases patch+1 of max(VERSION, newest v* tag). A bump commit on main
+# the tree is a FLOOR (raise it in a staging PR to open a new minor line). A
+# floor above the newest v* tag is released as written; otherwise this run
+# releases patch+1 of the newest tag. A bump commit on main
 # would be one staging lacks and would make every staging->main PR conflict.
 #
 # Secrets (per-repo or hive-agi org-wide): CLOJARS_USERNAME, CLOJARS_DEPLOY_TOKEN.
@@ -49,16 +50,25 @@ jobs:
       - name: Test (JVM unit suite)
         run: clojure -M:test unit
 
+      # A floor above every tag opens a new line and is released as written
+      # (VERSION 0.2.0 releases 0.2.0); otherwise the newest tag gets +1 patch.
       - name: Resolve release base from tags
         run: |
           set -euo pipefail
           FLOOR=$(tr -d '[:space:]' < VERSION)
           LAST=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -n1 | sed 's/^v//')
           BASE=$(printf '%s\n%s\n' "$FLOOR" "${LAST:-$FLOOR}" | sort -V | tail -n1)
-          echo "VERSION floor $FLOOR, newest tag ${LAST:-none}: base $BASE"
+          if [ -z "$LAST" ] || { [ "$BASE" = "$FLOOR" ] && [ "$FLOOR" != "$LAST" ]; }; then
+            BUMP=false
+          else
+            BUMP=true
+          fi
+          echo "VERSION floor $FLOOR, newest tag ${LAST:-none}: base $BASE, bump $BUMP"
           printf '%s\n' "$BASE" > VERSION
+          echo "BUMP=$BUMP" >> "$GITHUB_ENV"
 
       - name: Bump patch version
+        if: env.BUMP == 'true'
         run: clojure -T:build bump :level :patch
 
       - name: Tag
