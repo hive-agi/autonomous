@@ -12,7 +12,8 @@
    LedgerEntry  a journal entry promoted for durable storage, keyed so that
                 re-draining a journal never stores it twice.
    Config       everything `autonomous.cli serve` runs on."
-  (:require [autonomous.domain.schema :as ds]
+  (:require [autonomous.bridge.url :as url]
+            [autonomous.domain.schema :as ds]
             [autonomous.domain.naming :as naming]))
 
 (def Mode [:enum :shadow :clj])
@@ -42,8 +43,27 @@
    [:timeout-ms {:optional true} [:int {:min 100}]]])
 
 (def CredentialReference
-  "A remote credential by secret-store reference; a token value is never config."
-  [:map [:token-env :string]])
+  "A remote credential by secret-store reference; a token value is never
+   config, so the map is closed: {:token-env \"X\" :token \"...\"} fails."
+  [:map {:closed true} [:token-env :string]])
+
+(def ^:private no-literal-token
+  "A key whose presence alone is the error: credentials are references."
+  [:fn {:error/message "a credential is a reference (:token-env or :credentials), never a literal :token"}
+   (constantly false)])
+
+(def ^:private CleanUrl
+  [:and :string
+   [:fn {:error/message "a remote url carries no userinfo, query or fragment: credentials are references"}
+    url/clean?]])
+
+(defn- bearer-transport-ok?
+  "True unless `target` would send a bearer token over plain http to a
+   host other than this one."
+  [target]
+  (or (not (or (:token-env target) (seq (:credentials target))))
+      (nil? (:url target))
+      (url/bearer-allowed? (:url target))))
 
 (def CredentialPolicy
   "Remote credential references by caller actor, with an optional :default."
@@ -54,13 +74,17 @@
    autonomous.ring mounts), so no nREPL and no inbound port. Credentials
    name environment variables; :credentials selects one by actor or :default,
    falling back to the target-wide :token-env."
-  [:map
-   [:target/kind [:= :http]]
-   [:target/id :string]
-   [:url {:optional true} :string]
-   [:token-env {:optional true} :string]
-   [:credentials {:optional true} CredentialPolicy]
-   [:timeout-ms {:optional true} [:int {:min 100}]]])
+  [:and
+   [:map
+    [:target/kind [:= :http]]
+    [:target/id :string]
+    [:url {:optional true} CleanUrl]
+    [:token-env {:optional true} :string]
+    [:token {:optional true} no-literal-token]
+    [:credentials {:optional true} CredentialPolicy]
+    [:timeout-ms {:optional true} [:int {:min 100}]]]
+   [:fn {:error/message "a bearer token rides https, or plain http to this host only"}
+    bearer-transport-ok?]])
 
 (def Target
   [:multi {:dispatch :target/kind}

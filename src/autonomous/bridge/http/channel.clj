@@ -104,7 +104,7 @@
 (defn- store!
   "Record listing `r` as a fresh cache slot for `target`."
   [sl r target]
-  (swap! sl assoc :manifest (rpc/manifest-of (:target/id target) (:url target)
+  (swap! sl assoc :manifest (rpc/manifest-of (:target/id target) (http/shown-url target)
                                              (:tools (:ok r)) (:resources (:ok r)))
          :at (now) :stale? false))
 

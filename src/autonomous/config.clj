@@ -159,6 +159,8 @@
    :target/id   (str (:app entry))
    :url         (str (:url entry))
    :token-env   (some-> (:token-env entry) str)
+   ;; carried so validation refuses it: a credential is a reference only
+   :token       (:token entry)
    :credentials (:credentials entry)
    :timeout-ms  (:timeout-ms entry)})
 

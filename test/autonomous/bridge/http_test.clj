@@ -20,11 +20,28 @@
             [autonomous.bridge.http :as http]
             [autonomous.bridge.fleet :as bf]
             [autonomous.mcp.server :as server]
+            [autonomous.bridge.schema :as bs]
+            [autonomous.bridge.url :as url]
+            [autonomous.bridge.http.jdk]
             [autonomous.cli :as cli]
-            [autonomous.config :as config]))
+            [autonomous.config :as config]
+            [malli.core :as m]))
+
+(def ^:private remote-url "https://remote.test/todo")
 
 (def ^:private target
-  {:target/kind :http :target/id "todo" :url "http://remote.test/todo" :timeout-ms 2000})
+  {:target/kind :http :target/id "todo" :url remote-url :timeout-ms 2000})
+
+(def ^:private leaked
+  "A secret someone pasted into a url; it must never be shown again."
+  "hunter2")
+
+(def ^:private leaky-url
+  (str "https://ops:" leaked "@remote.test/todo?api_key=" leaked "#" leaked))
+
+(def ^:private plain-remote-url
+  "Plain http to a host other than this one: no bearer may ride it."
+  "http://remote.test/todo")
 
 (def ^:private tokens {"agent-a" "aut_a" "agent-b" "aut_b"})
 
@@ -117,7 +134,7 @@
 (deftest a-listing-becomes-a-manifest
   (let [m (rpc/manifest-of "todo" "http://r/todo" tools [{:uri "app://db" :mimeType "x"}])]
     (is (= ["todo_add" "todo_list"] (map :name (:tools m))))
-    (is (= [{:uri "app://db" :name nil :description nil :mime "x"}]) (:resources m))
+    (is (= [{:uri "app://db" :name nil :description nil :mime "x"}] (:resources m)))
     (is (= 1 (:protocol m)))
     (testing "the version moves with the tools"
       (is (not= (:version m) (:version (rpc/manifest-of "todo" "http://r/todo" [] [])))))))
@@ -168,9 +185,84 @@
     (is (= :channel/remote-refused (get-in (as c "nobody" #{:read} {:op :manifest}) [:error :type]))
         "an unknown token is refused by the remote, never thrown")
     (is (= :channel/transport-failed (get-in (manifest-as dead "nobody" #{:read}) [:error :type])))
-    (testing "a listing cached before it went down still answers, though"
+    (testing "a call to a down remote is a refusal too"
       (is (= :channel/transport-failed (get-in (as dead "nobody" #{:write} {:op :call :tool "x"})
                                                [:error :type]))))))
+
+(deftest a-listing-cached-before-the-remote-went-down-still-answers
+  (let [[stub _ _] (open-stub)
+        up?   (atom true)
+        down  {:error {:type :channel/transport-failed :message "connection refused"}}
+        flaky (reify port/IHttpClient
+                (-request! [_ req] (if @up? (port/-request! stub req) down))
+                (-open-stream! [_ req sink] (if @up? (port/-open-stream! stub req sink) down)))
+        c     (channel/make (assoc target :credentials (credential-policy) :ttl-ms 60000
+                                   :credential-source (source) :http/client flaky))
+        first-look (manifest-as c "agent-a" #{:read})]
+    (is (answer/ok? first-look))
+    (reset! up? false)
+    (is (= first-look (manifest-as c "agent-a" #{:read})) "within its ttl, the cached listing")
+    (is (= :channel/transport-failed (get-in (manifest-as c "agent-b" #{:read}) [:error :type]))
+        "an agent with no cached listing sees the remote is down")))
+
+;; -----------------------------------------------------------------------------
+;; Credentials are references; urls carry none
+
+(deftest a-url-secret-is-never-shown
+  (let [[client _ _] (open-stub)
+        t (assoc target :url leaky-url :credentials (credential-policy)
+                 :credential-source (source) :http/client client)
+        c (channel/make t)
+        shown [(http/host-label t) (http/shown-url t) (:url (cli/target-label t))
+               (get-in (manifest-as c "agent-a" #{:read}) [:ok :app :description])
+               (get-in (port/-runtimes c) [:ok 0 :runtime-label])]]
+    (is (every? string? shown))
+    (is (not-any? #(str/includes? % leaked) shown) (pr-str shown))
+    (is (not-any? #(str/includes? % "ops@") shown))
+    (testing "and configuration refuses such a url outright"
+      (is (some? (:error (config/promote {:targets [{:app "todo" :channel :http :url leaky-url}]}
+                                         {} {} nil {})))))))
+
+(deftest a-bearer-never-rides-plain-http-to-another-host
+  (let [[client _ _] (open-stub)
+        seen (atom [])
+        spy  (reify port/IHttpClient
+               (-request! [_ req] (swap! seen conj req) (port/-request! client req))
+               (-open-stream! [_ req sink] (swap! seen conj req) (port/-open-stream! client req sink)))
+        c    (channel/make (assoc target :url plain-remote-url :credentials (credential-policy)
+                                  :credential-source (source) :http/client spy))]
+    (is (= :channel/insecure-transport (get-in (manifest-as c "agent-a" #{:read}) [:error :type])))
+    (is (empty? @seen) "nothing was sent")
+    (is (some? (:error (config/promote {:targets [{:app "todo" :channel :http :url plain-remote-url
+                                                   :credentials (credential-policy)}]}
+                                       {} {} nil {}))))
+    (testing "https anywhere, and plain http to this host, may carry one"
+      (is (url/bearer-allowed? remote-url))
+      (is (url/bearer-allowed? "http://127.0.0.1:8080/mcp"))
+      (is (url/bearer-allowed? "http://localhost/mcp"))
+      (is (not (url/bearer-allowed? "http://127.0.0.1.remote.test/mcp")))
+      (is (not (url/bearer-allowed? plain-remote-url))))))
+
+(deftest a-literal-token-fails-validation
+  (let [literal {:token-env "REMOTE_AGENT_A" :token leaked}]
+    (is (not (m/validate bs/Target (assoc target :token leaked))) "a full Target")
+    (is (not (m/validate bs/Target (assoc target :credentials {"agent-a" literal})))
+        "a credential reference with its value beside it")
+    (is (some? (:error (config/promote {:targets [{:app "todo" :channel :http :url remote-url
+                                                   :token leaked}]}
+                                       {} {} nil {})))
+        "an autonomous.edn app entry")
+    (is (m/validate bs/Target (assoc target :credentials (credential-policy))))))
+
+(deftest every-jdk-type-hint-resolves-to-its-class
+  (let [jdk-ns (the-ns 'autonomous.bridge.http.jdk)
+        tags   (for [v (vals (ns-interns jdk-ns))
+                     al (:arglists (meta v))
+                     t (cons (:tag (meta al)) (map (comp :tag meta) al))
+                     :when (symbol? t)]
+                 t)]
+    (is (seq tags))
+    (is (every? #(class? (ns-resolve jdk-ns %)) tags) (pr-str tags))))
 
 (deftest a-token-rides-a-header-and-never-a-url
   (let [[client _ _] (open-stub)
@@ -205,11 +297,11 @@
       (swap! state assoc :calls []))))
 
 (deftest credential-config-promotes-references-only
-  (let [entry {:app "todo" :channel :http :url "http://remote.test"
+  (let [entry {:app "todo" :channel :http :url remote-url
                :credentials (credential-policy)}
         cfg (:ok (config/promote {:targets [entry]} {} {} nil {}))]
     (is (= (credential-policy) (get-in cfg [:targets 0 :credentials])))
-    (is (= {:target/kind :http :target/id "todo" :url "http://remote.test"}
+    (is (= {:target/kind :http :target/id "todo" :url remote-url}
            (cli/target-label (first (:targets cfg)))))))
 
 (deftest list-changed-refreshes-only-the-notified-actor

@@ -5,19 +5,29 @@
    calling actor with an optional target default. ICredentialSource resolves
    them at the Boundary; a secret never enters a request URL or a log."
   (:require [autonomous.bridge.port :as port]
+            [autonomous.bridge.url :as url]
             [autonomous.domain.answer :as answer]
             [clojure.string :as str]))
+
+(defn host-label
+  "A short secret-free label of `target`'s remote: its url without scheme,
+   userinfo, query or fragment."
+  [target]
+  (let [u (url/redacted (:url target))
+        i (str/index-of u "://")
+        s (if i (subs u (+ i 3)) u)]
+    (subs s 0 (min 80 (count s)))))
+
+(defn shown-url
+  "The url of `target` as a manifest, a label or a log may carry it."
+  [target]
+  (url/redacted (:url target)))
 
 (def default-timeout-ms 30000)
 
 (def manifest-ttl-ms
   "How long a listing is reused without a list_changed from the remote."
   5000)
-
-(def remote-op-tools
-  "Request ops that are one call of a remote built-in tool."
-  {:poll "autonomous_poll" :journal "autonomous_journal" :lease "autonomous_lease"
-   :release "autonomous_release"})
 
 ;; =============================================================================
 ;; Identity
@@ -51,7 +61,12 @@
    configured credential reference and the injected `source`."
   [target source grant]
   (answer/bind (resolve-token! source (credential-reference target grant))
-               #(answer/ok (bearer-headers %))))
+               (fn [token]
+                 (if (and token (not (url/bearer-allowed? (:url target))))
+                   (answer/refusal :channel/insecure-transport
+                                   (str "refusing to send a bearer token to " (host-label target)
+                                        ": use https, or plain http to this host only"))
+                   (answer/ok (bearer-headers token))))))
 
 (def credential-source
   "The ICredentialSource of this runtime, resolved at the network boundary."
@@ -74,14 +89,6 @@
   [target]
   (let [u (str/replace (str (:url target)) #"/+$" "")]
     (if (str/ends-with? u "/mcp") u (str u "/mcp"))))
-
-(defn host-label
-  "A short token-free label of `target`'s remote: its url without scheme."
-  [target]
-  (let [u (str (:url target))
-        i (str/index-of u "://")
-        s (if i (subs u (+ i 3)) u)]
-    (subs s 0 (min 80 (count s)))))
 
 (def client
   "The IHttpClient of this runtime, resolved once. Pure users never load the

@@ -27,6 +27,7 @@
   (:require [autonomous.bridge.client :as client]
             [autonomous.bridge.ledger :as ledger]
             [autonomous.bridge.channel :as channel]
+            [autonomous.bridge.url :as url]
             [autonomous.config :as config]
             [autonomous.domain.answer :as answer]
             [autonomous.domain.wire :as wire]
@@ -63,9 +64,11 @@
                    :call-timeout-ms (:call-timeout-ms cfg)}))
 
 (defn target-label
-  "The non-secret target facts startup may print."
+  "The non-secret target facts startup may print: a url without userinfo,
+   query or fragment, and credentials only as the references they are."
   [target]
-  (select-keys target [:target/kind :target/id :url :nrepl/host :nrepl/port :nrepl/port-file]))
+  (cond-> (select-keys target [:target/kind :target/id :nrepl/host :nrepl/port :nrepl/port-file])
+    (:url target) (assoc :url (url/redacted (:url target)))))
 
 (defn build-server
   "MCP server for validated `cfg`: one target in single mode, or a fleet of
