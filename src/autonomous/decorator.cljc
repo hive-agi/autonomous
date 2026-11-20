@@ -1,9 +1,11 @@
 (ns autonomous.decorator
   "L1 endomorphisms: decorate a compiled Tool or Surface without changing
    its input or output schema. Compose configured decorators with `comp`."
-  (:require [autonomous.domain.answer :as answer]
+  (:require [autonomous.approval :as approval]
+            [autonomous.domain.answer :as answer]
             [autonomous.domain.journal :as journal]
             [autonomous.domain.wire :as wire]
+            [autonomous.thenable :as thenable]
             [malli.core :as m]))
 
 (defn require-scope
@@ -17,6 +19,57 @@
     (throw (ex-info (str "require-scope needs a keyword scope, got " (pr-str scope))
                     {:autonomous/error :invalid-scope :scope scope})))
   (fn [tool] (update tool :scopes conj scope)))
+
+(defn require-approval
+  "L1 Tool -> Tool: every call waits for a human's Verdict from `asker`
+   (autonomous.approval/Asker) and is Pending meanwhile. Approve runs the
+   tool once; deny refuses :approval-denied, no Verdict within
+   `timeout-ms` refuses :approval-timeout, and neither runs it. Throws
+   ex-info :autonomous/error :invalid-approval on a bad option."
+  [{:keys [asker timeout-ms] :as opts}]
+  (when-not (and (approval/asker? asker) (pos-int? timeout-ms))
+    (throw (ex-info "require-approval needs an Asker :asker and a positive :timeout-ms"
+                    {:autonomous/error :invalid-approval :opts (dissoc opts :asker)})))
+  (fn [tool] (assoc tool ::approval {:asker asker :timeout-ms timeout-ms})))
+
+(def ^:private refusals
+  "L1: the refusal of each Decision that does not run the tool."
+  {:deny    (answer/refusal :approval-denied "a human denied this call")
+   :timeout (answer/refusal :approval-timeout "no human answered in time")})
+
+(defn- as-answer
+  "L1 Promote: a tool's value `v` as an Answer: a complete Answer as is,
+   any other value as its Ok."
+  [v]
+  (if (answer/complete? v) v (answer/ok v)))
+
+(defn- stamped
+  "L1 Promote: Answer `a` marked complete, carrying Decision `d` as
+   :autonomous/approval metadata."
+  [d a]
+  (vary-meta (answer/complete a) assoc :autonomous/approval d))
+
+(defn- decided
+  "L1 Pipeline: run thunk `run` when Decision `d` approves; else its refusal."
+  [run d]
+  (if (= :approve (:decision d))
+    (thenable/chain (run) (comp (partial stamped d) as-answer))
+    (stamped d (refusals (:decision d)))))
+
+(defn- approval-request
+  "L1 Promote: what the asker is asked about one call."
+  [tool args grant]
+  {:tool (:name tool) :args args :actor (:actor grant) :session (:session grant)})
+
+(defn gate
+  "L1 Pipeline: (run) for a tool without require-approval; else a thenable
+   of the complete Answer the human's Decision leads to (see
+   require-approval), carrying that Decision as :autonomous/approval."
+  [tool args grant run]
+  (if-let [{:keys [asker timeout-ms]} (::approval tool)]
+    (thenable/chain (approval/ask! asker (approval-request tool args grant) timeout-ms)
+                    (partial decided run))
+    (run)))
 
 (defn each-tool
   "L1 lift: Tool -> Tool fn `f` as a Surface -> Surface fn applying it to
