@@ -5,6 +5,18 @@
 
 (def default-ttl-ms 60000)
 
+(def max-ttl-ms
+  "The longest lease anyone gets, whatever they ask for: a lease blocks every
+   other actor's writes, so an unbounded one would let one agent lock a
+   runtime for good."
+  300000)
+
+(defn ttl
+  "The lease length granted for a request of `ttl-ms` (nil: the default),
+   between 1 ms and `max-ttl-ms`."
+  [ttl-ms]
+  (-> (or ttl-ms default-ttl-ms) (max 1) (min max-ttl-ms)))
+
 (defn live?
   "True when `lease` exists and has not ended at `now`."
   [lease now]
@@ -25,7 +37,7 @@
   [lease actor ttl-ms now]
   (if (and (live? lease now) (not= actor (:actor lease)))
     [:refused lease]
-    [:granted {:actor actor :until (+ now (or ttl-ms default-ttl-ms))}]))
+    [:granted {:actor actor :until (+ now (ttl ttl-ms))}]))
 
 (defn release
   "The lease after `actor` releases it: nil when `actor` held it, else

@@ -24,4 +24,14 @@
   :app  {:target     :browser
          :output-dir "example/public/js"
          :asset-path "/js"
-         :modules    {:main {:init-fn todo.browser/init}}}}}
+         :modules    {:main {:init-fn todo.browser/init}}}
+
+  ;; The runtime for non-ClojureScript web apps, as an ES module
+  ;; (autonomous.js): `import * as autonomous from './autonomous.js'`.
+  :js   {:target     :esm
+         :output-dir "target/autonomous-js"
+         :modules    {:autonomous {:exports {setApp         autonomous.js/setApp
+                                             registerTool   autonomous.js/registerTool
+                                             unregisterTool autonomous.js/unregisterTool
+                                             journal        autonomous.js/journal
+                                             connect        autonomous.js/connect}}}}}}
