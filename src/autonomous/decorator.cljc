@@ -7,9 +7,16 @@
             [malli.core :as m]))
 
 (defn require-scope
-  "L1 Tool -> Tool: require one additional scope for listing and calling."
+  "L1 Tool -> Tool: require one additional scope for listing and calling.
+   `scope` must be a keyword (autonomous.domain.schema/Scope). Anything
+   else throws ex-info :autonomous/error :invalid-scope at construction:
+   a decorator that silently required nothing would leave the tool
+   callable without the scope its author meant to demand."
   [scope]
-  (fn [tool] (cond-> tool (keyword? scope) (update :scopes conj scope))))
+  (when-not (keyword? scope)
+    (throw (ex-info (str "require-scope needs a keyword scope, got " (pr-str scope))
+                    {:autonomous/error :invalid-scope :scope scope})))
+  (fn [tool] (update tool :scopes conj scope)))
 
 (defn each-tool
   "L1 lift: Tool -> Tool fn `f` as a Surface -> Surface fn applying it to
