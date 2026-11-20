@@ -204,6 +204,17 @@
       (is (= [rpc/list-changed]
              (dispatched-through-pump (str ": open" eol eol list-changed-line eol eol)))))))
 
+(deftest a-reply-body-is-bounded-in-size-and-time
+  (is (= {:ok "abc"} (jdk/read-capped (java.io.StringReader. "abc") 10)))
+  (let [a (jdk/read-capped (java.io.StringReader. (str "SECRET-BODY" (apply str (repeat 100 "x")))) 10)]
+    (is (= :channel/transport-failed (get-in a [:error :type])))
+    (is (not (str/includes? (pr-str a) "SECRET")) "no remote text in the refusal"))
+  (let [closed (promise)
+        a      (jdk/within 100 #(do (Thread/sleep 5000) (answer/ok "late")) #(deliver closed true))]
+    (is (= :channel/transport-failed (get-in a [:error :type])))
+    (is (true? (deref closed 1000 false)) "a late reply is closed"))
+  (is (= {:ok 1} (jdk/within 1000 #(answer/ok 1) (fn [])))))
+
 (deftest a-stream-line-past-the-cap-closes-the-stream
   (let [ok (pumped "data: a\n\ndata: b\n" 16)]
     (is (= ["data: a\n" "\n" "data: b\n"] (:text ok)))

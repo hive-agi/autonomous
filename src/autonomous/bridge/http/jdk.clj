@@ -37,13 +37,6 @@
       (.header b (str k) (str v)))
     b))
 
-(defn- response-of
-  "Ok {:status :headers :body} of `resp`, header names lower case."
-  [^HttpResponse resp]
-  (answer/ok {:status  (.statusCode resp)
-              :headers (into {} (map (fn [[k vs]] [(str/lower-case k) (first vs)])) (.map (.headers resp)))
-              :body    (.body resp)}))
-
 (defn- body-of
   "The body of `req` as text: a string, or a map written as JSON."
   [req]
@@ -60,15 +53,59 @@
                     (str "the request could not be built (" (.getName (class e)) ")")
                     (or (ex-message e) (str e)))))
 
+(def max-body-chars
+  "The most characters a remote reply body may hold: 4 MiB."
+  (* 4 1024 1024))
+
+(defn read-capped
+  "Boundary: Ok of the text of `r`, or a :channel/transport-failed refusal
+   once it passes `cap` characters. Never holds more than `cap` plus one
+   read buffer."
+  [^Reader r cap]
+  (let [sb (StringBuilder.) buf (char-array 8192)]
+    (loop []
+      (let [n (.read r buf)]
+        (cond
+          (neg? n)                   (answer/ok (str sb))
+          (< cap (+ (.length sb) n)) (answer/refusal :channel/transport-failed
+                                                     (str "the remote reply passed " cap " characters"))
+          :else                      (do (.append sb buf 0 n) (recur)))))))
+
+(defn within
+  "Boundary: the Answer of `read!` run on its own thread, or, past `ms`, a
+   :channel/transport-failed refusal after `close!` stops it."
+  [ms read! close!]
+  (let [f (future (try (read!) (catch Exception _closed
+                                 (answer/refusal :channel/transport-failed "the remote reply broke off"))))
+        a (deref f ms ::late)]
+    (if (= ::late a)
+      (do (close!) (future-cancel f)
+          (answer/refusal :channel/transport-failed (str "the remote reply took longer than " ms " ms")))
+      a)))
+
+(defn- response-of
+  "Answer {:status :headers :body} of `resp`, header names lower case, its
+   body read within `ms` and max-body-chars."
+  [^HttpResponse resp ms]
+  (let [^InputStream in (.body resp)]
+    (answer/let-answer [body (within ms #(with-open [r (InputStreamReader. in "UTF-8")]
+                                           (read-capped r max-body-chars))
+                                     #(.close in))]
+      (answer/ok {:status  (.statusCode resp)
+                  :headers (into {} (map (fn [[k vs]] [(str/lower-case k) (first vs)])) (.map (.headers resp)))
+                  :body    body}))))
+
 (defn- send
-  "Answer of sending `req`, its body taken as text or JSON."
+  "Answer of sending `req`, its body taken as text or JSON, the reply
+   bounded in size and in time by its :timeout-ms."
   [req]
   (try
     (let [body (body-of req)
+          ms   (long (or (:timeout-ms req) default-timeout-ms))
           pub  (if body (HttpRequest$BodyPublishers/ofString ^String body)
                    (HttpRequest$BodyPublishers/noBody))
-          b    (builder req (:method req) pub (:timeout-ms req))]
-      (response-of (.send ^HttpClient @shared (.build b) (HttpResponse$BodyHandlers/ofString))))
+          b    (builder req (:method req) pub ms)]
+      (response-of (.send ^HttpClient @shared (.build b) (HttpResponse$BodyHandlers/ofInputStream)) ms))
     (catch Exception e
       (transport-failed e))))
 
