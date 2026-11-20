@@ -72,10 +72,10 @@
       (close-on-refusal port (answer/from-exception e)))))
 
 (defn- resource-spec
-  "ResourceSpec of live entry `e` (a tap desc plus its atom and store), read
-   by the 4-arity `read-tap` with the entry's own tap, store and desc bound."
-  [read-tap {:keys [uri description scopes tap-a store-a] :as e}]
-  (cond-> {:read (partial read-tap tap-a store-a e) :name uri
+  "ResourceSpec of live entry `e`, read with its own tap, cursor store and
+   description. The read closes over no mutable registry or global state."
+  [read-tap {:keys [uri description scopes tap store] :as e}]
+  (cond-> {:read (partial read-tap tap store e) :name uri
            :description description :mime "application/json"}
     scopes (assoc :scopes scopes)))
 
@@ -83,10 +83,7 @@
   "ResourceSpecs of running surface `live` by uri, read by `read-tap`.
    Each resource reads its OWN tap and store; `desc` is the tap description."
   [live read-tap]
-  (into {}
-        (map (fn [[uri e]]
-               [uri (resource-spec read-tap (assoc e :tap-a (:tap e) :store-a (:store e)))]))
-        (:taps live)))
+  (into {} (map (fn [[uri e]] [uri (resource-spec read-tap e)])) (:taps live)))
 
 (defn install!
   "Register each resource of a running surface and return Ok live."

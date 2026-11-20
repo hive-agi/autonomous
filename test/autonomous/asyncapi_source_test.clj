@@ -6,14 +6,14 @@
             [autonomous.asyncapi.memory :as memory]
             [autonomous.asyncapi.port :as port]
             [autonomous.asyncapi.spi]
-            [autonomous.asyncapi.tap :as tap]
             [autonomous.domain.affordance :as affordance]
             [autonomous.domain.answer :as answer]
             [autonomous.openapi.load :as load]
             [autonomous.runtime.invoke :as invoke]
             [autonomous.runtime.registry :as registry]
             [autonomous.spi :as spi]
-            [clojure.test :refer [deftest is testing]]))
+            [clojure.test :refer [deftest is testing]]
+            [autonomous.asyncapi.read :as read]))
 
 (def bundle (:ok (load/load-bundle "test/fixtures/asyncapi/nats-events.yaml")))
 
@@ -80,29 +80,36 @@
   (with-surface
     (fn [b _ _ res]
       (memory/publish! b "crm.phone.state.v1" phone)
-      (is (= 1 (:cursor ((:read res) (granted "a/s")))))
-      (is (= [phone] (mapv :payload (:messages ((:read res) (assoc (granted "a") :session "s")))))))))
+      (is (= 1 (get-in ((:read res) (granted "a/s")) [:ok :cursor])))
+      (is (= [phone]
+             (mapv :payload
+                   (get-in ((:read res) (assoc (granted "a") :session "s"))
+                           [:ok :messages])))))))
 
 (deftest concurrent-reads-cannot-claim-the-same-page-or-rewind
   (with-surface
-    (fn [b _ _ res]
-      (let [first-page (promise) resume (promise) calls (atom 0) since tap/since]
+    (fn [b s _ res]
+      (let [first-page (promise) resume (promise) calls (atom 0)
+            uri "asyncapi://crm.phone.state.v1"
+            entry (get-in s [:live :taps uri])
+            page-fn (fn [store reader t limit]
+                      (when (= 1 (swap! calls inc))
+                        (deliver first-page true)
+                        (deref resume 5000 nil))
+                      (read/claim-page store reader t limit))
+            read-page #(read/read-tap (:tap entry) (:store entry) entry
+                                      (granted "a") page-fn)]
         (memory/publish! b "crm.phone.state.v1" phone)
-        (with-redefs [tap/since (fn [t cursor limit]
-                                 (when (= 1 (swap! calls inc))
-                                   (deliver first-page true)
-                                   (deref resume 5000 nil))
-                                 (since t cursor limit))]
-          (let [read-page #((:read res) (granted "a"))
-                delayed (future (read-page))]
-            (try
-              (is (true? (deref first-page 5000 false)))
-              (memory/publish! b "crm.phone.state.v1" phone)
-              (is (= [1 2] (mapv :seq (:messages (read-page)))))
-              (finally (deliver resume true)))
-            (is (= {:subject "crm.phone.state.v1" :cursor 2 :messages [] :dropped 0}
-                   (deref delayed 5000 nil)))
-            (is (= 2 (:cursor (read-page))))))))))
+        (is (some? res) "the registry exposes the same resource")
+        (let [delayed (future (read-page))]
+          (try
+            (is (true? (deref first-page 5000 false)))
+            (memory/publish! b "crm.phone.state.v1" phone)
+            (is (= [1 2] (mapv :seq (get-in (read-page) [:ok :messages]))))
+            (finally (deliver resume true)))
+          (is (= {:subject "crm.phone.state.v1" :cursor 2 :messages [] :dropped 0}
+                 (:ok (deref delayed 5000 nil))))
+          (is (= 2 (get-in (read-page) [:ok :cursor]))))))))
 
 (deftest the-ring-is-bounded-per-resource
   (with-surface
@@ -156,6 +163,20 @@
 (deftest a-refused-derivation-subscribes-nothing
   (let [[b p] (connected)]
     (is (answer/refused? (asyncapi/surface bundle {:port p :expose {"nope.subject" {}}})))
+    (is (empty? (memory/subscribers-of b)))))
+
+(deftest a-partial-startup-unsubscribes-every-tap-it-started
+  (let [[b p] (connected)
+        calls (atom 0)
+        broken (assoc p :subscribe
+                      (fn [filter handler]
+                        (if (= 2 (swap! calls inc))
+                          (throw (ex-info "broker refused the second tap" {}))
+                          ((:subscribe p) filter handler))))]
+    (is (answer/refused?
+         (asyncapi/surface bundle {:port broken
+                                   :expose {"crm.phone.state.v1" {}
+                                            "user.events.created" {}}})))
     (is (empty? (memory/subscribers-of b)))))
 
 (deftest a-missing-or-broken-port-is-refused
