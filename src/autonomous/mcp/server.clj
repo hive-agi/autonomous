@@ -101,8 +101,9 @@
   [session id r]
   {:response (p/result id r) :session session})
 
-(defn- reply-error
-  "L1 Promote: the step result answering with JSON-RPC error `response`."
+(defn- respond
+  "L1 Promote: the step result carrying JSON-RPC message `response` as is:
+   an error, or nil for no reply at all."
   [session response]
   {:response response :session session})
 
@@ -111,7 +112,7 @@
    a protocol error, every other Answer a CallToolResult."
   [session id answer]
   (if (= :unknown-tool (get-in answer [:error :type]))
-    (reply-error session (p/refusal-error id answer (get-in answer [:error :data])))
+    (respond session (p/refusal-error id answer (get-in answer [:error :data])))
     (reply session id (p/tool-result answer))))
 
 (defmethod handle-method "initialize" [srv session {:keys [id params]}]
@@ -138,13 +139,13 @@
   [session id uri a]
   (if (answer/ok? a)
     (reply session id (p/resource-contents uri a))
-    (reply-error session (p/refusal-error id a (:error a)))))
+    (respond session (p/refusal-error id a (:error a)))))
 
 (defmethod handle-method "resources/read" [srv session {:keys [id params]}]
   (read-response session id (:uri params) (fleet/read-resource (:fleet srv) session (:uri params))))
 
 (defmethod handle-method :default [_ session msg]
-  (reply-error session (when-not (p/notification? msg)
+  (respond session (when-not (p/notification? msg)
                          (p/error (:id msg) :method-not-found (str "method not found: " (:method msg))))))
 
 (defn- unhandled-notification?
@@ -157,7 +158,7 @@
   "L1 Promote: the step result of a handler that threw `e`: a JSON-RPC
    internal error, none for a notification."
   [session msg e]
-  (reply-error session (when-not (p/notification? msg)
+  (respond session (when-not (p/notification? msg)
                          (p/error (:id msg) :internal (or (ex-message e) (str e))))))
 
 (defn handle
@@ -166,9 +167,9 @@
   [srv session msg]
   (cond
     (not (p/request? msg))
-    (reply-error session (p/error (:id msg) :invalid-request "not a JSON-RPC 2.0 request"))
+    (respond session (p/error (:id msg) :invalid-request "not a JSON-RPC 2.0 request"))
 
-    (unhandled-notification? msg) (reply-error session nil)
+    (unhandled-notification? msg) (respond session nil)
 
     :else
     (try (handle-method srv session msg)
