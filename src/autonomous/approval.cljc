@@ -5,7 +5,8 @@
 
    Verdict   what an Asker answers: {:decision :approve|:deny :approver str}.
    Decision  what `ask!` answers: a Verdict or :timeout, with :ms waited."
-  (:require [clojure.string :as str]
+  (:require [autonomous.thenable :as thenable]
+            [clojure.string :as str]
             [malli.core :as m]))
 
 (def Verdict
@@ -13,10 +14,10 @@
   [:map [:decision [:enum :approve :deny]] [:approver :string]])
 
 (def Decision
-  "What `ask!` answers: the asker's Verdict, :deny for a malformed one, or
-   :timeout, with the milliseconds waited."
+  "What `ask!` answers: the asker's Verdict, :deny for a malformed one,
+   :timeout, or :error when the asker failed, with the milliseconds waited."
   [:map
-   [:decision [:enum :approve :deny :timeout]]
+   [:decision [:enum :approve :deny :timeout :error]]
    [:approver {:optional true} :string]
    [:ms :int]])
 
@@ -25,6 +26,11 @@
   (-ask! [this request]
     "Answer a promise (clj) or thenable (cljs) of a Verdict for `request`
      {:tool :args :actor :session}."))
+
+(defprotocol Withdraw
+  "L1 optional role of an Asker: hear that a request is no longer awaited."
+  (-withdraw! [this answer]
+    "`answer` (what -ask! answered) timed out: no later Verdict may reach it."))
 
 (defn asker?
   "L1: does `x` implement the Asker port?"
@@ -64,22 +70,39 @@
     (m/validate Verdict v) (stamp (select-keys v [:decision :approver]) t0)
     :else                  (stamp {:decision :deny} t0)))
 
-#?(:cljs
-   (defn- timeout-thenable
-     "L1 host: a thenable resolving to `::timeout` after `ms`."
-     [ms]
-     (js/Promise. (fn [ok _] (js/setTimeout #(ok ::timeout) ms)))))
+(defn- withdraw!
+  "L1 Boundary: tell `asker` that its `answer` timed out, when it listens."
+  [asker answer v]
+  (when (and (= ::timeout v) (satisfies? Withdraw asker))
+    (-withdraw! asker answer))
+  v)
+
+(defn- awaited
+  "L1 host: the asker's answer `p`, or `::timeout` after `timeout-ms`; on
+   cljs a thenable that clears its timer when `p` settles first."
+  [p timeout-ms]
+  #?(:cljs    (let [timer (atom nil)
+                    t     (js/Promise. (fn [ok _] (reset! timer (js/setTimeout #(ok ::timeout) timeout-ms))))]
+                (.finally (js/Promise.race #js [p t]) #(js/clearTimeout @timer)))
+     :default (deref p timeout-ms ::timeout)))
+
+(defn- asked
+  "L1 host: what `asker` answers for `request`, `::error` when it throws or
+   answers something other than a promise or thenable."
+  [asker request]
+  (let [p (try (-ask! asker request) (catch #?(:cljs :default :default Throwable) _ ::error))]
+    (if (thenable/thenable? p) p (resolved ::error))))
 
 (defn ask!
   "L1 Pipeline: put `request` to `asker` and answer a future (clj) or
-   thenable (cljs) of a Decision, :timeout when no Verdict arrives within
-   `timeout-ms`. What the asker throws or rejects with propagates."
+   thenable (cljs) of a Decision: :timeout when no Verdict arrives within
+   `timeout-ms` (the asker hears -withdraw!), :error when the asker fails."
   [asker request timeout-ms]
   (let [t0 (now-ms)
-        p  (-ask! asker request)]
-    #?(:cljs    (.then (js/Promise.race #js [p (timeout-thenable timeout-ms)])
-                       #(->decision % t0))
-       :default (future (->decision (deref p timeout-ms ::timeout) t0)))))
+        p  (asked asker request)]
+    (thenable/attempt #(thenable/chain (awaited p timeout-ms)
+                                       (fn [v] (->decision (withdraw! asker p v) t0)))
+                      (fn [_] (stamp {:decision :error} t0)))))
 
 ;; =============================================================================
 ;; Adapters
@@ -102,32 +125,75 @@
   [verdicts]
   (->QueueAsker (atom (vec verdicts)) (atom [])))
 
-(defn- yes?
-  "L1: is the typed `line` an approval (y or yes, any case)?"
-  [line]
-  (contains? #{"y" "yes"} (str/lower-case (str/trim (or line "")))))
+(defn approves?
+  "L1: does the typed `line` approve the request numbered `id`? Only
+   \"<id> y\" or \"<id> yes\" (any case, any spacing) does."
+  [id line]
+  (let [[typed answer & more] (str/split (str/trim (or line "")) #"\s+")]
+    (and (= id typed) (contains? #{"y" "yes"} (str/lower-case (or answer ""))) (empty? more))))
+
+(defn prompt-line
+  "L1: the line the stdin asker prints for request `id`."
+  [id request]
+  (str "[" id "] approve " (pr-str request) "? type \"" id " y\" to approve; anything else denies"))
 
 #?(:cljs nil
    :default
    (defn- read-verdict
-     "L1 Boundary: prompt on `out`, read one line from `in`, and answer the
-      Verdict of `approver`: y or yes approves, anything else denies."
-     [{:keys [in out approver]} request]
-     (binding [*out* out] (println "approve call?" (pr-str request) "[y/N]") (flush))
-     {:decision (if (yes? (binding [*in* in] (read-line))) :approve :deny)
-      :approver approver}))
+     "L1 Boundary: prompt request `id` on `out`, read one line, and answer
+      the Verdict of `approver` (see approves?)."
+     [{:keys [read-line! out approver]} id request]
+     (binding [*out* out] (println (prompt-line id request)) (flush))
+     {:decision (if (approves? id (read-line!)) :approve :deny) :approver approver}))
 
 #?(:cljs nil
    :default
-   (defrecord StdinAsker [in out approver]
+   (defn- serve!
+     "L1 Boundary: once request `prev` is done, deliver `p` the Verdict for
+      request `id` unless it was withdrawn first; then mark `done`."
+     [{:keys [withdrawn] :as asker} [prev done] p id request]
+     (try
+       (deref prev)
+       (when-not (contains? @withdrawn p) (deliver p (read-verdict asker id request)))
+       (finally (swap! withdrawn disj p) (deliver done true)))))
+
+#?(:cljs nil
+   :default
+   (defn- enqueue!
+     "L1 Boundary: [the previous request's done promise, this one's], so
+      requests are served one at a time in the order they were asked."
+     [tail]
+     (let [done (promise)]
+       [(first (swap-vals! tail (constantly done))) done])))
+
+#?(:cljs nil
+   :default
+   (defrecord StdinAsker [read-line! out approver counter tail withdrawn]
      Asker
-     (-ask! [this request] (future (read-verdict this request)))))
+     (-ask! [this request]
+       (let [p (promise) turn (enqueue! tail) id (str (swap! counter inc))]
+         (future (serve! this turn p id request))
+         p))
+     Withdraw
+     (-withdraw! [_ p] (swap! withdrawn conj p))))
+
+#?(:cljs nil
+   :default
+   (defn- line-reader
+     "L1 host: a zero-argument function reading one line of BufferedReader `in`."
+     [in]
+     #(binding [*in* in] (read-line))))
 
 #?(:cljs nil
    :default
    (defn stdin-asker
-     "L1 adapter (clj): asks on a terminal. Options :in (a BufferedReader,
-      default *in*), :out (default *err*) and :approver (default \"stdin\")."
+     "L1 adapter (clj): asks on a terminal, one request at a time in call
+      order, each numbered; only \"<n> y\" approves request n. A timed-out
+      request is withdrawn: never prompted once withdrawn, never answered.
+      Options :in (a BufferedReader, default *in*) or :read-line (a
+      zero-argument function), :out (default *err*), :approver (default
+      \"stdin\")."
      ([] (stdin-asker {}))
-     ([{:keys [in out approver] :or {approver "stdin"}}]
-      (->StdinAsker (or in *in*) (or out *err*) approver))))
+     ([{:keys [in read-line out approver] :or {approver "stdin"}}]
+      (->StdinAsker (or read-line (line-reader (or in *in*))) (or out *err*) approver
+                    (atom 0) (atom (resolved true)) (atom #{})))))

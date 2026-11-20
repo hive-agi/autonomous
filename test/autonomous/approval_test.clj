@@ -33,11 +33,45 @@
 (defn- stdin-asker [typed out]
   (approval/stdin-asker {:in (BufferedReader. (StringReader. typed)) :out out :approver "op"}))
 
-(deftest the-stdin-asker-approves-only-on-yes
-  (testing "y approves and the prompt names the call"
+(deftest the-stdin-asker-approves-only-its-own-numbered-yes
+  (testing "\"1 y\" approves request 1 and the prompt shows its number and tool"
     (let [out (StringWriter.)]
-      (is (= {:decision :approve :approver "op"} (dissoc (ask (stdin-asker "Y\n" out) 500) :ms)))
-      (is (re-find #"pay" (str out)))))
-  (testing "anything else, end of input included, denies"
-    (doseq [typed ["n\n" "maybe\n" ""]]
-      (is (= :deny (:decision (ask (stdin-asker typed (StringWriter.)) 500)))))))
+      (is (= {:decision :approve :approver "op"} (dissoc (ask (stdin-asker "1 Y\n" out) 500) :ms)))
+      (is (re-find #"\[1\].*pay" (str out)))))
+  (testing "a bare y, another number, anything else or end of input denies"
+    (doseq [typed ["y\n" "yes\n" "2 y\n" "1 y please\n" "n\n" ""]]
+      (is (= :deny (:decision (ask (stdin-asker typed (StringWriter.)) 500))) typed))))
+
+(defn- typist
+  "A fake terminal: read-line blocks until a line is typed with `type!`."
+  []
+  (let [q (java.util.concurrent.LinkedBlockingQueue.)]
+    {:read-line #(.take q) :type! #(.put q %)}))
+
+(defn- typed-asker [{:keys [read-line]}]
+  (approval/stdin-asker {:read-line read-line :out (StringWriter.) :approver "op"}))
+
+(deftest concurrent-calls-are-asked-one-at-a-time-in-order
+  (let [t     (typist)
+        asker (typed-asker t)
+        a     (approval/ask! asker (assoc request :tool "a") 2000)
+        b     (approval/ask! asker (assoc request :tool "b") 2000)]
+    ((:type! t) "2 y")
+    ((:type! t) "2 y")
+    (is (= :deny (:decision (deref a 1000 ::hung))) "request 1 read the first line, meant for 2")
+    (is (= :approve (:decision (deref b 1000 ::hung))) "request 2 is approved by its own line")))
+
+(deftest a-timed-out-request-is-withdrawn-and-never-takes-a-later-line
+  (let [t     (typist)
+        asker (typed-asker t)
+        a     (approval/ask! asker (assoc request :tool "a") 50)]
+    (is (= :timeout (:decision (deref a 1000 ::hung))))
+    (let [b (approval/ask! asker (assoc request :tool "b") 2000)
+          c (approval/ask! asker (assoc request :tool "c") 2000)]
+      ((:type! t) "2 n")
+      ((:type! t) "3 y")
+      ((:type! t) "3 y")
+      (is (= :timeout (:decision (deref a 10 ::hung))) "a late line never answers request 1")
+      (is (= :deny (:decision (deref b 1000 ::hung)))
+          "the stale reader of 1 ate \"2 n\"; request 2 then read \"3 y\", which is not its yes")
+      (is (= :approve (:decision (deref c 1000 ::hung))) "request 3 is approved by its own line"))))
