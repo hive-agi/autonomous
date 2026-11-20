@@ -23,6 +23,7 @@
             [autonomous.bridge.schema :as bs]
             [autonomous.bridge.url :as url]
             [autonomous.bridge.http.jdk :as jdk]
+            [autonomous.bridge.http.session :as ses]
             [autonomous.cli :as cli]
             [autonomous.config :as config]
             [malli.core :as m]))
@@ -429,6 +430,52 @@
     (is (empty? @seen) "nothing was sent"))
   (testing "and the schema refuses an empty policy"
     (is (not (m/validate bs/Target (assoc target :credentials {}))))))
+
+(defn- spy-client
+  "A stub client that records every request it is handed, plus that record."
+  []
+  (let [[client _ _] (open-stub)
+        seen (atom [])]
+    [(reify port/IHttpClient
+       (-request! [_ req] (swap! seen conj req) (port/-request! client req))
+       (-open-stream! [_ req sink] (swap! seen conj req) (port/-open-stream! client req sink)))
+     seen]))
+
+(def ^:private live-session {:id "sid-agent-z" :actor stranger})
+
+(defn- stream-and-close
+  "The answers of opening a stream and closing a session as `actor` on `t`
+   with credential `values`, plus the requests that went out."
+  [t values actor]
+  (let [[client seen] (spy-client)
+        src           (->Environment values)
+        grant         {:actor actor}
+        ses           (assoc live-session :actor actor)]
+    {:stream (ses/open-stream! client src t grant ses (fn [_]) (fn []))
+     :close  (ses/close-session! client src t grant ses)
+     :seen   @seen}))
+
+(deftest stream-open-and-session-close-fail-closed
+  (testing "an actor with no credential entry"
+    (let [{:keys [stream close seen]} (stream-and-close (assoc target :credentials (credential-policy))
+                                                        {"REMOTE_AGENT_A" "aut_a"} stranger)]
+      (is (= :channel/credential-missing (get-in stream [:error :type])) (pr-str stream))
+      (is (= :channel/credential-missing (get-in close [:error :type])) (pr-str close))
+      (is (empty? seen) "no stream was opened and no DELETE went out")))
+  (testing "a configured credential that is unset"
+    (let [{:keys [stream close seen]} (stream-and-close (assoc target :credentials (credential-policy))
+                                                        {} "agent-a")]
+      (is (= :channel/credential-unset (get-in stream [:error :type])) (pr-str stream))
+      (is (= :channel/credential-unset (get-in close [:error :type])) (pr-str close))
+      (is (empty? seen))))
+  (testing "a bearer refused over plain http to another host"
+    (let [{:keys [stream close seen]} (stream-and-close (assoc target :url plain-remote-url
+                                                               :credentials (credential-policy))
+                                                        {"REMOTE_AGENT_A" "aut_a"} "agent-a")]
+      (is (= :channel/insecure-transport (get-in stream [:error :type])) (pr-str stream))
+      (is (= :channel/insecure-transport (get-in close [:error :type])) (pr-str close))
+      (is (not-any? #(str/includes? (pr-str [stream close]) %) (vals tokens)))
+      (is (empty? seen)))))
 
 (deftest a-hostile-actor-is-cut-and-cleaned-in-the-refusal
   (let [hostile  (str "evil\n\u001b[31mFAKE LOG LINE\r" (apply str (repeat 200 "y")))
