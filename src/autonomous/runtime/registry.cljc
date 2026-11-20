@@ -28,12 +28,13 @@
    when this runtime life began: a reload starts a new epoch and restarts
    the journal sequence, so a reader keeps its cursor per epoch."
   []
-  {:epoch   (now-ms)
-   :version 0
-   :journal journal/empty-journal
-   :lease   nil
-   :pending {}
-   :next-id 0})
+  {:epoch       (now-ms)
+   :version     0
+   :journal     journal/empty-journal
+   :call-detail nil
+   :lease       nil
+   :pending     {}
+   :next-id     0})
 
 (defprotocol IRuntime
   "L2 read seam: what an adapter may ask of a running instance. Reads
@@ -227,6 +228,16 @@
 ;; =============================================================================
 ;; Journal and lease
 ;; =============================================================================
+
+(defn set-call-detail!
+  "Set the CallDetail the journal keeps about each tool call (nil: none).
+   Throws on an invalid one."
+  [detail]
+  (when-let [e (and (some? detail) (m/explain s/CallDetail detail))]
+    (throw (ex-info "invalid call detail" {:autonomous/error :invalid-call-detail
+                                           :problems (me/humanize e)})))
+  (swap! (state-ref) assoc :call-detail detail)
+  nil)
 
 (defn record!
   "Append `entry` to the journal; answers its sequence number."

@@ -8,6 +8,7 @@
    one defmethod and nothing here changes."
   (:require [autonomous.domain.answer :as answer]
             [autonomous.domain.decision :as decision]
+            [autonomous.domain.journal :as journal]
             [autonomous.domain.wire :as wire]
             [autonomous.runtime.registry :as registry]
             [clojure.string :as str]
@@ -74,12 +75,13 @@
 (defn- settle-later!
   "Park thenable `x`; its value, through `project` (raw -> Answer), becomes
    the parked answer and a journal entry (:autonomous/settled), so the
-   ledger knows how an async call ended."
+   ledger knows how an async call ended. The entry follows the app's
+   CallDetail as it is when the call settles."
   [x project]
   (let [id      (registry/park!)
         settle! (fn [a]
                   (registry/settle! id a)
-                  (registry/record! {:kind :autonomous/settled :pending id :outcome (answer/outcome a)}))]
+                  (registry/record! (journal/settled-entry id a (:call-detail (registry/snapshot)))))]
     #?(:cljs    (-> ^js x
                     (.then (fn [v] (settle! (normalize (project v)))))
                     (.catch (fn [e] (settle! (answer/from-exception e)))))
@@ -125,11 +127,8 @@
         ans  (case (:plan/action plan)
                :invoke (run-invoke plan grant (:interceptors snap))
                :refuse (:refusal plan))]
-    (registry/record! {:kind    :autonomous/call
-                       :actor   (:actor grant)
-                       :tool    tool-name
-                       :outcome (answer/outcome ans)
-                       :ms      (- (registry/now-ms) t0)})
+    (registry/record! (journal/call-entry tool-name args grant ans (- (registry/now-ms) t0)
+                                          (:call-detail snap)))
     ans))
 
 (defn read!

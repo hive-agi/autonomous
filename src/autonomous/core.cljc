@@ -93,6 +93,21 @@
   [entry]
   (registry/record! entry))
 
+(defn journal-calls!
+  "Choose what the journal (and so the ledger) keeps about each tool call
+   beyond actor, tool, outcome and duration. Off by default.
+
+   detail (autonomous.domain.schema/CallDetail), or nil to turn it off:
+     :args?    the args as the agent sent them              [default false]
+     :errors?  a refusal's type, message and data           [default false]
+     :redact   paths into the args whose values are replaced by \"<redacted>\"
+
+   Any detail also records the caller's session. Turn :args? on only when
+   the journal may hold what agents send: redact secrets and personal data.
+   Throws ex-info on an invalid detail."
+  [detail]
+  (registry/set-call-detail! detail))
+
 (def invoke-kind
   "The open multimethod of tool kinds; see autonomous.runtime.invoke."
   invoke/invoke-kind)
