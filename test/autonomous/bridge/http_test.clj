@@ -430,6 +430,20 @@
   (testing "and the schema refuses an empty policy"
     (is (not (m/validate bs/Target (assoc target :credentials {}))))))
 
+(deftest a-hostile-actor-is-cut-and-cleaned-in-the-refusal
+  (let [hostile  (str "evil\n\u001b[31mFAKE LOG LINE\r" (apply str (repeat 200 "y")))
+        [c seen] (spied (assoc target :credentials (credential-policy)))
+        a        (manifest-as c hostile #{:read})
+        msg      (get-in a [:error :message])
+        shown    (get-in a [:error :data :actor])]
+    (is (= :channel/credential-missing (get-in a [:error :type])) (pr-str a))
+    (is (not-any? #(Character/isISOControl (char %)) msg) "no control character reaches the message")
+    (is (= 64 (count shown)) "the actor is cut at 64 characters")
+    (is (str/starts-with? shown "evil[31mFAKE LOG LINE"))
+    (is (str/includes? msg shown))
+    (is (not (str/includes? msg (apply str (repeat 100 "y")))))
+    (is (empty? @seen) "nothing was sent")))
+
 (deftest every-request-names-its-protocol-and-what-it-accepts
   (let [[c seen] (spied (assoc target :credentials (credential-policy)))]
     (manifest-as c "agent-a" #{:read})

@@ -78,19 +78,31 @@
   [token]
   (if token {"authorization" (str "Bearer " token)} {}))
 
+(def max-shown-actor
+  "The most characters of a caller-supplied actor a message repeats."
+  64)
+
+(defn shown-actor
+  "Pure: `actor` as a refusal message may repeat it: control characters
+   dropped, then cut at max-shown-actor characters."
+  [actor]
+  (let [s (apply str (remove #(Character/isISOControl (char %)) (str actor)))]
+    (subs s 0 (min max-shown-actor (count s)))))
+
 (defn- selected-reference
   "Ok of `grant`'s credential reference on `target`, nil for a target with
    no credential configuration at all. A target that carries the
    :credentials key fails closed, even when it is empty: an actor matching
    no entry, with no :default and no legacy :token-env, is refused naming
-   only actor and target id."
+   only the shown actor and the target id."
   [target grant]
-  (let [reference (credential-reference target grant)]
+  (let [reference (credential-reference target grant)
+        actor     (shown-actor (:actor grant))]
     (if (and (nil? reference) (some? (:credentials target)))
       (answer/refusal :channel/credential-missing
-                      (str "no credential is configured for agent " (:actor grant)
+                      (str "no credential is configured for agent " actor
                            " on " (:target/id target) ", and no :default: refusing to go anonymous")
-                      {:actor (:actor grant) :target (:target/id target)})
+                      {:actor actor :target (:target/id target)})
       (answer/ok reference))))
 
 (defn identity
