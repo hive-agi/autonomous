@@ -36,7 +36,6 @@
             [autonomous.mcp.server :as server]
             [autonomous.ring.exchange :as exchange]
             [autonomous.ring.surface]
-            [autonomous.runtime.invoke :as invoke]
             [autonomous.runtime.registry :as registry]
             [autonomous.spi :as spi]
             [clojure.string :as str]))
@@ -48,20 +47,9 @@
 ;; =============================================================================
 
 (defn run-route
-  "Answer of calling route tool `tool` with decoded `args` for `grant`:
-   encode, cross the principal port, run the app handler, decode."
+  "L3 Pipeline: run a mounted Ring tool through its registered codec."
   [tool args grant]
-  (let [request  ((:ring/principal tool exchange/default-principal) grant (exchange/->request tool args))
-        response ((:ring/handler tool) request)]
-    ((or (:ring/result tool) exchange/response->answer) response)))
-
-(defmethod invoke/invoke-kind :ring/route [tool args grant]
-  (let [a (run-route tool args grant)]
-    (if (answer/ok? a)
-      (:ok a)
-      (throw (ex-info (get-in a [:error :message] "route refused")
-                      (merge {:autonomous/error (get-in a [:error :type] :ring/refused)}
-                             (when-let [d (get-in a [:error :data])] {:response d})))))))
+  ((spi/codec->invoke exchange/route-codec exchange/invoke-request) tool args grant))
 
 ;; =============================================================================
 ;; Engine: one surface, its own runtime state, an MCP server over it

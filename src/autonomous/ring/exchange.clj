@@ -63,42 +63,49 @@
 
 (defn- bytes-of [^String s] (.getBytes s "UTF-8"))
 
-(defn ->request
-  "The Ring request a call of `tool` (kind :ring/route) with decoded `args`
-   makes: method and filled path, query string, and a JSON body (or a
-   url-encoded form when the route reads :form). Params are ALSO given the
-   way ring's wrap-params would leave them (string keys), so a handler that
-   reads :query-params without that middleware still sees them. Marked
-   :autonomous/call so the app can tell an agent call apart; identity is
-   added by the principal port, not here."
+(defn- payload
+  "L3 Codec: choose the content type and serialized body."
+  [{:keys [form body body-whole]}]
+  (cond
+    (seq form)                   ["application/x-www-form-urlencoded" (url-encoded form)]
+    (contains? body-whole :body) ["application/json" (json/write (:body body-whole))]
+    (seq body)                   ["application/json" (json/write body)]))
+
+(defn- with-payload
+  "L3 Codec: attach the body and content headers for Ring middleware."
+  [request params]
+  (if-let [[ctype text] (payload params)]
+    (let [n (alength ^bytes (bytes-of text))]
+      (-> request
+          (assoc :body text :content-type ctype :content-length n :character-encoding "UTF-8")
+          (update :headers assoc "content-type" ctype "content-length" (str n))))
+    request))
+
+(defn request-data
+  "L3 Codec: the Ring request as data, with any encoded body still text."
   [tool args]
-  (let [{:keys [path query form body body-whole]} (split-args (:ring/placement tool) args)
-        qs     (when (seq query) (url-encoded query))
-        [ctype payload] (cond
-                          (seq form)                   ["application/x-www-form-urlencoded" (url-encoded form)]
-                          (contains? body-whole :body) ["application/json" (json/write (:body body-whole))]
-                          (seq body)                   ["application/json" (json/write body)]
-                          :else                        [nil nil])
-        bs     (some-> payload bytes-of)]
-    (cond-> {:request-method  (:ring/method tool)
-             :uri             (fill-path (:ring/path tool) (or path {}))
-             :scheme          :http
-             :server-name     "autonomous"
-             :server-port     0
-             :remote-addr     "autonomous"
-             :protocol        "HTTP/1.1"
-             :headers         (cond-> {"accept" "application/json"}
-                                ctype (assoc "content-type" ctype
-                                             "content-length" (str (alength ^bytes bs))))
-             :query-params    (string-params query)
-             :form-params     (string-params form)
-             :params          (merge (string-params query) (string-params form))
+  (let [{:keys [path query form] :as params} (split-args (:ring/placement tool) args)
+        qs (when (seq query) (url-encoded query))]
+    (cond-> {:request-method (:ring/method tool)
+             :uri (fill-path (:ring/path tool) (or path {}))
+             :scheme :http :server-name "autonomous" :server-port 0
+             :remote-addr "autonomous" :protocol "HTTP/1.1"
+             :headers {"accept" "application/json"}
+             :query-params (string-params query) :form-params (string-params form)
+             :params (merge (string-params query) (string-params form))
              :autonomous/call {:tool (:name tool) :args args}}
       qs (assoc :query-string qs)
-      ctype (assoc :content-type ctype
-                   :content-length (alength ^bytes bs)
-                   :character-encoding "UTF-8"
-                   :body (ByteArrayInputStream. bs)))))
+      true (with-payload params))))
+
+(defn- stream-request
+  "L3 boundary: materialize Ring's one-shot request body stream."
+  [request]
+  (cond-> request (:body request) (update :body #(ByteArrayInputStream. (bytes-of %)))))
+
+(defn ->request
+  "L3 Ring compatibility: prepare a request with a Ring body stream."
+  [tool args]
+  (stream-request (request-data tool args)))
 
 (defn default-principal
   "The default identity crossing: the grant rides on the request as
@@ -152,3 +159,25 @@
       (answer/refusal (keyword "ring" (str "http-" status))
                       (error-message status v)
                       {:status status :body v}))))
+
+(defn invoke-request
+  "L3 boundary: apply the principal port, run the human handler, and read
+   any response stream before passing the result to the pure decoder.
+   A custom :ring/result retains the raw Ring response for compatibility."
+  [tool input grant]
+  (let [principal (:ring/principal tool default-principal)
+        response ((:ring/handler tool) (principal grant (stream-request input)))]
+    (answer/ok (cond-> response
+                 (and (not (:ring/result tool)) (instance? InputStream (:body response)))
+                 (update :body slurp)))))
+
+(def route-codec
+  "L3 Codec for an in-process Ring route."
+  {:encode (fn [tool args]
+             (if (and (map? args) (string? (:ring/path tool)) (keyword? (:ring/method tool)))
+               (answer/ok (request-data tool args))
+               (answer/refusal :ring/invalid-call "expected route metadata and a map of arguments")))
+   :decode (fn [tool response]
+             (if (and (map? response) (int? (get response :status 200)))
+               ((:ring/result tool response->answer) response)
+               (answer/refusal :ring/invalid-response "expected a Ring response map")))})

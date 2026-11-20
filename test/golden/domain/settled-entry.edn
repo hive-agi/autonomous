@@ -1,0 +1,13 @@
+{:ok-errors-on
+ {:kind :autonomous/settled, :pending "p5", :outcome :ok},
+ :ok-no-detail
+ {:kind :autonomous/settled, :pending "p1", :outcome :ok},
+ :threw-args-only
+ {:kind :autonomous/settled, :pending "p4", :outcome :tool-threw},
+ :threw-kept
+ {:kind :autonomous/settled,
+  :pending "p3",
+  :outcome :tool-threw,
+  :error {:type :tool-threw, :message "boom", :data {:at "db"}}},
+ :threw-no-detail
+ {:kind :autonomous/settled, :pending "p2", :outcome :tool-threw}}

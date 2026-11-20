@@ -1,0 +1,291 @@
+# libs/asyncapi/nats-events.yaml
+# AsyncAPI 3.0 spec for SISF NATS event bus
+#
+# Covers:
+# - User registration announcement (registration-service -> profile-service,
+#   user.events.created; its payload is derived from registration.v1, see
+#   schemas/first-access.json)
+# - User lifecycle events (profile-service)
+# - Password events (profile-service)
+# - Profile update events (profile-service)
+
+asyncapi: 3.0.0
+
+info:
+  title: SISF Event Bus
+  version: 1.0.0
+  description: |
+    NATS-based event bus for the SISF platform.
+
+    **Patterns**:
+    - **JetStream Pub/Sub**: User and profile events use JetStream for durable delivery
+
+    **Conventions**:
+    - Subject naming: `{domain}.{entity}.{action}` or `{domain}.{action}`
+    - All timestamps are ISO 8601 (UTC)
+    - UUIDs are lowercase hex with dashes
+  contact:
+    name: SISF Platform Team
+  license:
+    name: Proprietary
+
+defaultContentType: application/json
+
+servers:
+  development:
+    host: localhost:4222
+    protocol: nats
+    description: Local development NATS server
+  production:
+    host: nats.funerariafrancana.internal:4222
+    protocol: nats
+    description: Production NATS cluster
+
+channels:
+  # ============================================
+  # User Lifecycle Events (JetStream)
+  # ============================================
+  user-created:
+    address: user.events.created
+    description: |
+      Published by registration-service when a portal account is registered
+      and bound to its Firebird contributor.
+    messages:
+      userCreated:
+        $ref: "#/components/messages/UserCreatedEvent"
+
+  user-updated:
+    address: user.events.updated
+    description: Published when a user account is updated
+    messages:
+      userUpdated:
+        $ref: "#/components/messages/UserUpdatedEvent"
+
+  # ============================================
+  # Password Events (JetStream)
+  # ============================================
+  password-reset-requested:
+    address: user.events.password_reset_requested
+    description: Published when a user requests a password reset
+    messages:
+      passwordResetRequested:
+        $ref: "#/components/messages/PasswordResetRequestedEvent"
+
+  password-changed:
+    address: user.events.password_changed
+    description: Published when a user successfully changes their password
+    messages:
+      passwordChanged:
+        $ref: "#/components/messages/PasswordChangedEvent"
+
+  # ============================================
+  # Cobrador Reference Events (JetStream)
+  # Wave 2 spec — Wave 3 XTDB temporal-ingest consumer
+  # ============================================
+  reference-cobrador-sector-assigned:
+    address: reference.cobrador.sector.assigned
+    description: |
+      Published when a cobrador is assigned to a sector (or an existing assignment ends).
+      Consumed by the XTDB temporal-ingest service (Wave 3) to build the cobrador
+      assignment timeline for point-in-time queries.
+      Subject naming follows: reference.{entity}.{action}
+    messages:
+      cobradoresSectorAssigned:
+        $ref: "#/components/messages/CobradoresSectorAssignedEvent"
+
+  # ============================================
+  # CRM Phone Events (core NATS)
+  # ============================================
+  crm-phone-state:
+    address: crm.phone.state.v1
+    description: |
+      Published by sisf-crm (sisf-crm.phones.system/refresh!) when a phone the
+      CRM drives by API changes connection state between two refreshes of the
+      phones cache (open -> closed when the office handset is logged out,
+      closed -> open when it is paired again, anything -> unknown when the
+      provider could not be asked). A steady state publishes nothing; a phone
+      not seen before counts as unknown, so the first refresh after boot
+      announces each phone once. Core NATS, like crm.assistant.paused.v1.
+      Headers: Event-Type = the subject, Aggregate-Id = the phone id.
+      Never carries the instance token, a QR code or provider error text.
+    messages:
+      phoneState:
+        $ref: "#/components/messages/CrmPhoneStateEvent"
+
+operations:
+  # JetStream pub/sub operations
+  publishUserCreated:
+    action: send
+    channel:
+      $ref: "#/channels/user-created"
+    summary: Publish user created event
+    description: |
+      Published by registration-service (internal/infrastructure/events/user_created.go,
+      UserCreatedPublisher.PublishUserCreated) once a registration completes.
+    messages:
+      - $ref: "#/channels/user-created/messages/userCreated"
+
+  publishUserUpdated:
+    action: send
+    channel:
+      $ref: "#/channels/user-updated"
+    summary: Publish user updated event
+    messages:
+      - $ref: "#/channels/user-updated/messages/userUpdated"
+
+  publishPasswordResetRequested:
+    action: send
+    channel:
+      $ref: "#/channels/password-reset-requested"
+    summary: Publish password reset requested event
+    messages:
+      - $ref: "#/channels/password-reset-requested/messages/passwordResetRequested"
+
+  publishPasswordChanged:
+    action: send
+    channel:
+      $ref: "#/channels/password-changed"
+    summary: Publish password changed event
+    messages:
+      - $ref: "#/channels/password-changed/messages/passwordChanged"
+
+  publishCobradoresSectorAssigned:
+    action: send
+    channel:
+      $ref: "#/channels/reference-cobrador-sector-assigned"
+    summary: Publish cobrador sector assignment event
+    description: |
+      Published by sisf-reference whenever a cobrador is assigned to or
+      removed from a sector. The XTDB temporal-ingest consumer (Wave 3)
+      subscribes to build the bitemporally-indexed assignment timeline.
+    messages:
+      - $ref: "#/channels/reference-cobrador-sector-assigned/messages/cobradoresSectorAssigned"
+
+  publishCrmPhoneState:
+    action: send
+    channel:
+      $ref: "#/channels/crm-phone-state"
+    summary: Publish a CRM phone connection state change
+    description: |
+      Published by sisf-crm (src/sisf_crm/phones/adapters/events_nats.clj,
+      NatsPhoneEvents.publish-state!) once per phone whose state changed.
+    messages:
+      - $ref: "#/channels/crm-phone-state/messages/phoneState"
+
+components:
+  messages:
+    # User Lifecycle Messages
+    UserCreatedEvent:
+      name: UserCreatedEvent
+      title: User Created
+      summary: A portal account was registered and bound to its Firebird contributor
+      contentType: application/json
+      payload:
+        $ref: "./schemas/first-access.json#/$defs/UserCreatedEvent"
+
+    UserUpdatedEvent:
+      name: UserUpdatedEvent
+      title: User Updated
+      summary: A user account was updated
+      contentType: application/json
+      payload:
+        $ref: "./schemas/user-events.json#/$defs/UserEvent"
+
+    # Password Messages
+    PasswordResetRequestedEvent:
+      name: PasswordResetRequestedEvent
+      title: Password Reset Requested
+      summary: A user requested a password reset
+      contentType: application/json
+      payload:
+        $ref: "./schemas/user-events.json#/$defs/PasswordResetRequestedEvent"
+
+    PasswordChangedEvent:
+      name: PasswordChangedEvent
+      title: Password Changed
+      summary: A user successfully changed their password
+      contentType: application/json
+      payload:
+        $ref: "./schemas/user-events.json#/$defs/PasswordChangedEvent"
+
+    # Cobrador Reference Messages
+    CobradoresSectorAssignedEvent:
+      name: CobradoresSectorAssignedEvent
+      title: Cobrador Sector Assigned
+      summary: A cobrador was assigned to or removed from a sector
+      contentType: application/json
+      payload:
+        type: object
+        required:
+          - cobradorId
+          - sectorId
+          - validFrom
+          - changedBy
+        properties:
+          cobradorId:
+            type: string
+            format: uuid
+            description: UUID of the cobrador being assigned
+          sectorId:
+            type: string
+            format: uuid
+            description: UUID of the sector receiving the assignment
+          validFrom:
+            type: string
+            format: date
+            description: Date from which this assignment becomes active (ISO 8601)
+          validTo:
+            type: string
+            format: date
+            nullable: true
+            description: Date the assignment ends; null for open-ended (currently active)
+          changedBy:
+            type: string
+            format: uuid
+            description: UUID of the user who made this assignment change
+
+    # CRM Phone Messages
+    CrmPhoneStateEvent:
+      name: CrmPhoneStateEvent
+      title: CRM Phone State Changed
+      summary: A phone driven by sisf-crm changed connection state
+      contentType: application/json
+      headers:
+        type: object
+        required:
+          - Event-Type
+          - Aggregate-Id
+        properties:
+          Event-Type:
+            type: string
+            const: crm.phone.state.v1
+          Aggregate-Id:
+            type: string
+            description: The phone id (same value as Phone)
+      payload:
+        type: object
+        additionalProperties: false
+        required:
+          - Phone
+          - From
+          - To
+          - At
+        properties:
+          Phone:
+            type: string
+            minLength: 1
+            description: |
+              The phone id: the name of the messaging channel it serves
+              (e.g. whatsapp). Never a credential.
+          From:
+            type: string
+            enum: [open, connecting, closed, unknown]
+            description: State at the previous refresh (unknown when never seen)
+          To:
+            type: string
+            enum: [open, connecting, closed, unknown]
+            description: State at this refresh
+          At:
+            type: string
+            format: date-time
+            description: When the refresh observed the change (RFC 3339, UTC)

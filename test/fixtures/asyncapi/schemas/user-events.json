@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://api.funerariafrancana.com.br/schemas/user-events.json",
+  "title": "User Event Schemas",
+  "description": "JSON Schema definitions for user lifecycle JetStream events",
+
+  "$defs": {
+    "UserCreatedEvent": {
+      "description": "Registration announcement published on user.events.created by registration-service (internal/infrastructure/events/user_created.go, payload application.UserCreatedEvent) once a portal account is provisioned and bound to its Firebird contributor.",
+      "type": "object",
+      "required": [
+        "firebird_cod_contribuinte",
+        "firebird_seq_contribuinte",
+        "user_id",
+        "user_type",
+        "email",
+        "created_at"
+      ],
+      "properties": {
+        "firebird_cod_contribuinte": {
+          "type": "integer",
+          "description": "Firebird contributor code (COD_CONTRIBUINTE)"
+        },
+        "firebird_seq_contribuinte": {
+          "type": "integer",
+          "description": "Firebird contributor sequence (SEQ_CONTRIBUINTE)"
+        },
+        "firebird_cod_dependente": {
+          "type": "integer",
+          "description": "Firebird dependent code. Present only when user_type is dependente; omitted (never null) for a titular."
+        },
+        "user_id": {
+          "type": "string",
+          "description": "Keycloak subject of the provisioned account"
+        },
+        "user_type": {
+          "type": "string",
+          "enum": ["titular", "dependente"],
+          "description": "Holder kind the account was bound as"
+        },
+        "email": {
+          "type": "string",
+          "format": "email"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time",
+          "description": "RFC 3339 instant the account was created"
+        }
+      },
+      "if": {
+        "properties": { "user_type": { "const": "dependente" } },
+        "required": ["user_type"]
+      },
+      "then": { "required": ["firebird_cod_dependente"] },
+      "else": { "not": { "required": ["firebird_cod_dependente"] } },
+      "additionalProperties": false
+    },
+
+    "UserEvent": {
+      "type": "object",
+      "required": ["type", "user_id", "email", "status", "timestamp"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["created", "updated"],
+          "description": "Event type discriminator"
+        },
+        "user_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "Keycloak user ID"
+        },
+        "email": {
+          "type": "string",
+          "format": "email"
+        },
+        "status": {
+          "type": "string",
+          "description": "User account status"
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 event timestamp"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "PasswordResetRequestedEvent": {
+      "type": "object",
+      "required": ["user_id", "email", "token", "requested_at"],
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "email": {
+          "type": "string",
+          "format": "email"
+        },
+        "token": {
+          "type": "string",
+          "description": "Password reset token"
+        },
+        "requested_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "PasswordChangedEvent": {
+      "type": "object",
+      "required": ["user_id", "email", "changed_at"],
+      "properties": {
+        "user_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "email": {
+          "type": "string",
+          "format": "email"
+        },
+        "changed_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}
