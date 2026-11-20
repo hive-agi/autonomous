@@ -1,0 +1,51 @@
+{
+  "$schema" : "https://json-schema.org/draft/2020-12/schema",
+  "$id" : "https://api.funerariafrancana.com.br/schemas/first-access.json",
+  "title" : "registration.v1 first access events",
+  "description" : "GERADO por bin/check-first-access-contract --write a partir de libs/funeraria-domain-spec/modules/registration/proto/registration/v1/first_access.proto. Nao editar: a mudanca entra no proto.",
+  "x-module-version" : "0.1.0",
+  "$defs" : {
+    "UserCreatedEvent" : {
+      "description" : "Publicado em user.events.created quando o primeiro acesso cria uma conta. O profile-service consome e cria o perfil a partir destas chaves.",
+      "type" : "object",
+      "required" : [ "firebird_cod_contribuinte", "firebird_seq_contribuinte", "user_id", "user_type", "email", "created_at" ],
+      "properties" : {
+        "firebird_cod_contribuinte" : {
+          "type" : "integer",
+          "format" : "int32",
+          "description" : "Codigo do contribuinte no cadastro legado."
+        },
+        "firebird_seq_contribuinte" : {
+          "type" : "integer",
+          "format" : "int32",
+          "description" : "Sequencia do contribuinte no cadastro legado."
+        },
+        "firebird_cod_dependente" : {
+          "type" : "integer",
+          "format" : "int32",
+          "description" : "Codigo do dependente. Presente so para dependente."
+        },
+        "user_id" : {
+          "type" : "string",
+          "description" : "Id do usuario no Keycloak."
+        },
+        "user_type" : {
+          "$ref" : "#/$defs/UserType"
+        },
+        "email" : {
+          "type" : "string",
+          "description" : "E-mail do cadastro, sem mascara: o consumidor e interno."
+        },
+        "created_at" : {
+          "type" : "string",
+          "format" : "date-time"
+        }
+      }
+    },
+    "UserType" : {
+      "description" : "Quem pede acesso, na relacao com o contrato.",
+      "type" : "string",
+      "enum" : [ "titular", "dependente" ]
+    }
+  }
+}
