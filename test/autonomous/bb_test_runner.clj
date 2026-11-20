@@ -22,6 +22,8 @@
     autonomous.openapi-test
     autonomous.openapi-codec-test
     autonomous.openapi-invoke-test
+    autonomous.asyncapi-core-test
+    autonomous.asyncapi-source-test
     autonomous.bb-mcp.mount-test])
 
 (defn -main [& _]
