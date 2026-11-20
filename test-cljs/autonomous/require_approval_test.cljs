@@ -30,6 +30,20 @@
       (settle-then (:pending r)
                    (fn [s] (is (= {:ok {:paid 7}} s)) (is (= 1 @runs)) (done))))))
 
+(defrecord ThrowingAsker []
+  approval/Asker
+  (-ask! [_ _] (throw (js/Error. "asker down"))))
+
+(deftest a-failing-asker-refuses-on-js
+  (async done
+    (install! [] 1000)
+    (a/decorate! (a/each-tool (decorator/require-approval {:asker (->ThrowingAsker) :timeout-ms 1000})))
+    (settle-then (:pending (call))
+                 (fn [s]
+                   (is (= :approval-error (get-in s [:error :type])))
+                   (is (zero? @runs))
+                   (done)))))
+
 (deftest deny-and-timeout-never-run-on-js
   (async done
     (install! [{:decision :deny :approver "bob"}] 1000)
