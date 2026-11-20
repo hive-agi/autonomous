@@ -33,12 +33,22 @@
 
 (def redacted "<redacted>")
 
+(defn- mask-path
+  "`m` with the value at `path` replaced by `replacement` when present;
+   the empty path is `m` itself. An absent path adds no key."
+  [replacement m path]
+  (cond
+    (empty? path)                            replacement
+    (= ::absent (get-in m path ::absent))    m
+    :else                                    (assoc-in m path replacement)))
+
 (defn redact-paths
-  "`m` with the value at every present path of `paths` replaced by
-   `redacted`."
-  [m paths]
-  (reduce (fn [m p] (if (= ::absent (get-in m p ::absent)) m (assoc-in m p redacted)))
-          m paths))
+  "`m` with the value at every present path of `paths` (vectors of keys or
+   indices) replaced by `replacement`, default `redacted`. Absent paths
+   add nothing; the empty path replaces `m` itself."
+  ([m paths] (redact-paths m paths redacted))
+  ([m paths replacement]
+   (reduce (partial mask-path replacement) m paths)))
 
 (defn call-entry
   "The CallEntry of a call of `tool-name` with `args` by `grant` that ended in

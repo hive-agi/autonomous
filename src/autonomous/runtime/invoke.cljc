@@ -1,8 +1,8 @@
 (ns autonomous.runtime.invoke
   "Pipeline stratum: carry out the Plan the domain decided.
 
-   collect snapshot -> promote (decision/plan-*) -> run through middleware and
-   `invoke-kind` -> settle the value into an Answer -> journal it.
+   collect snapshot -> promote (decision/plan-*) -> run the surface's call
+   chain around `invoke-kind` -> settle the value into an Answer -> journal it.
 
    `invoke-kind` is the open seam (OCP): an adapter adds a tool kind with
    one defmethod and nothing here changes."
@@ -11,12 +11,25 @@
             [autonomous.domain.journal :as journal]
             [autonomous.domain.wire :as wire]
             [autonomous.runtime.registry :as registry]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [autonomous.runtime.chain :as chain]
+            [autonomous.decorator :as decorator]))
 
 (defmulti invoke-kind
   "Run `tool` with decoded `args` for `grant`. Answer a value, or a promise or
    future of one. Dispatches on the tool's :kind."
   (fn [tool _args _grant] (:kind tool)))
+
+(defn return-answer
+  "L2 Pipeline: distinguish an adapter's Answer from an ordinary tool
+   payload (which can itself be a map containing :ok or :error)."
+  [a]
+  (vary-meta a assoc ::answer true))
+
+(defn invocation-answer?
+  "L2 Pipeline: has the invoke-kind method supplied a complete Answer?"
+  [value]
+  (true? (::answer (meta value))))
 
 (defmethod invoke-kind :fn [tool args grant]
   ((:handler tool) args grant))
@@ -54,46 +67,67 @@
     (ex-cause t)
     t))
 
+(defn- normalize
+  "L2 Pipeline: an Ok value in wire form; Pending and refusals unchanged."
+  [a]
+  (if (answer/ok? a) (answer/ok (wire/->wire (:ok a))) a))
+
 (defn- settle-later!
-  "Park thenable `x`; its outcome becomes the parked answer and a journal
-   entry (:autonomous/settled), so the ledger knows how an async call ended.
-   The entry follows the app's CallDetail as it is when the call settles."
-  [x]
+  "Park thenable `x`; its value, through `project` (raw -> Answer), becomes
+   the parked answer and a journal entry (:autonomous/settled), so the
+   ledger knows how an async call ended. The entry follows the app's
+   CallDetail as it is when the call settles."
+  [x project]
   (let [id      (registry/park!)
         settle! (fn [a]
                   (registry/settle! id a)
                   (registry/record! (journal/settled-entry id a (:call-detail (registry/snapshot)))))]
     #?(:cljs    (-> ^js x
-                    (.then (fn [v] (settle! (answer/ok (wire/->wire v)))))
+                    (.then (fn [v] (settle! (normalize (project v)))))
                     (.catch (fn [e] (settle! (answer/from-exception e)))))
        :default (future
-                  (settle! (try (answer/ok (wire/->wire (deref x)))
+                  (settle! (try (normalize (project (deref x)))
                                 (catch Throwable t
                                   (answer/from-exception (unwrap-deref-failure t)))))))
     (answer/pending id)))
 
 (defn settle
-  "Answer for tool value `x`: Ok now, or Pending when it is still being
-   computed. Tool values are opaque, so an :ok key in one is not unwrapped."
-  [x]
-  (if (thenable? x) (settle-later! x) (answer/ok (wire/->wire x))))
+  "L2 Pipeline: a plain return becomes Ok, a thenable becomes Pending,
+   and an Answer the invoke-kind method marks complete
+   (invocation-answer?) keeps its variant. Tool values are opaque, so an
+   :ok key in one is not unwrapped. `project` (raw -> Answer, default
+   answer/ok) maps every Ok value, direct or settled later, before wire
+   normalization."
+  ([x] (settle x answer/ok))
+  ([x project]
+   (cond
+     (invocation-answer? x) (normalize (answer/bind x project))
+     (thenable? x)          (settle-later! x project)
+     :else                  (normalize (project x)))))
 
-(defn- run-invoke [{:keys [tool args]} grant middleware]
-  (try
-    (let [h (reduce (fn [h mw] (mw h)) invoke-kind middleware)]
-      (settle (h tool args grant)))
-    (catch #?(:clj Throwable :cljs :default) e
-      (answer/from-exception e))))
+(defn- terminal
+  "L2 Pipeline: the chain's terminal over context {:tool :args :grant}:
+   use! wrappers around invoke-kind, settled through the tool's output
+   projection (autonomous.decorator/project-output)."
+  [{:keys [tool args grant] :as ctx}]
+  (settle ((chain/handler ctx invoke-kind) tool args grant)
+          (partial decorator/project-output tool)))
+
+(defn- run-invoke
+  "L2 Pipeline: the Answer of `plan` run through call chain `links`.
+   What any stage throws becomes a refusal (autonomous.runtime.chain)."
+  [{:keys [tool args]} grant links]
+  (chain/run links {:tool tool :args args :grant grant} terminal))
 
 (defn call!
-  "Plan and run a call of `tool-name` with `args` for `grant`; journal the
-   actor and outcome. Answers an Answer."
+  "Plan and run a call of `tool-name` with `args` for `grant` through the
+   surface's call chain; journal the actor and outcome. Answers an Answer."
   [tool-name args grant]
   (let [t0   (registry/now-ms)
         snap (registry/snapshot)
         plan (decision/plan-call snap tool-name args grant t0)
         ans  (case (:plan/action plan)
-               :invoke (run-invoke plan grant (:middleware snap))
+               :invoke (run-invoke plan grant (:interceptors snap))
                :refuse (:refusal plan))]
     (registry/record! (journal/call-entry tool-name args grant ans (- (registry/now-ms) t0)
                                           (:call-detail snap)))

@@ -13,13 +13,14 @@
    Opt-in is mandatory: only a route (or one method of it) whose data says
    `:autonomous {:expose true}` becomes a tool. Pure apart from the lazy
    resolution of reitit; answers {:ok surface} or a refusal, never throws."
-  (:require [autonomous.domain.affordance :as affordance]
-            [autonomous.domain.answer :as answer]
+  (:require [autonomous.domain.answer :as answer]
             [autonomous.domain.schema :as s]
             [autonomous.spi :as spi]
             [clojure.string :as str]
             [malli.core :as m]
-            [malli.error :as me]))
+            [malli.error :as me]
+            [autonomous.surface :as surface]
+            [autonomous.ring.exchange :as exchange]))
 
 (def http-methods
   "Method keys of reitit-ring route data."
@@ -153,86 +154,82 @@
 
 (defn route->spec
   "Ok of the ToolSpec of route entry `e` (kind :ring/route), or a refusal.
-   The description comes from `:autonomous {:description}`, the route's
-   :description or :summary, else the method and path. `:autonomous
-   {:scope s}` (or :scopes) replaces the default scopes (read for GET,
-   write otherwise); `:autonomous {:result f}` replaces the default
-   response-to-answer fn for this route."
+   :autonomous accepts :description, :result, :output, :scope(s), :id,
+   :title, :name and :read-only?; other metadata comes from route data."
   [e several-methods?]
   (let [{:keys [path method data]} e
         auto (:autonomous data)
         id   (route-id e several-methods?)
         ps   (compile-parameters id (:parameters data))]
-    (if (answer/refused? ps)
-      ps
-      (answer/ok
-       (cond-> {:id             id
-                :kind           :ring/route
-                :description    (or (:description auto) (:description data) (:summary data)
-                                    (str (str/upper-case (name method)) " " path))
-                :input          (get-in ps [:ok :input])
-                :read-only?     (if (contains? auto :read-only?)
-                                  (boolean (:read-only? auto))
-                                  (contains? read-only-methods method))
-                :ring/method    (if (= :any method)
-                                  (if (get-in data [:parameters :body]) :post :get)
-                                  method)
-                :ring/path      path
-                :ring/placement (get-in ps [:ok :placement])}
-         (scopes-of auto) (assoc :scopes (scopes-of auto))
-         (:title auto)    (assoc :title (:title auto))
-         (:name auto)     (assoc :name (:name auto))
-         (:result auto)   (assoc :ring/result (:result auto)))))))
+    (answer/bind ps
+      (fn [{:keys [input placement]}]
+        (answer/ok
+         (cond-> {:id id :kind :ring/route
+                  :description (or (:description auto) (:description data) (:summary data)
+                                   (str (str/upper-case (name method)) " " path))
+                  :input input
+                  :read-only? (if (contains? auto :read-only?)
+                                (boolean (:read-only? auto))
+                                (contains? read-only-methods method))
+                  :ring/method (if (= :any method)
+                                 (if (get-in data [:parameters :body]) :post :get)
+                                 method)
+                  :ring/path path :ring/placement placement}
+           (scopes-of auto) (assoc :scopes (scopes-of auto))
+           (:title auto) (assoc :title (:title auto))
+           (:name auto) (assoc :name (:name auto))
+           (:output auto) (assoc :output (:output auto))
+           (:result auto) (assoc :ring/result (:result auto))))))))
 
 ;; =============================================================================
 ;; The surface value
 ;; =============================================================================
 
 (defn compile-surface
-  "Ok {:app :tools {mcp-name Tool} :resources {}} of tool `specs` ([[id
-   spec] ...]), each compiled by autonomous.domain.affordance/->tool. A
-   name two tools would share is refused (:name-clash), as the registry
-   refuses it."
-  [app specs]
-  (if-let [e (m/explain s/AppInfo app)]
-    (answer/refusal :invalid-app "invalid :app info" (me/humanize e))
-    (reduce (fn [acc [id spec]]
-              (let [t (affordance/->tool id spec)
-                    n (get-in t [:ok :name])]
-                (cond
-                  (answer/refused? t) (reduced t)
-                  (contains? (get-in acc [:ok :tools]) n)
-                  (reduced (answer/refusal :name-clash (str "tool name " n " is derived twice")
-                                           {:ids [(get-in acc [:ok :tools n :id]) id]}))
-                  :else (assoc-in acc [:ok :tools n] (:ok t)))))
-            (answer/ok {:app app :tools {} :resources {}})
-            specs)))
+  "L3 Promote: compile tool specs for a Ring surface."
+  ([app specs] (compile-surface app specs []))
+  ([app specs interceptors]
+   (if-let [e (m/explain s/AppInfo app)]
+     (answer/refusal :invalid-app "invalid :app info" (me/humanize e))
+     (answer/let-answer [tools (surface/compile-tools specs)]
+       (surface/->surface {:app app :tools tools :interceptors interceptors})))))
 
 (defn routes->specs
-  "Ok [[id spec] ...] of every exposed route entry of `routes`."
+  "L3 Promote: Ok of [id ToolSpec] pairs for the opted-in routes."
   [routes]
   (let [entries (filter (comp exposed? :data) (route-entries routes))
-        per     (frequencies (map :path entries))]
-    (reduce (fn [acc e]
-              (let [sp (route->spec e (< 1 (per (:path e))))]
-                (if (answer/refused? sp)
-                  (reduced sp)
-                  (update acc :ok conj [(get-in sp [:ok :id]) (:ok sp)]))))
-            (answer/ok [])
-            entries)))
+        per (frequencies (map :path entries))]
+    (answer/reduce-answer
+     (fn [specs entry]
+       (answer/let-answer [spec (route->spec entry (< 1 (per (:path entry))))]
+         (answer/ok (conj specs [(:id spec) spec]))))
+     [] entries)))
 
-(defmethod spi/derive-surface :autonomous.ring/routes [_ routes opts]
-  (let [specs (routes->specs routes)]
-    (if (answer/refused? specs)
-      specs
-      (compile-surface (or (:app opts) {:name "app"})
-                       (concat (:ok specs) (seq (:tools opts)))))))
+(defn- explicit-surface
+  "L3 Promote: compile the derived and explicit tools together."
+  [opts derived]
+  (compile-surface (:app opts {:name "app"})
+                   (concat derived (:tools opts))
+                   (:interceptors opts [])))
 
-(defmethod spi/derive-surface :autonomous.reitit/router [_ router opts]
+(defn- route-surface
+  "L3 Source: project an explicit sequence of Ring routes."
+  [routes opts]
+  (answer/bind (routes->specs routes) #(explicit-surface opts %)))
+
+(defn- router-surface
+  "L3 Collect: read the optional reitit router, then project its routes."
+  [router opts]
   (if-let [routes (try (requiring-resolve 'reitit.core/routes) (catch Exception _absent nil))]
-    (spi/derive-surface :autonomous.ring/routes (routes router) opts)
+    (route-surface (routes router) opts)
     (answer/refusal :ring/no-reitit
-                    "reitit is not on the classpath: add metosin/reitit-core, or pass :routes [[path data] ...]")))
+                    "add metosin/reitit-core, or pass :routes [[path data] ...]")))
 
-(defmethod spi/derive-surface :autonomous/tools [_ _ opts]
-  (compile-surface (or (:app opts) {:name "app"}) (seq (:tools opts))))
+(def reitit-adapter
+  "L3 reitit projection plus Ring's in-process codec and host port."
+  {:source-kind :autonomous.reitit/router :derive router-surface
+   :kind :ring/route :codec exchange/route-codec :invoke exchange/invoke-request})
+
+(spi/register-adapter! reitit-adapter)
+(spi/register-adapter! {:source-kind :autonomous.ring/routes :derive route-surface})
+(spi/register-adapter! {:source-kind :autonomous/tools :derive (fn [_ opts] (explicit-surface opts []))})
