@@ -67,6 +67,18 @@
       (is (contains? (:tools (registry/-surface rt)) "g_one"))))
   (a/reset-registry!))
 
+(deftest a-reload-keeps-the-default-state-under-a-current-runtime
+  (a/reset-registry!)
+  (a/reg-tool :r/kept (spec :kept))
+  (let [state-before (:state registry/default-runtime)]
+    (require 'autonomous.runtime.registry :reload)
+    (is (registry/runtime? registry/default-runtime)
+        "the default runtime is an instance of the reloaded record")
+    (is (identical? state-before (:state registry/default-runtime)) "the state atom survives")
+    (is (contains? (:tools (registry/surface-value)) "r_kept") "and so do the registrations")
+    (is (= {:ok :kept} (a/rpc {:op :call :tool "r_kept" :actor "a" :scopes [:write]}))))
+  (a/reset-registry!))
+
 (deftest instance-is-make-runtime-and-clear-resets-both-halves
   (let [rt (registry/instance {:app {:name "x"} :tools {} :resources {} :interceptors []})]
     (is (registry/runtime? rt))

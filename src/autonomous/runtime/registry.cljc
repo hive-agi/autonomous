@@ -86,10 +86,19 @@
                         :problems (get-in s [:error :data])})))
      (->Runtime (atom (holding (fresh-state) (:ok s)))))))
 
-(defonce ^{:doc "The ONE process-wide runtime the facade API (reg-tool, reg-resource,
-   use!, the re-frame adapter) acts on. Adapters that own their instance
-   (autonomous.ring) never touch it."} default-runtime
-  (make-runtime))
+(defonce ^{:doc "The state atom of `default-runtime`. Only the ATOM is defonce: a
+   reload redefines the Runtime record and the IRuntime protocol, so a
+   defonce'd record instance would be of the old class and fail protocol
+   dispatch. The registrations survive the reload in this atom."}
+  default-state
+  (:state (make-runtime)))
+
+(def ^{:doc "The ONE process-wide runtime the facade API (reg-tool, reg-resource,
+   use!, the re-frame adapter) acts on: a Runtime of the current record
+   class over `default-state`, rebuilt on every load of this namespace.
+   Adapters that own their instance (autonomous.ring) never touch it."}
+  default-runtime
+  (->Runtime default-state))
 
 ;; =============================================================================
 ;; State seam: the global is only the DEFAULT instance
@@ -198,7 +207,11 @@
     (:name tool)))
 
 (defn remove-tool!
-  "Unregister the tool with id or MCP name `x` (its registered name)."
+  "Unregister the tool with id or MCP name `x` (its registered name).
+   The name is the one given at registration, before decorators: under
+   (prefix-names \"app_\") remove :t/echo or \"t_echo\". The exposed name
+   \"app_t_echo\" matches nothing in the registered surface, so removing
+   by it is a no-op, not an error. Prefer the id."
   [x]
   (update-base! #(answer/ok (surface/drop-tools % [x]))))
 

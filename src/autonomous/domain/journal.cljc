@@ -45,7 +45,9 @@
 (defn redact-paths
   "`m` with the value at every present path of `paths` (vectors of keys or
    indices) replaced by `replacement`, default `redacted`. Absent paths
-   add nothing; the empty path replaces `m` itself."
+   add nothing; the empty path replaces `m` itself. Give it a wire-form
+   value (wire/->wire): an index into a seq or list is not a path there,
+   so a secret under one would be reported absent and kept."
   ([m paths] (redact-paths m paths redacted))
   ([m paths replacement]
    (reduce (partial mask-path replacement) m paths)))
