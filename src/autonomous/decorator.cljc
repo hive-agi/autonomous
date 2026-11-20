@@ -89,6 +89,17 @@
    :actor   (shown-actor (:actor grant))
    :session (:session grant)})
 
+(defn- strip-approval
+  "L1 Promote: `v` without :autonomous/approval metadata."
+  [v]
+  (if (contains? (meta v) :autonomous/approval) (vary-meta v dissoc :autonomous/approval) v))
+
+(defn- unstamped
+  "L1 Pipeline: an ungated tool's value `x`, now or once computed, with no
+   :autonomous/approval metadata, so only the gate can journal an approval."
+  [x]
+  (if (thenable/thenable? x) (thenable/chain x strip-approval) (strip-approval x)))
+
 (defn gate
   "L1 Pipeline: (run) for a tool without require-approval; else a thenable
    of the complete Answer the human's Decision leads to (see
@@ -98,7 +109,7 @@
   (if-let [{:keys [asker timeout-ms]} (::approval tool)]
     (thenable/chain (approval/ask! asker (approval-request tool args grant redact) timeout-ms)
                     (partial decided run))
-    (run)))
+    (unstamped (run))))
 
 (defn each-tool
   "L1 lift: Tool -> Tool fn `f` as a Surface -> Surface fn applying it to
