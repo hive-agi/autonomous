@@ -53,7 +53,8 @@
   (let [srv (:srv @st)]
     (boolean (and srv (string? tool-name)
                   (or (contains? (:builtins srv) tool-name)
-                      (answer/ok? (fleet/route-tool (:fleet srv) tool-name)))))))
+                      ;; ownership is the prefix alone: no actor's listing is needed
+                      (answer/ok? (fleet/route-tool (:fleet srv) nil tool-name)))))))
 
 (defn call
   "CallToolResult of `tool-name` with `params`, as the acting agent, keeping
@@ -76,12 +77,24 @@
   [st]
   (server/tools-fingerprint (:srv @st) (session-of st (:actor @st))))
 
+(defn- latest-by-target
+  "{target-id status} of the fleet's last probes, which are kept per
+   [target actor]: a target's status is that of its most recent probe by
+   any actor, an :up one winning a tie. One agent refused by a remote thus
+   degrades nobody once another agent reaches it later."
+  [last-probes]
+  (let [rank   (fn [pr] [(:at pr 0) (if (= :up (:status pr)) 1 0)])
+        newest (reduce (fn [acc [[tid _actor] pr]]
+                         (if (and (acc tid) (neg? (compare (rank pr) (rank (acc tid))))) acc (assoc acc tid pr)))
+                       {} last-probes)]
+    (into (sorted-map) (map (fn [[tid pr]] [tid (:status pr)])) newest)))
+
 (defn- health-of
-  "Health from the last look at every target: :ok all up (or none looked
-   at yet), :degraded some down or slow."
+  "Health from the last look at every target (see `latest-by-target`): :ok
+   all up (or none looked at yet), :degraded some down or slow. :details
+   :status is keyed by target id."
   [srv]
-  (let [last-probes @(get-in srv [:fleet :last])
-        status      (into (sorted-map) (map (fn [[tid pr]] [tid (:status pr)])) last-probes)]
+  (let [status (latest-by-target @(get-in srv [:fleet :last]))]
     {:status  (if (every? #{:up} (vals status)) :ok :degraded)
      :details {:apps (get-in srv [:fleet :order]) :status status}}))
 
