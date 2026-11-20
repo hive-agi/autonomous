@@ -148,6 +148,16 @@
     (is (not (re-find #"\p{Cntrl}" (:actor seen))))
     (is (.startsWith ^String (:actor seen) "evil[2J"))))
 
+(deftest a-timeout-at-or-past-the-pending-ttl-is-refused
+  (let [asker (approval/queue-asker [])
+        make  #(decorator/require-approval {:asker asker :timeout-ms %})]
+    (is (< decorator/max-approval-ms registry/pending-ttl-ms) "a margin below the pending TTL")
+    (is (fn? (make (dec decorator/max-approval-ms))))
+    (doseq [ms [decorator/max-approval-ms registry/pending-ttl-ms (* 2 registry/pending-ttl-ms)]]
+      (is (= :invalid-approval (try (make ms) nil
+                                    (catch clojure.lang.ExceptionInfo e (:autonomous/error (ex-data e)))))
+          ms))))
+
 (deftest bad-options-throw-at-construction
   (is (thrown? clojure.lang.ExceptionInfo (decorator/require-approval {:asker :nope :timeout-ms 10})))
   (is (thrown? clojure.lang.ExceptionInfo

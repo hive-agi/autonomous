@@ -21,6 +21,12 @@
                     {:autonomous/error :invalid-scope :scope scope})))
   (fn [tool] (update tool :scopes conj scope)))
 
+(def max-approval-ms
+  "L1: require-approval's :timeout-ms must stay below this: the runtime's
+   pending TTL (autonomous.runtime.registry/pending-ttl-ms, 10 minutes)
+   less a one-minute margin, so an approved call's result is collectable."
+  (* 9 60 1000))
+
 (defn require-approval
   "L1 Tool -> Tool: every call waits for a human's Verdict from `asker`
    (autonomous.approval/Asker) and is Pending meanwhile. Approve runs the
@@ -28,8 +34,9 @@
    `timeout-ms` refuses :approval-timeout, and neither runs it. Throws
    ex-info :autonomous/error :invalid-approval on a bad option."
   [{:keys [asker timeout-ms] :as opts}]
-  (when-not (and (approval/asker? asker) (pos-int? timeout-ms))
-    (throw (ex-info "require-approval needs an Asker :asker and a positive :timeout-ms"
+  (when-not (and (approval/asker? asker) (pos-int? timeout-ms) (< timeout-ms max-approval-ms))
+    (throw (ex-info (str "require-approval needs an Asker :asker and a :timeout-ms in 1.."
+                         (dec max-approval-ms))
                     {:autonomous/error :invalid-approval :opts (dissoc opts :asker)})))
   (fn [tool] (assoc tool ::approval {:asker asker :timeout-ms timeout-ms})))
 
