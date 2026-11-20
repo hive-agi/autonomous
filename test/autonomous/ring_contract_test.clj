@@ -40,32 +40,43 @@
    :input [:map [:text :string]] :output [:map [:text :string]]})
 
 (defn fixture
-  "An in-process Ring host; its human port is the handler, not the codec."
-  []
-  (let [handler (get-in (todo-route) [1 :post :handler])
-        parse-body (fn [request]
-                     (cond-> request (:body request)
-                       (assoc :body-params (json/read-json (slurp (:body request))))))
-        app (comp handler parse-body)
-        human (handler {:body-params {:text "human"}})
-        host (fn [tool input grant]
-               (exchange/invoke-request (assoc tool :ring/handler app) input grant))
-        mounted (ring-handler/wrap-autonomous handler {:routes [(todo-route) (hidden-route)]})]
-    {:source [(todo-route) (hidden-route)]
-     :unexposed-source [(hidden-route)]
-     :empty-source []
-     :exposed-tools #{"todos_create"}
-     :samples {"todos_create" {:text "milk"}}
-     :human-call (constantly human)
-     :mount (fn [] (mounted {:uri "/todos" :request-method :post :body-params {:text "human"}}))
-     :host host
-     :grant {:actor "contract" :scopes #{:write}}
-     :generated-samples 4}))
+  "An in-process Ring host; its human port is the handler, not the codec.
+   `wrap` is what :mount puts in front of the handler (default
+   wrap-autonomous); :human-call sends the human's request to whatever
+   app is serving, the bare handler before :mount and the wrapped app
+   after it."
+  ([] (fixture #(ring-handler/wrap-autonomous % {:routes [(todo-route) (hidden-route)]})))
+  ([wrap]
+   (let [handler (get-in (todo-route) [1 :post :handler])
+         parse-body (fn [request]
+                      (cond-> request (:body request)
+                        (assoc :body-params (json/read-json (slurp (:body request))))))
+         app (comp handler parse-body)
+         human-request {:uri "/todos" :request-method :post :body-params {:text "human"}}
+         host (fn [tool input grant]
+                (exchange/invoke-request (assoc tool :ring/handler app) input grant))
+         serving (atom handler)]
+     {:source [(todo-route) (hidden-route)]
+      :unexposed-source [(hidden-route)]
+      :empty-source []
+      :exposed-tools #{"todos_create"}
+      :samples {"todos_create" {:text "milk"}}
+      :human-call #(@serving human-request)
+      :mount #(reset! serving (wrap handler))
+      :host host
+      :grant {:actor "contract" :scopes #{:write}}
+      :generated-samples 4})))
 
 (deftest ring-routes-adapter-satisfies-the-contract
   (let [report (contract/check-adapter route-adapter (fixture))]
     (contract/assert-contract report)
     (is (:ok? report))))
+
+(deftest a-mount-that-changes-the-human-path-fails-the-contract
+  (let [hijack (fn [_] (fn [_] {:status 403 :body "agents only"}))
+        report (contract/check-adapter route-adapter (fixture hijack))]
+    (is (false? (:ok? (first (filter #(= :human-code-path (:check %)) (:checks report)))))
+        "human-code-path calls the human path after the mount, not a value taken before it")))
 
 (deftest ring-codec-refuses-non-answers-and-exceptions
   (let [broken {:encode (fn [_ _] (throw (ex-info "bad encode" {})))
