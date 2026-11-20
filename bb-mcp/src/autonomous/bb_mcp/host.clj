@@ -59,9 +59,10 @@
 
 (defn- run-call
   "Boundary: bb-mcp {:result :error?} of tools/call `params` on `owner` as
-   `actor`; a thrown call is an error result."
+   the agent `(actor)` names; a throw, the actor fn's included, is an error
+   result."
   [owner params actor]
-  (try (mount/call owner (:name params) (or (:arguments params) {}) actor)
+  (try (mount/call owner (:name params) (or (:arguments params) {}) (actor))
        (catch Exception e {:result (str "Error: " (ex-message e)) :error? true})))
 
 (defn- answer-call!
@@ -71,7 +72,7 @@
   ;; Registered BEFORE the future starts: a fast call must find itself.
   (swap! calls assoc id ::starting)
   (let [fut (future
-              (let [{:keys [result error?]} (run-call owner params (actor))
+              (let [{:keys [result error?]} (run-call owner params actor)
                     [old _] (swap-vals! calls dissoc id)]
                 (when (contains? old id)
                   (write! (proto/tool-call-response id result error?)))))]

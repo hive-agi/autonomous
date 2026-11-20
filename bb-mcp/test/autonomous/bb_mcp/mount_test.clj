@@ -144,6 +144,20 @@
       (is (false? (get-in rs [3 :result :isError])))
       (is (re-find #"ling-3" (get-in rs [3 :result :content 0 :text]))))))
 
+(deftest a-throwing-actor-fn-answers-an-error-and-forgets-the-call
+  (let [out (atom [])
+        t   (host/mounted (queue-transport [{:jsonrpc "2.0" :id 9 :method "tools/call"
+                                             :params {:name "todo__todo_add" :arguments {}}}]
+                                           out)
+                          [(started two-apps)]
+                          {:actor #(throw (ex-info "no id" {})) :watch-ms 0})]
+    (is (nil? (proto/read-msg t)))
+    (loop [n 0] (when (and (< n 100) (empty? @out)) (Thread/sleep 20) (recur (inc n))))
+    (is (= 9 (:id (first @out))))
+    (is (true? (get-in (first @out) [:result :isError])))
+    (is (re-find #"no id" (get-in (first @out) [:result :content 0 :text])))
+    (is (= {} @(:calls t)))))
+
 (deftest a-host-tool-is-never-shadowed
   (is (= [{:name "bash"} {:name "x__y"}]
          (get-in (host/with-tools {:result {:tools [{:name "bash"}]}} [{:name "bash" :d 1} {:name "x__y"}])
