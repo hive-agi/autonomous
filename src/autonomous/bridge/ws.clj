@@ -91,6 +91,18 @@
   (let [l (str (or (:runtime/label frame) "websocket runtime"))]
     (subs l 0 (min 120 (count l)))))
 
+(defn- unauthorized
+  "Promote: the :auth/unauthorized refusal of a hello whose token does not
+   grant the runtime scope."
+  []
+  (answer/refusal :auth/unauthorized "this token does not grant the runtime scope"))
+
+(defn- authenticated
+  "Promote: authenticate result `a` when it is an Ok or a Refusal; anything
+   else (nil, a Pending) is the :auth/unauthorized refusal."
+  [a]
+  (if (or (answer/ok? a) (answer/refused? a)) a (unauthorized)))
+
 (defn- runtime-grant
   "Promote: Ok of the grant whose scopes include :runtime itself, else an
    :auth/unauthorized refusal. :admin does not stand in: an agent's token
@@ -98,7 +110,7 @@
   [g]
   (if (contains? (set (:scopes g)) runtime-scope)
     (answer/ok g)
-    (answer/refusal :auth/unauthorized "this token does not grant the runtime scope")))
+    (unauthorized)))
 
 (defn- runtime-of
   "Promote: the directory row {:runtime/id :runtime/kind :runtime/label}
@@ -119,7 +131,7 @@
   [authenticate frame fresh-id]
   (if (not= :hello (:ws/type frame))
     (answer/refusal :ws/bad-frame "the first frame must be :hello")
-    (answer/let-answer [g (authenticate (:token frame))
+    (answer/let-answer [g (authenticated (authenticate (:token frame)))
                         g (runtime-grant g)]
       (answer/ok {:target  (:actor g)
                   :runtime (runtime-of frame fresh-id)}))))
