@@ -111,7 +111,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: bridge
-          image: ghcr.io/buddhilw/autonomous-bridge@BRIDGE_DIGEST
+          image: ghcr.io/buddhilw/autonomous-bridge@sha256:114f83146dc212638b236e9b4995a653824a2948baa7a088e1fee5797a652f62
           imagePullPolicy: IfNotPresent
           ports:
             - {name: ws, containerPort: 7890}
@@ -185,7 +185,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: todo
-          image: ghcr.io/buddhilw/autonomous-todo@TODO_DIGEST
+          image: ghcr.io/buddhilw/autonomous-todo@sha256:87593cf9071dc5c230b2f90ec1d481b956320c2fc15cab8afe211226618e1df5
           imagePullPolicy: IfNotPresent
           ports:
             - {name: http, containerPort: 8090}
