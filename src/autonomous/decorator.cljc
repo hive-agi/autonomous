@@ -3,7 +3,6 @@
    its input or output schema. Compose configured decorators with `comp`."
   (:require [autonomous.domain.answer :as answer]
             [autonomous.domain.journal :as journal]
-            [autonomous.domain.naming :as naming]
             [malli.core :as m]))
 
 (defn require-scope
@@ -33,16 +32,19 @@
     [new-name (assoc tool :name new-name)]))
 
 (defn- prefix-tools
-  "L1 Promote: rename all tools, or keep the original map if any name
-   would exceed MCP's name constraints. Never truncate or overwrite."
+  "L1 Promote: rename all tools. Never truncate or overwrite; a name the
+   prefix makes invalid stays in the result for validation to refuse."
   [prefix tools]
-  (let [renamed (into {} (map (partial prefixed-tool prefix)) tools)]
-    (if (every? naming/valid-tool-name? (keys renamed)) renamed tools)))
+  (into {} (map (partial prefixed-tool prefix)) tools))
 
 (defn prefix-names
   "L1 Surface -> Surface: prepend an exact string (e.g. \"fleet_\") to all
-   tool names. If any name would be invalid, leave the whole surface
-   unchanged. Resources retain their URIs and display names."
+   tool names. A name the prefix makes invalid (MCP's ToolName) is kept
+   as is, so autonomous.surface/decorate refuses the whole result and a
+   registration that would produce it throws, changing nothing. It never
+   falls back to the unprefixed names: decorators re-run on every
+   registration, and one bad name must not rename the whole surface back.
+   Resources retain their URIs and display names."
   [prefix]
   (fn [surface] (update surface :tools (partial prefix-tools prefix))))
 

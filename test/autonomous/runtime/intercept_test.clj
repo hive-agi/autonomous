@@ -138,6 +138,19 @@
     (is (thrown? clojure.lang.ExceptionInfo (a/reg-tool :t/late late-spec)))
     (is (= before (registry/snapshot)) "a refused registration changes nothing")))
 
+(def ^:private longest-name
+  "A valid tool name of exactly 64 characters: no prefix fits in front of it."
+  (apply str (repeat 64 "n")))
+
+(deftest a-name-the-prefix-breaks-refuses-the-registration-not-the-prefix
+  (a/decorate! (decorator/prefix-names "app_"))
+  (let [before (registry/snapshot)]
+    (is (thrown? clojure.lang.ExceptionInfo
+                 (a/reg-tool :t/long (assoc late-spec :name longest-name))))
+    (is (= before (registry/snapshot)) "the refused registration changes nothing")
+    (is (= #{"app_t_echo" "app_t_account" "app_t_later"} (tool-names))
+        "the surface keeps its prefixed names")))
+
 (deftest unregistering-follows-the-decorators
   (a/decorate! (decorator/prefix-names "app_"))
   (a/unreg-tool :t/echo)
