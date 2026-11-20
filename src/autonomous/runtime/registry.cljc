@@ -13,7 +13,8 @@
             [autonomous.domain.schema :as s]
             [malli.core :as m]
             [malli.error :as me]
-            [autonomous.surface :as surface]))
+            [autonomous.surface :as surface]
+            [autonomous.runtime.chain :as chain]))
 
 (def pending-ttl-ms (* 10 60 1000))
 
@@ -191,11 +192,37 @@
   (swap! (state-ref) #(bump (assoc-in % [:surface :app] info)))
   nil)
 
-(defn add-middleware!
-  "Wrap every invocation: `mw` is (fn [handler] (fn [tool args grant] ...))."
-  [mw]
-  (swap! (state-ref) update-in [:surface :middleware] (fnil conj []) mw)
+(defn- update-surface!
+  "Boundary: replace the bound surface with the Ok of (f surface), bumping
+   the version; a refusal throws as an author error and changes nothing."
+  [f]
+  (swap! (state-ref) #(bump (assoc % :surface (unwrap! (f (:surface %))))))
   nil)
+
+(defn add-interceptor!
+  "Append Interceptor `ic` (autonomous.surface/Interceptor) to the call
+   chain. Throws on an invalid interceptor or a :name already in the chain."
+  [ic]
+  (update-surface! #(surface/add-interceptor % ic)))
+
+(defn decorate!
+  "Replace the surface with the result of Surface -> Surface fns
+   `decorators`, applied left to right. Throws, changing nothing, when any
+   result is not a valid Surface."
+  [decorators]
+  (update-surface! #(surface/decorate % decorators)))
+
+(defn- legacy-name
+  "A chain :name for the next use! wrapper of `surface`, unique in its chain."
+  [surface]
+  (keyword "autonomous.use" (str "mw-" (count (:interceptors surface)))))
+
+(defn add-middleware!
+  "Wrap every invocation: `mw` is (fn [handler] (fn [tool args grant] ...)).
+   Appends one legacy link to the call chain; the last wrapper registered
+   runs outermost."
+  [mw]
+  (update-surface! #(surface/add-interceptor % (chain/legacy-link (legacy-name %) mw))))
 
 ;; =============================================================================
 ;; Journal and lease
