@@ -10,8 +10,11 @@
 #     service-account token, no host anything; /tmp is a small memory emptyDir;
 #   - NetworkPolicy denies all traffic, then allows only: the eg-blw Envoy
 #     proxy to the web and MCP ports; the backend to the bridge's websocket
-#     port; the backend to CoreDNS. No internet, no other namespace, no
-#     Kubernetes API, no node or LAN address;
+#     port; the backend to CoreDNS for the bridge's name only (Cilium DNS
+#     proxy). No internet, no other namespace, no Kubernetes API, no node or
+#     LAN address;
+#   - both pods run at PriorityClass staging (-1000, never preempts), so
+#     the cluster's own workloads win any contention;
 #   - the bridge serves one websocket target and nothing else: no nREPL, no
 #     eval; the public agent token grants read and write on the todo tools only;
 #   - the backend caps todos (30), text (80 chars), bodies (4 KiB) and open
@@ -97,6 +100,7 @@ spec:
     metadata:
       labels: {app.kubernetes.io/name: bridge, app.kubernetes.io/part-of: autonomous-playground}
     spec:
+      priorityClassName: staging
       serviceAccountName: playground
       automountServiceAccountToken: false
       enableServiceLinks: false
@@ -172,6 +176,12 @@ spec:
     metadata:
       labels: {app.kubernetes.io/name: todo, app.kubernetes.io/part-of: autonomous-playground}
     spec:
+      priorityClassName: staging
+      # Names with a dot resolve as written first, so the one allowed name
+      # (todo-dns below) never meets a refused search-domain expansion.
+      dnsConfig:
+        options:
+          - {name: ndots, value: "1"}
       serviceAccountName: playground
       automountServiceAccountToken: false
       enableServiceLinks: false
@@ -285,8 +295,8 @@ spec:
       ports:
         - {port: 7890, protocol: TCP}
 ---
-# The backend's only egress: CoreDNS, and the bridge's websocket port. The
-# bridge has no egress at all.
+# The backend's only egress: the bridge's websocket port, plus DNS for the
+# bridge's name alone (todo-dns). The bridge has no egress at all.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -298,18 +308,33 @@ spec:
   policyTypes: [Egress]
   egress:
     - to:
-        - namespaceSelector:
-            matchLabels: {kubernetes.io/metadata.name: kube-system}
-          podSelector:
-            matchLabels: {k8s-app: kube-dns}
-      ports:
-        - {port: 53, protocol: UDP}
-        - {port: 53, protocol: TCP}
-    - to:
         - podSelector:
             matchLabels: {app.kubernetes.io/name: bridge}
       ports:
         - {port: 7890, protocol: TCP}
+---
+# DNS through Cilium's DNS proxy: CoreDNS answers the backend for one name,
+# the bridge's; every other query is refused. Kept out of todo-egress: a
+# plain port-53 allow there would let every name through.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: todo-dns
+  namespace: autonomous-playground
+spec:
+  endpointSelector:
+    matchLabels: {app.kubernetes.io/name: todo}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - {port: "53", protocol: ANY}
+          rules:
+            dns:
+              - matchName: bridge.autonomous-playground.svc.cluster.local
 ---
 # ---- the public route --------------------------------------------------------------
 apiVersion: gateway.networking.k8s.io/v1

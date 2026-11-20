@@ -89,6 +89,15 @@ writes and no service-account token is mounted. Path traversal, shell strings,
 script tags and forged event-stream lines sent over HTTP are refused or stored
 as plain text. Verified 2026-11-20.
 
+DNS answers the backend for the bridge's name only (`todo-dns`); every other
+name is refused:
+
+```sh
+kubectl -n autonomous-playground exec deploy/todo -- getent hosts bridge.autonomous-playground.svc.cluster.local  # answers
+kubectl -n autonomous-playground exec deploy/todo -- getent hosts kubernetes.default.svc.cluster.local            # fails
+kubectl -n autonomous-playground exec deploy/todo -- getent hosts example.com                                     # fails
+```
+
 ## Take it down
 
 ```sh
