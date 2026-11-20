@@ -94,23 +94,63 @@
 ;; The event stream
 ;; =============================================================================
 
-(def ^:private event-gap "\n\n")
+(def max-event-chars
+  "The most characters one SSE event may gather before its blank line."
+  (* 1024 1024))
 
-(defn- cut
-  "Ok [complete-events remainder] of SSE buffer `text` at its last blank
-   line, or nil while no event is complete."
-  [text]
-  (when-let [i (str/last-index-of text event-gap)]
-    (answer/ok [(subs text 0 i) (subs text (+ i (count event-gap))) ])))
+(def max-event-lines
+  "The most lines one SSE event may gather before its blank line."
+  4096)
+
+(def empty-event
+  "An SSE event being gathered: its lines, their size, and whether it
+   passed a cap and is being dropped."
+  {:lines [] :chars 0 :dropped? false})
+
+(defn- over-cap?
+  "True when adding `line` would take event `ev` past a cap."
+  [ev line]
+  (or (<= max-event-lines (count (:lines ev)))
+      (< max-event-chars (+ (:chars ev) (count line)))))
+
+(defn add-line
+  "Pure: event `ev` with `line` appended in O(1), or emptied and marked
+   :dropped? once it would pass max-event-chars or max-event-lines. A
+   dropped event stays dropped until its blank line."
+  [ev line]
+  (cond
+    (:dropped? ev)      ev
+    (over-cap? ev line) (assoc empty-event :dropped? true)
+    :else               (-> ev (update :lines conj line) (update :chars + (count line)))))
+
+(defn- lines-of
+  "The lines of chunk `t`, which holds whole lines each ended by a newline."
+  [t]
+  (let [ls (str/split (str t) #"\n" -1)]
+    (if (= "" (peek ls)) (pop ls) ls)))
+
+(def ^:private overflow
+  (answer/refusal :channel/event-overflow
+                  (str "a remote event passed " max-event-chars " characters or "
+                       max-event-lines " lines: it is dropped")))
+
+(defn- feed-line!
+  "Boundary: take `line` into event cell `ev`: a blank line dispatches the
+   gathered event's messages to `on-message` and starts the next one; an
+   event that just passed a cap is reported to `on-failed`."
+  [ev on-message on-failed line]
+  (if (str/blank? line)
+    (let [done @ev]
+      (reset! ev empty-event)
+      (when-not (:dropped? done)
+        (run! on-message (rpc/read-messages (str/join "\n" (:lines done))))))
+    (let [[before after] (swap-vals! ev add-line line)]
+      (when (and (:dropped? after) (not (:dropped? before))) (on-failed overflow)))))
 
 (defn- feed!
-  "Feed chunk `t` into buffer `buf`, invoking `on-message` for each message
-   that completes."
-  [buf on-message t]
-  (when-let [{:keys [ok]} (cut (swap! buf str t))]
-    (let [[events rest-] ok]
-      (swap! buf (constantly rest-))
-      (run! on-message (rpc/read-messages events)))))
+  "Feed chunk `t` of whole lines into event cell `ev`, line by line."
+  [ev on-message on-failed t]
+  (run! #(feed-line! ev on-message on-failed %) (lines-of t)))
 
 (defn- report-failed!
   "Boundary: report refusal `a` that closed a remote stream on stderr. Its
@@ -119,15 +159,17 @@
   (binding [*out* *err*]
     (println "[autonomous] remote stream closed:" (get-in a [:error :message]))))
 
-(defn- sink
-  "Sink for port/-open-stream!: `on-message` gets each completed JSON-RPC
-   message, `on-close` runs once at the end, and a refusal that closed the
-   stream (an overflowing line) is reported."
-  [on-message on-close]
-  (let [buf (atom "")]
-    {:text!   (partial feed! buf on-message)
-     :failed! report-failed!
-     :close!  (fn [] (on-close))}))
+(defn sink
+  "Boundary: a sink for port/-open-stream!. `on-message` gets each JSON-RPC
+   message of an event that completes, `on-close` runs once at the end, and
+   `on-failed` (default: stderr) gets each refusal: an event dropped past
+   its cap, or a line that closed the stream."
+  ([on-message on-close] (sink on-message on-close report-failed!))
+  ([on-message on-close on-failed]
+   (let [ev (atom empty-event)]
+     {:text!   (partial feed! ev on-message on-failed)
+      :failed! on-failed
+      :close!  (fn [] (on-close))})))
 
 (defn open-stream!
   "Boundary: hold the caller's event stream and dispatch its messages to

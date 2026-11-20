@@ -146,6 +146,35 @@
     (jdk/pump! (java.io.StringReader. text) sink cap)
     @seen))
 
+(defn- recording-sink
+  "A session sink recording the messages and refusals it is handed."
+  []
+  (let [seen (atom {:messages [] :failed []})]
+    [(ses/sink #(swap! seen update :messages conj %) (fn [])
+               #(swap! seen update :failed conj (get-in % [:error :type])))
+     seen]))
+
+(def ^:private list-changed-event
+  (str "data: " (json/write {:jsonrpc "2.0" :method rpc/list-changed}) "\n\n"))
+
+(deftest an-event-without-a-blank-line-is-capped-not-buffered
+  (let [[sink seen] (recording-sink)]
+    (dotimes [_ (inc ses/max-event-lines)] ((:text! sink) ": keepalive\n"))
+    (is (= [:channel/event-overflow] (:failed @seen)) "the overflow is reported once")
+    (dotimes [_ 10] ((:text! sink) "data: {}\n"))
+    (is (= [] (:messages @seen)) "a dropped event dispatches nothing")
+    ((:text! sink) "\n")
+    ((:text! sink) list-changed-event)
+    (is (= [rpc/list-changed] (map :method (:messages @seen))) "the next event is read whole"))
+  (testing "a big event is capped by size"
+    (let [[sink seen] (recording-sink)
+          line        (str "data: " (apply str (repeat 1000 "x")) "\n")]
+      (dotimes [_ (inc (quot ses/max-event-chars 1000))] ((:text! sink) line))
+      (is (= [:channel/event-overflow] (:failed @seen)))))
+  (testing "the gathered event is held in O(1) appends"
+    (is (= {:lines ["a" "b"] :chars 2 :dropped? false}
+           (-> ses/empty-event (ses/add-line "a") (ses/add-line "b"))))))
+
 (deftest a-stream-line-past-the-cap-closes-the-stream
   (let [ok (pumped "data: a\n\ndata: b\n" 16)]
     (is (= ["data: a\n" "\n" "data: b\n"] (:text ok)))
