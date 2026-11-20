@@ -56,13 +56,50 @@ for (const [id, spec] of tools) {
   autonomous.registerTool(id, spec, (args) => ui(command, args));
 }
 
+// ---- a public playground: tell visitors how to connect their agent ------------
+function showPlayground({ mcpUrl, agentToken, resetSecs, maxTodos, maxText }) {
+  const minutes = Math.round(resetSecs / 60);
+  document.getElementById('pg-about').textContent =
+    `This list lives in a Rust backend. Connect your own agent over MCP and it gets the backend's ` +
+    `tools (backend__todos_list, backend__todos_add, ...): what it does shows up here at once, ` +
+    `and what you do here lands in its journal. At most ${maxTodos} todos of ${maxText} characters; ` +
+    (minutes > 0 ? `the list resets every ${minutes} minutes.` : 'the list never resets.');
+  document.getElementById('pg-claude').textContent =
+    `claude mcp add --transport http autonomous-playground ${mcpUrl} ` +
+    `--header "Authorization: Bearer ${agentToken}"`;
+  document.getElementById('pg-json').textContent = JSON.stringify(
+    {
+      mcpServers: {
+        'autonomous-playground': {
+          type: 'http',
+          url: mcpUrl,
+          headers: { Authorization: `Bearer ${agentToken}` },
+        },
+      },
+    },
+    null,
+    2,
+  );
+  for (const b of document.querySelectorAll('[data-copy]')) {
+    b.addEventListener('click', () => {
+      navigator.clipboard?.writeText(document.getElementById(b.dataset.copy).textContent);
+      b.textContent = 'copied';
+      setTimeout(() => (b.textContent = 'copy'), 1500);
+    });
+  }
+  document.getElementById('playground').hidden = false;
+}
+
 // ---- dial the bridge ---------------------------------------------------------
 const status = document.getElementById('agent-status');
 fetch('/config.json')
   .then((r) => r.json())
-  .then(({ wsUrl, token }) => {
+  .then(({ wsUrl, token, playground }) => {
+    if (playground) showPlayground(playground);
     if (!token) {
-      status.textContent = 'agents: off (no frontend token)';
+      status.textContent = playground
+        ? 'agents reach the backend; this page is not an agent target here'
+        : 'agents: off (no frontend token)';
       return;
     }
     autonomous.connect({
