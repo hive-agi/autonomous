@@ -36,20 +36,18 @@
 (def ^:private gone-status 404)
 
 (defn- decode
-  "Answer of `resp` read as JSON-RPC: its message, or a refusal. A 404 is
-   :channel/session-gone (the remote forgot the session and it must be
-   renewed); any other error status is :channel/remote-refused, carrying
-   the status only: an error body is the remote's text and may echo the
-   request's credential back."
-  [{:keys [status body]}]
+  "Answer of `resp` read as the JSON-RPC reply to request `id`: that
+   message, or a refusal. A 404 is :channel/session-gone (the remote forgot
+   the session and it must be renewed); any other error status is
+   :channel/remote-refused, carrying the status only: an error body is the
+   remote's text and may echo the request's credential back."
+  [{:keys [status body]} id]
   (cond
     (= gone-status status) (answer/refusal :channel/session-gone "the remote forgot this session")
     (<= 400 status)        (answer/refusal :channel/remote-refused
                                            (str "the remote answered " status)
                                            {:status status})
-    :else                  (try (answer/ok (rpc/message-of body))
-                                (catch Exception _not-json
-                                  (answer/refusal :channel/bad-answer "the remote did not answer JSON-RPC")))))
+    :else                  (rpc/reply-of body id)))
 
 (defn open-session!
   "Ok of a session {:id :actor} opened for `grant` on `target`, or a
@@ -88,7 +86,7 @@
               (answer/ok nil))
       ident (http/identity target source grant)
       resp  (post client target msg ident (:id ses) timeout-ms)]
-     (decode resp))))
+     (decode resp (:id msg)))))
 
 ;; =============================================================================
 ;; The event stream

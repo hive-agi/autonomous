@@ -136,15 +136,24 @@
   (let [t (str/triml (str body))]
     (or (str/starts-with? t "data:") (str/starts-with? t ":") (str/starts-with? t "event:"))))
 
-(defn message-of
-  "The JSON-RPC message in reply body `body`: a direct object, the first
-   message of a batch, or the first message of an SSE-framed reply (a POST
-   accepts text/event-stream). Throws when it holds no JSON."
+(defn- messages-of
+  "Every JSON-RPC message in reply body `body`: an SSE-framed reply, a
+   batch, or one object. Throws when bare JSON does not parse."
   [body]
   (if (sse-body? body)
-    (or (first (read-messages body)) (throw (ex-info "no JSON-RPC message in the stream" {})))
+    (read-messages body)
     (let [v (json/read-json (str body))]
-      (if (map? v) v (first v)))))
+      (if (map? v) [v] (filterv map? v)))))
+
+(defn reply-of
+  "Pure: Ok of the message in reply body `body` that answers request `id`,
+   skipping notifications and other replies, or a :channel/bad-answer
+   refusal when none does or the body is not JSON-RPC."
+  [body id]
+  (let [msgs (try (messages-of body) (catch Exception _not-json nil))]
+    (if-let [m (first (filter #(and (contains? % :id) (= id (:id %))) msgs))]
+      (answer/ok m)
+      (answer/refusal :channel/bad-answer "the remote sent no reply to this request"))))
 
 ;; =============================================================================
 ;; Manifest

@@ -133,8 +133,21 @@
   (is (empty? (rpc/read-messages ": keepalive\n\n")))
   (is (= 1 (count (rpc/read-messages "data: {\"a\":1}\ndata: not json\n\n"))))
   (testing "a POST reply framed as SSE reads as its first message"
-    (is (= {:jsonrpc "2.0" :id 1 :result {}}
-           (rpc/message-of ": hi\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n")))))
+    (is (= {:ok {:jsonrpc "2.0" :id 1 :result {}}}
+           (rpc/reply-of ": hi\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n" 1)))))
+
+(deftest a-reply-is-the-message-that-carries-the-request-id
+  (let [note  (json/write {:jsonrpc "2.0" :method rpc/list-changed})
+        reply (json/write {:jsonrpc "2.0" :id 7 :result {:tools [{:name "t"}]}})
+        other (json/write {:jsonrpc "2.0" :id 6 :result {}})]
+    (is (= {:ok (json/read-json reply)}
+           (rpc/reply-of (str "data: " note "\n\ndata: " other "\n\ndata: " reply "\n\n") 7))
+        "a notification, then another reply, then this one: this one answers")
+    (is (= {:ok (json/read-json reply)} (rpc/reply-of (str "[" note "," reply "]") 7)) "a batch too")
+    (is (= :channel/bad-answer
+           (get-in (rpc/reply-of (str "data: " note "\n\n") 7) [:error :type]))
+        "a body with no reply to this id is refused")
+    (is (= :channel/bad-answer (get-in (rpc/reply-of "not json" 7) [:error :type])))))
 
 (defn- pumped
   "What pump! hands a recording sink from `text` with line cap `cap`."
@@ -631,6 +644,26 @@
     ((get-in @streams ["agent-a" :close!]))
     (call)
     @opens))
+
+(defn- notification-first
+  "A client over stub `client` that answers every POST as SSE, a
+   list_changed notification before the stub's own reply."
+  [client]
+  (reify port/IHttpClient
+    (-request! [_ req]
+      (answer/let-answer [resp (port/-request! client req)]
+        (answer/ok (assoc resp :body (str list-changed-event "data: " (:body resp) "\n\n")))))
+    (-open-stream! [_ req sink] (port/-open-stream! client req sink))))
+
+(deftest a-notification-before-the-reply-never-hides-it
+  (let [[client state _] (open-stub)
+        c (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                               :http/client (notification-first client)))]
+    (is (= ["todo_list"] (mapv :name (:tools (:ok (manifest-as c "agent-b" #{:read})))))
+        "tools/list reads the listing, not the notification")
+    (is (= {:ok {:by "agent-a" :tool "todo_add" :args {}}}
+           (as c "agent-a" #{:write} {:op :call :tool "todo_add" :args {}})))
+    (is (= 1 (count (:calls @state))) "the tool ran once")))
 
 (deftest a-dead-stream-is-reopened-on-the-next-look-rate-limited
   (is (= 2 (stream-opens-after-a-drop 0)) "the next look reopens the ended stream")
