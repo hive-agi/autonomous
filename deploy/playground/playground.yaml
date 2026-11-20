@@ -1,0 +1,360 @@
+# autonomous public playground: https://autonomous.buddhilw.com
+#
+# One shared todo list (Rust backend + Elm UI) that anyone's agent can drive
+# over MCP. Sandboxing, in layers:
+#   - its own namespace, Pod Security "restricted" enforced;
+#   - a ResourceQuota and LimitRange: at most 1 CPU and 1 GiB for everything
+#     (the backend measures about 200 MiB steady, 410 MiB peak at start);
+#   - pods run as non-root (65532), read-only root filesystem, no
+#     capabilities, no privilege escalation, seccomp RuntimeDefault, no
+#     service-account token, no host anything; /tmp is a small memory emptyDir;
+#   - NetworkPolicy denies all traffic, then allows only: the eg-blw Envoy
+#     proxy to the web and MCP ports; the backend to the bridge's websocket
+#     port; the backend to CoreDNS. No internet, no other namespace, no
+#     Kubernetes API, no node or LAN address;
+#   - the bridge serves one websocket target and nothing else: no nREPL, no
+#     eval; the public agent token grants read and write on the todo tools only;
+#   - the backend caps todos (30), text (80 chars), bodies (4 KiB) and open
+#     event streams (100), and resets the list every 10 minutes;
+#   - Envoy rate-limits the route and caps connections to the backends.
+#
+# The Secret playground-tokens is created outside git (see README.md).
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: autonomous-playground
+  labels:
+    app.kubernetes.io/part-of: autonomous-playground
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: playground
+  namespace: autonomous-playground
+spec:
+  hard:
+    requests.cpu: 500m
+    requests.memory: 512Mi
+    limits.cpu: "1"
+    limits.memory: 1Gi
+    requests.ephemeral-storage: 256Mi
+    limits.ephemeral-storage: 512Mi
+    pods: "4"
+    services: "2"
+    services.loadbalancers: "0"
+    services.nodeports: "0"
+    persistentvolumeclaims: "0"
+    secrets: "3"
+    configmaps: "2"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: playground
+  namespace: autonomous-playground
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: 200m
+        memory: 128Mi
+        ephemeral-storage: 64Mi
+      defaultRequest:
+        cpu: 50m
+        memory: 64Mi
+        ephemeral-storage: 16Mi
+      max:
+        cpu: 600m
+        memory: 640Mi
+---
+# No RBAC binds this account, and pods do not mount its token.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: playground
+  namespace: autonomous-playground
+automountServiceAccountToken: false
+---
+# ---- the bridge: MCP over HTTP for agents, a websocket for the backend ----------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bridge
+  namespace: autonomous-playground
+  labels: {app.kubernetes.io/name: bridge, app.kubernetes.io/part-of: autonomous-playground}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: bridge}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: bridge, app.kubernetes.io/part-of: autonomous-playground}
+    spec:
+      serviceAccountName: playground
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: bridge
+          image: ghcr.io/buddhilw/autonomous-bridge@sha256:114f83146dc212638b236e9b4995a653824a2948baa7a088e1fee5797a652f62
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: ws, containerPort: 7890}
+            - {name: mcp, containerPort: 7891}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 100m, memory: 128Mi, ephemeral-storage: 16Mi}
+            limits: {cpu: 500m, memory: 320Mi, ephemeral-storage: 64Mi}
+          readinessProbe:
+            httpGet: {path: /health, port: mcp}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /health, port: mcp}
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          volumeMounts:
+            - {name: config, mountPath: /etc/autonomous, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: config
+          secret:
+            secretName: playground-tokens
+            items: [{key: autonomous.edn, path: autonomous.edn}]
+            defaultMode: 0440
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 32Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bridge
+  namespace: autonomous-playground
+spec:
+  type: ClusterIP
+  selector: {app.kubernetes.io/name: bridge}
+  ports:
+    - {name: ws, port: 7890, targetPort: ws}
+    - {name: mcp, port: 7891, targetPort: mcp}
+---
+# ---- the todo backend: the page, the REST API, the agent tools --------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: todo
+  namespace: autonomous-playground
+  labels: {app.kubernetes.io/name: todo, app.kubernetes.io/part-of: autonomous-playground}
+spec:
+  replicas: 1
+  revisionHistoryLimit: 2
+  strategy: {type: Recreate}
+  selector:
+    matchLabels: {app.kubernetes.io/name: todo}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: todo, app.kubernetes.io/part-of: autonomous-playground}
+    spec:
+      serviceAccountName: playground
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      hostNetwork: false
+      hostPID: false
+      hostIPC: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: todo
+          image: ghcr.io/buddhilw/autonomous-todo@sha256:87593cf9071dc5c230b2f90ec1d481b956320c2fc15cab8afe211226618e1df5
+          imagePullPolicy: IfNotPresent
+          ports:
+            - {name: http, containerPort: 8090}
+          env:
+            - {name: TODO_BIND, value: "0.0.0.0:8090"}
+            # The container memory limit bounds the embedded jolt heap.
+            - {name: JOLT_MAX_HEAP, value: "off"}
+            - {name: AUTONOMOUS_WS_URL, value: "ws://bridge.autonomous-playground.svc.cluster.local:7890/autonomous/ws"}
+            - name: AUTONOMOUS_BACKEND_TOKEN
+              valueFrom: {secretKeyRef: {name: playground-tokens, key: backend-token}}
+            - {name: TODO_MAX_TODOS, value: "30"}
+            - {name: TODO_MAX_TEXT, value: "80"}
+            - {name: TODO_MAX_STREAMS, value: "100"}
+            - {name: TODO_RESET_SECS, value: "600"}
+            - {name: PLAYGROUND_MCP_URL, value: "https://autonomous.buddhilw.com/mcp"}
+            - name: PLAYGROUND_AGENT_TOKEN
+              valueFrom: {secretKeyRef: {name: playground-tokens, key: agent-token}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: 50m, memory: 256Mi, ephemeral-storage: 16Mi}
+            limits: {cpu: 300m, memory: 640Mi, ephemeral-storage: 64Mi}
+          readinessProbe:
+            httpGet: {path: /api/todos, port: http}
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: {path: /api/todos, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 32Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: todo
+  namespace: autonomous-playground
+spec:
+  type: ClusterIP
+  selector: {app.kubernetes.io/name: todo}
+  ports:
+    - {name: http, port: 8090, targetPort: http}
+---
+# ---- network: deny everything, then allow four paths ----------------------------
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: autonomous-playground
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# The eg-blw Envoy proxy reaches the page/API and MCP, nothing else does.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: from-envoy
+  namespace: autonomous-playground
+spec:
+  podSelector:
+    matchExpressions:
+      - {key: app.kubernetes.io/name, operator: In, values: [todo, bridge]}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: envoy-gateway-system}
+          podSelector:
+            matchLabels:
+              gateway.envoyproxy.io/owning-gateway-name: eg-blw
+              gateway.envoyproxy.io/owning-gateway-namespace: blw
+      ports:
+        - {port: 8090, protocol: TCP}
+        - {port: 7891, protocol: TCP}
+---
+# The backend dials the bridge's websocket; only the backend may.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: bridge-ws-from-todo
+  namespace: autonomous-playground
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: bridge}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: todo}
+      ports:
+        - {port: 7890, protocol: TCP}
+---
+# The backend's only egress: CoreDNS, and the bridge's websocket port. The
+# bridge has no egress at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: todo-egress
+  namespace: autonomous-playground
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: todo}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    - to:
+        - podSelector:
+            matchLabels: {app.kubernetes.io/name: bridge}
+      ports:
+        - {port: 7890, protocol: TCP}
+---
+# ---- the public route --------------------------------------------------------------
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: playground
+  namespace: autonomous-playground
+spec:
+  parentRefs:
+    - {group: gateway.networking.k8s.io, kind: Gateway, name: eg-blw, namespace: blw, sectionName: http}
+  hostnames: [autonomous.buddhilw.com]
+  rules:
+    # MCP (streamable HTTP; a GET holds a server-sent event stream).
+    - matches:
+        - path: {type: PathPrefix, value: /mcp}
+      backendRefs:
+        - {name: bridge, port: 7891}
+      timeouts: {request: 1h}
+    # The page's change stream.
+    - matches:
+        - path: {type: Exact, value: /api/events}
+      backendRefs:
+        - {name: todo, port: 8090}
+      timeouts: {request: 1h}
+    # The page, the REST API, /config.json.
+    - matches:
+        - path: {type: PathPrefix, value: /}
+      backendRefs:
+        - {name: todo, port: 8090}
+      timeouts: {request: 30s}
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: playground
+  namespace: autonomous-playground
+spec:
+  targetRefs:
+    - {group: gateway.networking.k8s.io, kind: HTTPRoute, name: playground}
+  rateLimit:
+    type: Local
+    local:
+      rules:
+        - limit: {requests: 600, unit: Minute}
+  circuitBreaker:
+    maxConnections: 200
+    maxPendingRequests: 50
+    maxParallelRequests: 100

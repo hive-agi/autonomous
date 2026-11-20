@@ -9,3 +9,7 @@ out/
 *.log
 local.deps.edn
 example/public/js/
+cabi/build/
+elm-stuff/
+example/fullstack/frontend/dist/
+.jolt/

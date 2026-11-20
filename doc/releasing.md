@@ -44,7 +44,8 @@ The steps:
 1. **Gate.** `clojure -M:test unit`. A red suite stops the run before any
    version exists.
 2. **Base.** Take the larger of the `VERSION` file and the newest `v*` tag.
-3. **Bump.** `clojure -T:build bump :level :patch` writes base plus one patch
+3. **Bump.** Unless `VERSION` is above every tag (then it is released as
+   written), `clojure -T:build bump :level :patch` writes base plus one patch
    into `VERSION`, inside the runner only.
 4. **Tag.** Create the annotated tag `v<version>` and push the tag alone.
 5. **Deploy.** `clojure -T:build deploy` builds the jar and publishes it to
@@ -57,8 +58,9 @@ and Clojars has `0.1.2`.
 
 The `VERSION` file in the tree is not the current version. It is the lowest
 version the next release may have. To open a new minor line, raise it in a
-pull request to `staging`, for example from `0.1.0` to `0.2.0`: the next
-release on `main` is then `0.2.1`. The release never writes `VERSION` back to
+pull request to `staging`, for example from `0.1.0` to `0.2.0`. A floor above
+the newest tag is released as written, so the next release on `main` is
+`0.2.0`, and the ones after it `0.2.1`, `0.2.2` and so on. The release never writes `VERSION` back to
 `main`. A bump commit on `main` would be one that `staging` lacks, and every
 `staging` to `main` pull request would then conflict on `VERSION`.
 
@@ -68,7 +70,7 @@ release on `main` is then `0.2.1`. The release never writes `VERSION` back to
 
 ```clojure no-run
 {:lib      io.github.hive-agi/autonomous
- :minor    1
+ :minor    2
  :license  {:name "MIT" :url "https://opensource.org/licenses/MIT"}
  :scm-url  "https://github.com/hive-agi/autonomous"
  :src-dirs ["src"]
