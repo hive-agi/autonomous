@@ -12,6 +12,7 @@
             [autonomous.bridge.fleet :as bf]
             [autonomous.bridge.ledger :as ledger]
             [autonomous.bridge.port :as port]
+            [autonomous.bridge.session :as s]
             [autonomous.mcp.server :as server]
             [bb-mcp.core :as bb]
             [bb-mcp.protocol :as proto]
@@ -80,6 +81,27 @@
     (is (contains? names "todo__todo_add"))
     (is (not-any? #(re-find #"^orders__" %) names))
     (is (= :degraded (:status (addon/health a))))))
+
+(def ^:private refused-actor "intruder")
+
+(defn- refusing
+  "App `app-name` with `tools` that refuses `refused-actor` its listing."
+  [app-name tools]
+  (let [serve (app app-name tools)]
+    (fn [req rid]
+      (if (and (= :manifest (:op req)) (= refused-actor (:actor req)))
+        {:error {:type :channel/remote-refused :message "unknown agent"}}
+        (serve req rid)))))
+
+(deftest health-is-per-target-not-per-actor
+  (let [srv (fleet-server [["todo" (refusing "todo" ["todo_add"])] ["orders" (app "orders" ["refund"])]])
+        a   (fa/make-addon {:server srv :actor "coordinator"})]
+    (addon/initialize! a {})
+    (bf/probe (:fleet srv) (s/open-session refused-actor {:actor refused-actor :scopes #{:read}}))
+    (addon/tools a)
+    (is (= {:status :ok :apps-status {"orders" :up "todo" :up}}
+           (let [h (addon/health a)] {:status (:status h) :apps-status (get-in h [:details :status])}))
+        "another agent reaching the target later clears one agent's refusal, keyed by target id")))
 
 (deftest addon-tools-become-bb-mcp-tools
   (let [m     [(started two-apps)]
