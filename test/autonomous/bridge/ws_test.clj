@@ -188,7 +188,7 @@
                                :backoff {:base-ms 50 :max-ms 200}})]
         (try
           (is (wait-until 5000 #(some #{"svc-1"} (map :runtime/id (:ok (port/-runtimes ch))))))
-          (is (= :open ((:status conn))))
+          (is (wait-until 5000 #(= :open ((:status conn)))) "the client sees the hello acknowledged")
           (is (= {:ok {:added "wire" :by "agent-a"}}
                  (port/-send ch {:op :call :tool "todo_add" :args {:text "wire"}
                                  :actor "agent-a" :scopes #{:write}} "svc-1")))
