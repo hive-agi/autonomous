@@ -94,6 +94,14 @@
     (is (string? pending))
     (is (= {:ok {:user "ana" :token "<redacted>"}} (poll-until-settled pending)))))
 
+(deftest redact-output-reaches-through-seqs-and-lists
+  (a/decorate! (decorator/each-tool (decorator/redact-output [[:accounts 0 :token]])))
+  (doseq [[id shape] [[:t/lazy #(map identity %)] [:t/listed #(apply list %)]]]
+    (let [tool-name (a/reg-tool id {:description "Accounts" :read-only? true
+                                    :handler (fn [_ _] {:accounts (shape [{:token "s3cret"}])})})]
+      (is (= {:ok {:accounts [{:token "<redacted>"}]}} (call tool-name {}))
+          (str "the secret never reaches the wire through " id)))))
+
 (deftest a-redaction-that-breaks-the-output-schema-is-refused
   (a/decorate! (decorator/each-tool (decorator/redact-output [[:token]] 0)))
   (is (= :output/invalid-redaction (get-in (call "t_account" {}) [:error :type]))))

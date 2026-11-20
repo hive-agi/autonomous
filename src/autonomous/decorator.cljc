@@ -3,6 +3,7 @@
    its input or output schema. Compose configured decorators with `comp`."
   (:require [autonomous.domain.answer :as answer]
             [autonomous.domain.journal :as journal]
+            [autonomous.domain.wire :as wire]
             [malli.core :as m]))
 
 (defn require-scope
@@ -52,7 +53,15 @@
   "L1 Tool -> Tool: mask existing output paths (vectors of keys/indices)
    the way the journal masks args (autonomous.domain.journal/redact-paths).
    The default replacement is the string \"<redacted>\". Choose a different
-   replacement if that would violate the tool's declared output schema."
+   replacement if that would violate the tool's declared output schema.
+
+   Paths address the output in WIRE form (autonomous.domain.wire/->wire):
+   a lazy seq or list is a vector there, so [:accounts 0 :token] reaches
+   into {:accounts (map ...)}. They apply to Ok outputs only, never to a
+   refusal's :data: that is a different value (a throw's ex-data, a
+   codec's diagnosis) with its own shape, where output paths would mask
+   unrelated keys or miss the ones that matter. A tool that can refuse
+   with a secret in its data must keep the secret out of the refusal."
   ([paths] (redact-output paths journal/redacted))
   ([paths replacement]
    (fn [tool]
@@ -60,11 +69,13 @@
              #(journal/redact-paths % paths replacement)))))
 
 (defn project-output
-  "L1 Pipeline: apply redactions before wire normalization. Refuse rather
-   than returning a masked output that violates its declared schema."
+  "L1 Pipeline: apply redactions to the wire form of `raw`, so a path
+   through a seq or list reaches what the bridge would carry. Refuse
+   rather than returning a masked output that violates its declared
+   schema. Without redactions `raw` passes unchanged."
   [tool raw]
   (if-let [filters (seq (::output-filters tool))]
-    (let [value (reduce (fn [v f] (f v)) raw filters)]
+    (let [value (reduce (fn [v f] (f v)) (wire/->wire raw) filters)]
       (if (and (:output tool) (not (m/validate (:output tool) value)))
         (answer/refusal :output/invalid-redaction "redaction violates the output schema")
         (answer/ok value)))
