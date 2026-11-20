@@ -1,4 +1,0 @@
-;; Dependencies of the playground bridge image, resolved at image build time.
-{:paths ["/app/src"]
- :deps {metosin/malli {:mvn/version "0.20.3"}}
- :mvn/local-repo "/opt/m2"}

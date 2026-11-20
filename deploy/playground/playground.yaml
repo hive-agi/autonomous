@@ -3,7 +3,8 @@
 # One shared todo list (Rust backend + Elm UI) that anyone's agent can drive
 # over MCP. Sandboxing, in layers:
 #   - its own namespace, Pod Security "restricted" enforced;
-#   - a ResourceQuota and LimitRange: at most 1 CPU and 1 GiB for everything;
+#   - a ResourceQuota and LimitRange: at most 1 CPU and 1 GiB for everything
+#     (the backend measures about 200 MiB steady, 410 MiB peak at start);
 #   - pods run as non-root (65532), read-only root filesystem, no
 #     capabilities, no privilege escalation, seccomp RuntimeDefault, no
 #     service-account token, no host anything; /tmp is a small memory emptyDir;
@@ -121,8 +122,8 @@ spec:
             privileged: false
             capabilities: {drop: ["ALL"]}
           resources:
-            requests: {cpu: 100m, memory: 256Mi, ephemeral-storage: 16Mi}
-            limits: {cpu: 500m, memory: 512Mi, ephemeral-storage: 64Mi}
+            requests: {cpu: 100m, memory: 128Mi, ephemeral-storage: 16Mi}
+            limits: {cpu: 500m, memory: 320Mi, ephemeral-storage: 64Mi}
           readinessProbe:
             httpGet: {path: /health, port: mcp}
             periodSeconds: 10
@@ -190,6 +191,8 @@ spec:
             - {name: http, containerPort: 8090}
           env:
             - {name: TODO_BIND, value: "0.0.0.0:8090"}
+            # The container memory limit bounds the embedded jolt heap.
+            - {name: JOLT_MAX_HEAP, value: "off"}
             - {name: AUTONOMOUS_WS_URL, value: "ws://bridge.autonomous-playground.svc.cluster.local:7890/autonomous/ws"}
             - name: AUTONOMOUS_BACKEND_TOKEN
               valueFrom: {secretKeyRef: {name: playground-tokens, key: backend-token}}
@@ -206,8 +209,8 @@ spec:
             privileged: false
             capabilities: {drop: ["ALL"]}
           resources:
-            requests: {cpu: 50m, memory: 128Mi, ephemeral-storage: 16Mi}
-            limits: {cpu: 300m, memory: 256Mi, ephemeral-storage: 64Mi}
+            requests: {cpu: 50m, memory: 256Mi, ephemeral-storage: 16Mi}
+            limits: {cpu: 300m, memory: 640Mi, ephemeral-storage: 64Mi}
           readinessProbe:
             httpGet: {path: /api/todos, port: http}
             periodSeconds: 10

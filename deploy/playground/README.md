@@ -36,8 +36,9 @@ bb cabi                                              # cabi/build/libautonomous.
 (cd example/fullstack/backend && cargo build --release)
 bb fullstack-e2e                                     # builds frontend/dist, checks it all
 deploy/playground/stage-backend.sh                   # target/playground
+deploy/playground/stage-bridge.sh                    # target/playground-bridge (bb, src, jars)
 
-docker build -f deploy/playground/bridge/Dockerfile -t ghcr.io/buddhilw/autonomous-bridge:TAG .
+docker build -f deploy/playground/bridge/Dockerfile -t ghcr.io/buddhilw/autonomous-bridge:TAG target/playground-bridge
 docker build -f deploy/playground/backend/Dockerfile -t ghcr.io/buddhilw/autonomous-todo:TAG target/playground
 docker push ghcr.io/buddhilw/autonomous-bridge:TAG
 docker push ghcr.io/buddhilw/autonomous-todo:TAG
