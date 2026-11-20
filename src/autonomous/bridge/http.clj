@@ -50,20 +50,27 @@
 
 (defn- resolve-token!
   "Boundary: Ok of the token named by `reference` from `source`, or nil
-   without one. The credential value is never part of configuration data,
+   when no reference is configured. A configured reference whose value is
+   unset or blank is refused, never sent anonymously. The credential value
+   is never part of configuration data,
    and a refusal names only the reference, never the value: a token with a
    control character (a trailing newline from an env file) is refused here,
    before an HTTP library can echo it in an error."
   [source reference]
   (if reference
     (answer/let-answer [token (port/-resolve-token! source reference)]
-      (let [t (some-> token str not-empty)]
-        (if (and t (not (visible-ascii? t)))
-          (answer/refusal :channel/credential-invalid
-                          (str "the credential in " (:token-env reference)
-                               " holds a character outside visible ASCII (a trailing newline?)")
-                          {:token-env (:token-env reference)})
-          (answer/ok t))))
+      (let [t   (some-> token str)
+            env (:token-env reference)]
+        (cond
+          (str/blank? t)          (answer/refusal :channel/credential-unset
+                                                  (str "the credential " env " is configured for this"
+                                                       " agent but unset or empty: refusing to go anonymous")
+                                                  {:token-env env})
+          (not (visible-ascii? t)) (answer/refusal :channel/credential-invalid
+                                                   (str "the credential in " env " holds a character"
+                                                        " outside visible ASCII (a trailing newline?)")
+                                                   {:token-env env})
+          :else                    (answer/ok t))))
     (answer/ok nil)))
 
 (defn bearer-headers

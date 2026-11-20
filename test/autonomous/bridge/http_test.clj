@@ -179,10 +179,20 @@
            (as c "agent-b" #{:read} {:op :call :tool "todo_list"}))
         "agent-b's own session, not agent-a's")))
 
+(def ^:private wrong-env "REMOTE_INTRUDER")
+
+(def ^:private wrong-token
+  "A token the remote never issued."
+  "aut_wrong")
+
 (deftest a-down-remote-refuses-and-hides-only-itself
-  (let [[c _] (ch)
+  (let [[client _ _] (open-stub)
+        c     (channel/make (assoc target
+                                   :credentials (assoc (credential-policy) "intruder" {:token-env wrong-env})
+                                   :credential-source (->Environment {wrong-env wrong-token})
+                                   :http/client client))
         dead  (channel/make {:target/kind :http :target/id "dead" :url "http://127.0.0.1:9"})]
-    (is (= :channel/remote-refused (get-in (as c "nobody" #{:read} {:op :manifest}) [:error :type]))
+    (is (= :channel/remote-refused (get-in (as c "intruder" #{:read} {:op :manifest}) [:error :type]))
         "an unknown token is refused by the remote, never thrown")
     (is (= :channel/transport-failed (get-in (manifest-as dead "nobody" #{:read}) [:error :type])))
     (testing "a call to a down remote is a refusal too"
@@ -321,6 +331,21 @@
                              :headers (http/bearer-headers newline-token) :body "{}"})]
       (is (= :channel/transport-failed (get-in a [:error :type])))
       (is (not (str/includes? (pr-str a) (tokens "agent-a"))) (pr-str a)))))
+
+(deftest a-configured-credential-that-is-unset-never-goes-anonymous
+  (doseq [[why values] [["unset" {}] ["empty" {agent-a-env ""}] ["blank" {agent-a-env "  "}]]]
+    (testing why
+      (let [[client _ _] (open-stub)
+            seen (atom [])
+            spy  (reify port/IHttpClient
+                   (-request! [_ req] (swap! seen conj req) (port/-request! client req))
+                   (-open-stream! [_ req sink] (swap! seen conj req) (port/-open-stream! client req sink)))
+            c    (channel/make (assoc target :credentials (credential-policy)
+                                      :credential-source (->Environment values) :http/client spy))
+            a    (manifest-as c "agent-a" #{:read})]
+        (is (= :channel/credential-unset (get-in a [:error :type])) (pr-str a))
+        (is (str/includes? (get-in a [:error :message]) agent-a-env) "the refusal names the env var")
+        (is (empty? @seen) "nothing was sent")))))
 
 (deftest credential-config-promotes-references-only
   (let [entry {:app "todo" :channel :http :url remote-url
