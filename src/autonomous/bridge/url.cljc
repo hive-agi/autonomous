@@ -54,12 +54,21 @@
 
 (def loopback-hosts #{"localhost" "::1" "[::1]"})
 
+(def ^:private octet-re
+  "One decimal IPv4 octet, 0-255, without a leading zero."
+  "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)")
+
+(def ^:private loopback-v4-re
+  (re-pattern (str "127(?:\\." octet-re "){3}")))
+
 (defn loopback?
-  "True when `url` names this host (localhost, 127.0.0.0/8, ::1)."
+  "True when `url` names this host (localhost, 127.0.0.0/8, ::1). A 127.x
+   host with an octet past 255 is no address, so it is a name a resolver
+   may send anywhere: not loopback."
   [url]
   (let [h (:host (parts url))]
     (or (contains? loopback-hosts h)
-        (some? (re-matches #"127(?:\.\d{1,3}){3}" h)))))
+        (some? (re-matches loopback-v4-re h)))))
 
 (defn bearer-allowed?
   "True when a bearer token may ride `url`: https anywhere, plain http only

@@ -251,6 +251,9 @@
       (is (url/bearer-allowed? "http://127.0.0.1:8080/mcp"))
       (is (url/bearer-allowed? "http://localhost/mcp"))
       (is (not (url/bearer-allowed? "http://127.0.0.1.remote.test/mcp")))
+      (is (url/bearer-allowed? "http://127.255.255.255/mcp"))
+      (is (not (url/bearer-allowed? "http://127.0.0.999/mcp")) "an octet past 255 is no loopback address")
+      (is (not (url/bearer-allowed? "http://127.300.0.1/mcp")))
       (is (not (url/bearer-allowed? plain-remote-url))))))
 
 (deftest a-literal-token-fails-validation
