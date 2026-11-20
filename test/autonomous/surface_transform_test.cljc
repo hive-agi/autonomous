@@ -66,6 +66,15 @@
                    ["renames without rekeying" (decorator/each-tool #(assoc % :name "other"))]]]
     (is (= :invalid-surface (get-in (surface/decorate fixture [d]) [:error :type])) why)))
 
+(deftest redact-output-masks-like-the-journal
+  (let [raw  {:user "ana" :card {:pan "4111"}}
+        mask (fn [d] (:ok (decorator/project-output (d (tool :d/acct {})) raw)))]
+    (is (= {:user "ana" :card {:pan "<redacted>"}}
+           (mask (decorator/redact-output [[:card :pan] [:absent]])))
+        "present paths masked, absent paths add nothing")
+    (is (= {:user "ana" :card {:pan 0}} (mask (decorator/redact-output [[:card :pan]] 0)))
+        "the replacement argument is kept")))
+
 (def ^:private decorator-gen
   (gen/elements [(decorator/prefix-names "p_")
                  audited

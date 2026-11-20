@@ -2,6 +2,7 @@
   "L1 endomorphisms: decorate a compiled Tool or Surface without changing
    its input or output schema. Compose configured decorators with `comp`."
   (:require [autonomous.domain.answer :as answer]
+            [autonomous.domain.journal :as journal]
             [autonomous.domain.naming :as naming]
             [malli.core :as m]))
 
@@ -38,25 +39,16 @@
   [prefix]
   (fn [surface] (update surface :tools (partial prefix-tools prefix))))
 
-(def ^:private missing (fn []))
-
-(defn- mask-path
-  "L1 Pipeline: replace an existing output path without adding a new key."
-  [replacement value path]
-  (cond
-    (empty? path) replacement
-    (identical? missing (get-in value path missing)) value
-    :else (assoc-in value path replacement)))
-
 (defn redact-output
-  "L1 Tool -> Tool: mask existing output paths (vectors of keys/indices).
+  "L1 Tool -> Tool: mask existing output paths (vectors of keys/indices)
+   the way the journal masks args (autonomous.domain.journal/redact-paths).
    The default replacement is the string \"<redacted>\". Choose a different
    replacement if that would violate the tool's declared output schema."
-  ([paths] (redact-output paths "<redacted>"))
+  ([paths] (redact-output paths journal/redacted))
   ([paths replacement]
    (fn [tool]
      (update tool ::output-filters (fnil conj [])
-             #(reduce (partial mask-path replacement) % paths)))))
+             #(journal/redact-paths % paths replacement)))))
 
 (defn project-output
   "L1 Pipeline: apply redactions before wire normalization. Refuse rather
