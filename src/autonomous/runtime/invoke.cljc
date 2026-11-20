@@ -93,9 +93,11 @@
 
 (defn settle
   "L2 Pipeline: a plain return becomes Ok, a thenable becomes Pending,
-   and an explicit adapter Answer keeps its variant. `project` (raw ->
-   Answer, default answer/ok) maps every Ok value, direct or settled
-   later, before wire normalization."
+   and an Answer the invoke-kind method marks complete
+   (invocation-answer?) keeps its variant. Tool values are opaque, so an
+   :ok key in one is not unwrapped. `project` (raw -> Answer, default
+   answer/ok) maps every Ok value, direct or settled later, before wire
+   normalization."
   ([x] (settle x answer/ok))
   ([x project]
    (cond
@@ -131,17 +133,31 @@
                                           (:call-detail snap)))
     ans))
 
+(defn- resource-answer
+  "Answer for resource result `x`: an Ok (value wire-normalized), Pending or
+   refusal map as given; any other value, thenables included, through
+   `settle`."
+  [x]
+  (cond
+    (not (map? x))                               (settle x)
+    (answer/ok? x)                               (answer/ok (wire/->wire (:ok x)))
+    (or (answer/pending? x) (answer/refused? x)) x
+    :else                                        (settle x)))
+
+(defn- read-result
+  "The runtime read envelope of resource `uri` for result `x`."
+  [uri mime x]
+  (answer/bind (resource-answer x) #(answer/ok {:uri uri :mime mime :value %})))
+
 (defn read!
-  "Plan and run a read of resource `uri` for `grant`."
+  "Plan and run a read of resource `uri` for `grant`. Both a plain resource
+   value and an Answer from the resource become one runtime read envelope."
   [uri grant]
   (let [plan (decision/plan-read (registry/snapshot) uri grant)]
     (case (:plan/action plan)
       :refuse (:refusal plan)
       :read   (let [r (:resource plan)]
                 (try
-                  (let [a (settle ((:read r) grant))]
-                    (if (answer/ok? a)
-                      (answer/ok {:uri uri :mime (:mime r) :value (:ok a)})
-                      a))
+                  (read-result uri (:mime r) ((:read r) grant))
                   (catch #?(:clj Throwable :cljs :default) e
                     (answer/from-exception e)))))))
