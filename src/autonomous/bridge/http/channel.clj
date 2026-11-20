@@ -25,8 +25,14 @@
 (defn- now [] (System/currentTimeMillis))
 
 (defn new-state
-  "Empty channel state: MCP sessions and listings by actor."
-  [] {:sessions (atom {}) :slots (atom {})})
+  "Empty channel state: MCP sessions, listings and session locks by actor."
+  [] {:sessions (atom {}) :slots (atom {}) :locks (atom {})})
+
+(defn- actor-lock
+  "The lock object of `actor`, created once: one session open or renew of
+   an actor runs at a time."
+  [ch actor]
+  (get (swap! (:locks ch) #(if (contains? % actor) % (assoc % actor (Object.)))) actor))
 
 (def empty-slot
   "A cache slot with no listing, stale, and no fetch in flight. :revision
@@ -83,18 +89,32 @@
       (listen! ch client credentials target grant (:ok r)))
     r))
 
+(defn- current-session
+  "Ok of `actor`'s live session, or nil when it has none."
+  [ch actor]
+  (some-> (get @(:sessions ch) actor) answer/ok))
+
 (defn- session!
-  "Answer of `grant`'s live session, opened when there is none."
+  "Answer of `grant`'s live session, opened when there is none. The open
+   runs under the actor's lock and re-checks there, so concurrent looks by
+   one actor open one session."
   [ch client credentials target grant]
-  (if-let [ses (get @(:sessions ch) (:actor grant))]
-    (answer/ok ses)
-    (open-session! ch client credentials target grant)))
+  (or (current-session ch (:actor grant))
+      (locking (actor-lock ch (:actor grant))
+        (or (current-session ch (:actor grant))
+            (open-session! ch client credentials target grant)))))
 
 (defn- renew!
-  "Ok of a fresh session for `grant`, the old one dropped."
-  [ch client credentials target grant]
-  (drop-session! ch client credentials target (:actor grant))
-  (open-session! ch client credentials target grant))
+  "Ok of a fresh session for `grant` in place of `gone`, the session the
+   remote forgot. Under the actor's lock: when another look already
+   renewed it, that session is reused, never renewed twice."
+  [ch client credentials target grant gone]
+  (locking (actor-lock ch (:actor grant))
+    (let [now-ses (get @(:sessions ch) (:actor grant))]
+      (if (and now-ses (not= (:id now-ses) (:id gone)))
+        (answer/ok now-ses)
+        (do (drop-session! ch client credentials target (:actor grant))
+            (open-session! ch client credentials target grant))))))
 
 ;; =============================================================================
 ;; Listing
@@ -137,7 +157,7 @@
                (fn [ses]
                  (let [r (f ses)]
                    (if (= :channel/session-gone (get-in r [:error :type]))
-                     (answer/bind (renew! ch client credentials target grant) f)
+                     (answer/bind (renew! ch client credentials target grant ses) f)
                      r)))))
 
 (defn- fetch!

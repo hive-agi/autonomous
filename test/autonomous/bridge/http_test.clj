@@ -549,6 +549,27 @@
     (is (= ["todo_add" "todo_list"] (mapv :name (:tools (:ok (manifest-as c "agent-b" #{:read})))))
         "the event that arrived mid-fetch still forces the next look to refetch")))
 
+(defn- slow-initialize
+  "A client over stub `client` that counts initializes in `opened` and
+   holds each for a moment, widening the open race."
+  [client opened]
+  (reify port/IHttpClient
+    (-request! [_ req]
+      (when (= "initialize" (:method (json/read-json (str (:body req)))))
+        (swap! opened inc)
+        (Thread/sleep 50))
+      (port/-request! client req))
+    (-open-stream! [_ req sink] (port/-open-stream! client req sink))))
+
+(deftest concurrent-looks-by-one-actor-open-one-session
+  (let [[client _ _] (open-stub)
+        opened (atom 0)
+        c      (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                                    :http/client (slow-initialize client opened)))
+        calls  (doall (repeatedly 8 #(future (as c "agent-a" #{:read} {:op :call :tool "todo_list"}))))]
+    (is (every? #(answer/ok? (deref % 5000 nil)) calls))
+    (is (= 1 @opened) "one session was opened for the actor")))
+
 (deftest a-stored-listing-is-fresh-only-at-its-own-revision
   (let [sl (assoc hc/empty-slot :revision 3)]
     (is (false? (:stale? (hc/stored sl {:v 1} 10 3))))
