@@ -3,13 +3,15 @@
 
    A listing is cached per agent (the remote filters it by the actor's
    scopes) until a notifications/tools/list_changed on that agent's event
-   stream, or the ttl, says otherwise. Concurrent looks share the one fetch
-   in flight, so a down remote costs one attempt, not one per agent.
+   stream, or the ttl, says otherwise. Concurrent looks by the SAME agent
+   share its one fetch in flight; each agent fetches on its own, so a down
+   remote costs one attempt per agent looking.
 
    An MCP session belongs to one agent and is renewed the single time a
-   remote reports it forgotten (a restart). Streams die with their session
-   and are reopened on the next look, so a remote that comes back is picked
-   up with no restart here.
+   remote reports it forgotten (a restart); the renewed session opens a new
+   stream. A stream that ends while its session lives is not reopened:
+   until the session is renewed that agent's listing refreshes on the ttl
+   only.
 
    Every method answers an Answer; nothing here throws."
   (:require [autonomous.bridge.http :as http]
