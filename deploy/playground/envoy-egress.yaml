@@ -1,0 +1,32 @@
+# The eg-blw Envoy proxy's egress is an allowlist, one CiliumNetworkPolicy per
+# destination in envoy-gateway-system (like envoy-blw-to-remark42). This one
+# lets it reach the playground's page/API and MCP ports, and nothing else of
+# the namespace (not the bridge's websocket port).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: envoy-blw-to-autonomous-playground
+  namespace: envoy-gateway-system
+  labels:
+    app.kubernetes.io/part-of: autonomous-playground
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/component: proxy
+      app.kubernetes.io/name: envoy
+      gateway.envoyproxy.io/owning-gateway-name: eg-blw
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:app.kubernetes.io/name: todo
+            k8s:io.kubernetes.pod.namespace: autonomous-playground
+      toPorts:
+        - ports:
+            - {port: "8090", protocol: TCP}
+    - toEndpoints:
+        - matchLabels:
+            k8s:app.kubernetes.io/name: bridge
+            k8s:io.kubernetes.pod.namespace: autonomous-playground
+      toPorts:
+        - ports:
+            - {port: "7891", protocol: TCP}
