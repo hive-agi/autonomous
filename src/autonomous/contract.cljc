@@ -106,11 +106,30 @@
   (let [samples (:samples fixture {})]
     (or (get samples (:name tool)) (get samples (:id tool)) (:default samples))))
 
+(defn- input-schema
+  "L3 Collect: a tool's input schema; an omitted :input is [:map], as
+   autonomous.domain.affordance compiles it."
+  [tool]
+  (or (:input tool) [:map]))
+
+(defn- codec-tool?
+  "L3 Collect: the adapter's Codec serves exactly the tools of its :kind,
+   as spi/register-adapter! installs it on invoke-kind."
+  [adapter tool]
+  (and (some? (:codec adapter)) (= (:kind adapter) (:kind tool))))
+
+(defn- host-port
+  "L3 Collect: the fixture's :host, else the AdapterSpec's :invoke port."
+  [adapter fixture]
+  (or (:host fixture) (:invoke adapter)
+      (fn [_ _ _] (answer/refusal :contract/no-host
+                                  "fixture supplies no :host and the AdapterSpec no :invoke"))))
+
 (defn- invoke-sample
   "L3 Boundary: one sample crosses codec, host and decoder as Answers."
   [adapter fixture tool args]
   (answer/let-answer [input (spi/encode-call (:codec adapter) tool args)
-                      output ((:host fixture) tool input (or (:grant fixture) {}))]
+                      output ((host-port adapter fixture) tool input (or (:grant fixture) {}))]
     (spi/decode-result (:codec adapter) tool output)))
 
 (defn- output-receipt
@@ -126,12 +145,15 @@
   "L3 Contract: one tool's sample completes encode -> host -> decode."
   [adapter fixture [tool-name tool]]
   (let [args (sample-args fixture tool)
-        input (schema-receipt :schema/input tool-name args (:input tool))
-        a (when (and (:codec adapter) (:ok? input)) (invoke-sample adapter fixture tool args))]
+        input (schema-receipt :schema/input tool-name args (input-schema tool))
+        codec? (codec-tool? adapter tool)
+        a (when (and codec? (:ok? input)) (invoke-sample adapter fixture tool args))]
     [tool-name
      (cond
        (not (:ok? input)) input
        (not (:codec adapter)) (result :schema/round-trip true {:tool tool-name :codec :undeclared})
+       (not codec?) (result :schema/round-trip true
+                            {:tool tool-name :kind (:kind tool) :codec :other-kind})
        (answer/refused? a) (result :schema/round-trip false {:tool tool-name :answer a})
        :else (output-receipt tool-name tool a))]))
 
@@ -193,7 +215,7 @@
 (defn- generated-args
   "L3 Generate: deterministic valid inputs for one tool schema."
   [tool fixture]
-  (mapv #(mg/generate (:input tool) {:seed % :size 20})
+  (mapv #(mg/generate (input-schema tool) {:seed % :size 20})
         (range (or (:generated-samples fixture) 8))))
 
 (defn- argument-cases
@@ -234,13 +256,16 @@
 (defn- codec-receipts
   "L3 Contract: collect codec results for every tool in the Surface."
   [adapter fixture surf]
-  (if (:codec adapter)
-    (into {} (map (fn [[tool-name :as entry]]
-                    [tool-name (from-results :codecs/total
-                                             (into {} (map-indexed (fn [i r] [i r]))
-                                                   (tool-codec-receipts adapter fixture entry)))]))
-          (:tools surf))
-    {:codec (result :codecs/total false "AdapterSpec declares no :codec")}))
+  (let [tools (filter (comp #(codec-tool? adapter %) val) (:tools surf))]
+    (cond
+      (not (:codec adapter)) {:codec (result :codecs/total false "AdapterSpec declares no :codec")}
+      (empty? tools) {:codec (result :codecs/total false
+                                     {:kind (:kind adapter) :problem "no derived tool has the Codec's :kind"})}
+      :else (into {} (map (fn [[tool-name :as entry]]
+                            [tool-name (from-results :codecs/total
+                                                     (into {} (map-indexed (fn [i r] [i r]))
+                                                           (tool-codec-receipts adapter fixture entry)))]))
+                  tools))))
 
 (defn codecs-total
   "L3 Contract: generated, fixture and malformed arguments encode to Ok or
@@ -272,8 +297,10 @@
   "L3 Contract: check an AdapterSpec (or source-kind dispatch key) against
    a fixture. Answers {:ok? bool :checks [Check]}. Fixture ports are
    :source, :unexposed-source, :empty-source, :exposed-tools, :samples,
-   :human-call, optional :mount, :host, :grant, :opts, :decode-outputs and
-   :generated-samples. No global registry is read or written."
+   :human-call, optional :mount, :host (default: the AdapterSpec's :invoke
+   port), :grant, :opts, :decode-outputs and :generated-samples. The Codec
+   is checked against the derived tools of the AdapterSpec's :kind. No
+   global registry is read or written."
   [adapter fixture]
   (let [spec (declaration adapter)
         shared (assoc fixture ::surface (delay (derive-from spec fixture (:source fixture))))

@@ -67,6 +67,31 @@
              (pr-str (:detail (:schema-round-trip by-id)))))
     (is (false? (:ok? (:codecs-total by-id))) "codecs-total still requires a :codec")))
 
+(def mixed-adapter
+  "Echo tools plus one tool of another kind with no :input; its host port
+   is the AdapterSpec's :invoke, not a fixture :host."
+  (assoc echo-adapter
+         :source-kind :contract-test/mixed-source
+         :derive (fn [specs opts]
+                   (answer/let-answer [echo ((:derive echo-adapter) specs opts)
+                                       other (surface/compile-tools
+                                              (when (some (comp :expose val) specs)
+                                                [[:contract-test/other
+                                                  {:description "Another kind, no :input"
+                                                   :kind :contract-test/other}]]))]
+                     (surface/->surface (update echo :tools merge other))))
+         :invoke (fn [_ input _] (answer/ok input))))
+
+(spi/register-adapter! (select-keys mixed-adapter [:source-kind :derive]))
+
+(deftest the-codec-serves-its-kind-through-the-adapter-invoke-port
+  (let [report (contract/check-adapter mixed-adapter (-> (fixture)
+                                                 (dissoc :host)
+                                                 (update :exposed-tools conj "contract-test_other")
+                                                 (assoc-in [:samples "contract-test_other"] {})))]
+    (contract/assert-contract report)
+    (is (:ok? report) "the :invoke port is the host; the other kind is not the Codec's")))
+
 (deftest hostile-codecs-become-failed-check-data
   (let [hostile (assoc echo-adapter :codec
                        {:encode (fn [_ _] (throw (ex-info "hostile" {})))
