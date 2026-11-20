@@ -181,6 +181,31 @@
     (call srv one "autonomous_ledger" {})
     (is (pos? @reads) "another agent's refused probe does not mark the target down for agent-1")))
 
+(defn- wait-for
+  "True once `p` holds, polling for up to about two seconds."
+  [p]
+  (loop [n 100] (cond (p) true (zero? n) false :else (do (Thread/sleep 20) (recur (dec n))))))
+
+(deftest concurrent-probes-of-two-actors-never-share-a-listing
+  (let [latch    (promise)
+        arrived  (atom [])
+        blocking (fn [{:keys [op actor]} _]
+                   (when (= :manifest op)
+                     (swap! arrived conj actor)
+                     @latch
+                     (apply manifest "todo" (per-actor-tools actor))))
+        f        (bf/make [(member "todo" blocking nil)] {:mode :fleet :probe-ms 3000})
+        [one two] (map #(s/open-session % {:actor % :scopes #{:read}}) ["agent-1" "agent-2"])
+        tools-of #(map :name (get-in % [0 :manifest :tools]))
+        p1       (future (bf/probe f one))]
+    (is (wait-for #(= ["agent-1"] @arrived)) "agent-1's look is in flight")
+    (let [p2 (future (bf/probe f two))]
+      (wait-for #(= 2 (count @arrived)))
+      (deliver latch true)
+      (is (= (per-actor-tools "agent-1") (tools-of @p1)))
+      (is (= (per-actor-tools "agent-2") (tools-of @p2))
+          "agent-2 waits on its own look, not on agent-1's"))))
+
 (deftest a-target-coming-back-fires-list-changed
   (let [state  (atom :down)
         api    (app-responder "api" ["refund"])
@@ -191,8 +216,7 @@
         runner (future (stdio/serve! srv {:watch-ms 30}
                                      (fn [] (deref done 2000 nil) nil)
                                      (fn [l] (swap! out conj l))))
-        changed? (fn [] (some #(clojure.string/includes? % "list_changed") @out))
-        wait-for (fn [p] (loop [n 100] (cond (p) true (zero? n) false :else (do (Thread/sleep 20) (recur (dec n))))))]
+        changed? (fn [] (some #(clojure.string/includes? % "list_changed") @out))]
     (Thread/sleep 150)
     (is (not (changed?)) "nothing changes while the fleet is steady")
     (reset! state :up)
