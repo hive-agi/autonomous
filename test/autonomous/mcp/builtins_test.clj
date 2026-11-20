@@ -30,7 +30,7 @@
         {:keys [session answer]} (result :fleet prior {:ok ["app" 7]})]
     (is (= {:ok {:attached 7}} answer))
     (is (= {"app" 7 "other" "keep"} (:session/runtimes session)))
-    (is (= {"other" "keep"} (:session/runtimes (:session (result :fleet session {:ok ["app" nil]})))))
+    (is (= {"app" nil "other" "keep"} (:session/runtimes (:session (result :fleet session {:ok ["app" nil]})))))
     (is (= {:session prior :answer {:error {:type :example}}}
            (result :fleet prior {:error {:type :example}})))))
 
