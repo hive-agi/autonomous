@@ -356,20 +356,17 @@
            (cli/target-label (first (:targets cfg)))))))
 
 (deftest list-changed-refreshes-only-the-notified-actor
-  (let [[c _ streams] (ch)]
-    (is (= #{"todo_add" "todo_list"}
-           (set (map :name (:tools (:ok (manifest-as c "agent-a" #{:read :write})))))))
-    (is (= ["todo_list"]
-           (mapv :name (:tools (:ok (manifest-as c "agent-b" #{:read}))))))
+  (let [[c state streams] (ch)
+        names #(mapv :name (:tools (:ok (manifest-as c % #{:read}))))]
+    (is (= ["todo_add" "todo_list"] (names "agent-a")))
+    (is (= ["todo_list"] (names "agent-b")))
     (is (= #{"agent-a" "agent-b"} (set (keys @streams))))
+    (swap! state assoc :scopes {"agent-a" #{:read} "agent-b" #{:read :write}})
+    (is (= ["todo_add" "todo_list"] (names "agent-a")) "without an event, the cached listing")
     ((get-in @streams ["agent-a" :text!])
      (str "data: " (json/write {:jsonrpc "2.0" :method rpc/list-changed}) "\n\n"))
-    (is (= ["todo_add" "todo_list"]
-           (mapv :name (:tools (:ok (manifest-as c "agent-a" #{:read})))))
-        "A's remote token and refreshed view are used after SSE")
-    (is (= ["todo_list"]
-           (mapv :name (:tools (:ok (manifest-as c "agent-b" #{:read :write})))))
-        "B's remote view remains isolated")))
+    (is (= ["todo_list"] (names "agent-a")) "A's listing is refetched after its list_changed")
+    (is (= ["todo_list"] (names "agent-b")) "B was not notified: its cached listing stands")))
 
 (deftest fleet-refreshes-the-notified-target-without-crossing-actors
   (let [[c state streams] (ch)
