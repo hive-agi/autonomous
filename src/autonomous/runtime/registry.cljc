@@ -34,7 +34,8 @@
    :call-detail nil
    :lease       nil
    :pending     {}
-   :next-id     0})
+   :next-id     0
+   :next-link   0})
 
 (defn- holding
   "State `st` holding `surface` as its base with no decorators, so the
@@ -233,16 +234,24 @@
   (transition! #(exposed (update % :decorators into decorators))))
 
 (defn- legacy-name
-  "A chain :name for the next use! wrapper of `surface`, unique in its chain."
-  [surface]
-  (keyword "autonomous.use" (str "mw-" (count (:interceptors surface)))))
+  "The chain :name of use! wrapper number `n`."
+  [n]
+  (keyword "autonomous.use" (str "mw-" n)))
+
+(defn- with-legacy-link
+  "Ok of state `st` with use! wrapper `mw` appended to its call chain under
+   the next number of its :next-link counter, which only grows. Pure."
+  [st mw]
+  (let [n (:next-link st)]
+    (answer/bind (rebased st #(surface/add-interceptor % (chain/legacy-link (legacy-name n) mw)))
+                 #(answer/ok (assoc % :next-link (inc n))))))
 
 (defn add-middleware!
   "Wrap every invocation: `mw` is (fn [handler] (fn [tool args grant] ...)).
-   Appends one legacy link to the call chain; the last wrapper registered
-   runs outermost."
+   Appends one legacy link, named by a counter that never repeats in this
+   runtime, to the call chain; the last wrapper registered runs outermost."
   [mw]
-  (update-base! #(surface/add-interceptor % (chain/legacy-link (legacy-name %) mw))))
+  (transition! #(with-legacy-link % mw)))
 
 ;; =============================================================================
 ;; Journal and lease

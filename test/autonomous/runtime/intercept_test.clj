@@ -77,6 +77,14 @@
       (a/use! (fn [_] (fn [_ _ _] (throw (ex-info "mw" {:autonomous/error :t/mw})))))
       (is (= :t/mw (get-in (call "t_echo" {:text "x"}) [:error :type]))))))
 
+(deftest use!-links-are-numbered-by-a-counter-not-the-chain-length
+  (let [mw (fn [h] h)]
+    (a/use! mw)
+    (a/intercept! {:name :t/between :enter identity})
+    (a/use! mw)
+    (is (= [:autonomous.use/mw-0 :t/between :autonomous.use/mw-1]
+           (mapv :name (:interceptors (registry/surface-value)))))))
+
 (def ^:private redacted (decorator/each-tool (decorator/redact-output [[:token]])))
 
 (deftest redact-output-masks-direct-and-settled-results
