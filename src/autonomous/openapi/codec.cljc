@@ -72,21 +72,35 @@
 (defn- join-url [base path]
   (str (str/replace (str base) #"/+$" "") path))
 
-(defn- body-of [{:keys [body]} args]
+(defn- flat-body
+  "L1 Promote: the non-nil args the flat body declares, nil when there are
+   none and the body is optional."
+  [{:keys [keys required?]} args]
+  (let [ks (set keys)
+        b  (into {} (filter (fn [[k v]] (and (contains? ks k) (some? v)))) args)]
+    (when (or (seq b) required?) b)))
+
+(defn- body-of
+  "L1 Promote: the request payload of `args` for the operation's body mode
+   (a closed set); nil without a body."
+  [{:keys [body]} args]
   (case (:mode body)
-    :flat   (let [ks (set (:keys body))
-                  b  (into {} (filter (fn [[k v]] (and (contains? ks k) (some? v)))) args)]
-              (when (or (seq b) (:required? body)) b))
+    :flat   (flat-body body args)
     :nested (:body args)
     nil))
 
+(defn- request-url
+  "L1 Promote: `base-url` joined with `path`, then the query string if any."
+  [base-url path query]
+  (cond-> (join-url base-url path) (seq query) (str "?" (str/join "&" query))))
+
 (defn encode
-  "Pure: Ring-style request for `operation` with `args` at `base-url`."
+  "L2 Pipeline: Ring-style request for `operation` with `args` at `base-url`."
   [operation base-url args]
   (let [{:keys [path query headers]} (request-parts operation args)
         payload (body-of operation args)]
     {:method  (keyword (:method operation))
-     :url     (cond-> (join-url base-url path) (seq query) (str "?" (str/join "&" query)))
+     :url     (request-url base-url path query)
      :headers (cond-> headers (some? payload) (assoc "content-type" (get-in operation [:body :media])))
      :body    (when (some? payload) (write-json payload))}))
 
@@ -136,15 +150,26 @@
       (when text (subs text 0 (min 300 (count text))))
       (str "HTTP " status)))
 
+(defn- refusal-type
+  "L1 Promote: the refusal type of HTTP `status`: a known one, else a
+   server or HTTP error by class."
+  [status]
+  (or (refusal-types status) (if (<= 500 status) :openapi/server-error :openapi/http-error)))
+
+(defn- problem-data
+  "L1 Promote: refusal data of `status` and the problem map, when there is one."
+  [status problem]
+  (cond-> {:status status}
+    problem (assoc :problem problem)
+    (seq (:errors problem)) (assoc :errors (:errors problem))))
+
 (defn- problem-refusal
-  "Pure: translate a non-success status and parsed body to a refusal."
+  "L1 Promote: translate a non-success status and parsed body to a refusal."
   [operation status {:keys [value text]}]
   (let [problem (when (map? value) value)]
-    (answer/refusal (or (refusal-types status) (if (<= 500 status) :openapi/server-error :openapi/http-error))
+    (answer/refusal (refusal-type status)
                     (str (:operation-id operation) ": " (problem-message problem text status))
-                    (cond-> {:status status}
-                      problem (assoc :problem problem)
-                      (seq (:errors problem)) (assoc :errors (:errors problem))))))
+                    (problem-data status problem))))
 
 (defn- check-schema
   "Pure: validate a decoded value, treating an unusable schema as absent."

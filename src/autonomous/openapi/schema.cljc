@@ -69,67 +69,106 @@
      "properties" (apply merge (map #(get % "properties") parts))
      "required"   (vec (distinct (mapcat #(get % "required") parts)))}))
 
-(defn- object-schema [s opts]
-  (let [ps       (get s "properties")
-        required (set (get s "required"))
-        skip?    (fn [p] (and (:input? opts) (true? (get p "readOnly"))))
-        entries  (for [[k p] (sort-by key ps) :when (not (skip? p))]
-                   [(keyword k)
-                    (cond-> {} (not (contains? required k)) (assoc :optional true))
-                    (->malli p opts)])
-        addl     (get s "additionalProperties")]
+(defn- property-entries
+  "L1 Promote: [k opts form] of each property of object schema `s`, sorted
+   by name; :input? drops readOnly ones."
+  [s opts]
+  (let [required (set (get s "required"))]
+    (for [[k p] (sort-by key (get s "properties"))
+          :when (not (and (:input? opts) (true? (get p "readOnly"))))]
+      [(keyword k)
+       (cond-> {} (not (contains? required k)) (assoc :optional true))
+       (->malli p opts)])))
+
+(defn- object-schema
+  "L1 Promote: malli of an object schema: a :map of its properties, else a
+   :map-of its additionalProperties schema, else an open :map."
+  [s opts]
+  (let [entries (property-entries s opts)
+        addl    (get s "additionalProperties")]
     (cond
       (seq entries) (into [:map] (map (fn [[k o v]] (if (empty? o) [k v] [k o v]))) entries)
       (map? addl)   [:map-of [:or :keyword :string] (->malli addl opts)]
       :else         [:map])))
 
-(defn- typed [t s opts]
+(defn- array-schema
+  "L1 Promote: malli :vector of an array schema, its item bounds and items."
+  [s opts]
+  (let [b (bounds s "minItems" "maxItems")]
+    (cond-> [:vector]
+      (seq b) (conj b)
+      true    (conj (if (map? (get s "items")) (->malli (get s "items") opts) :any)))))
+
+(defn- typed
+  "L1 Promote: malli of schema `s` read as JSON type `t` (a closed set)."
+  [t s opts]
   (case t
     "string"  (string-schema s)
     "integer" (number-schema :int s)
     "number"  (number-schema :double s)
     "boolean" [:boolean]
-    "array"   (let [b (bounds s "minItems" "maxItems")]
-                (cond-> [:vector]
-                  (seq b) (conj b)
-                  true    (conj (if (map? (get s "items")) (->malli (get s "items") opts) :any))))
+    "array"   (array-schema s opts)
     "object"  (object-schema s opts)
     [:any]))
 
-(defn- untyped [s opts]
+(defn- const-schema
+  "L1 Promote: [:= c] for a scalar const; a coll literal right after the
+   tag would read as malli properties, so a coll const is :any."
+  [c]
+  (if (coll? c) [:any] [:= c]))
+
+(defn- enum-schema
+  "L1 Promote: :enum of the scalar, non-nil values of `vs`, else :any."
+  [vs]
+  (let [vs (remove #(or (nil? %) (coll? %)) vs)]
+    (if (seq vs) (into [:enum] vs) [:any])))
+
+(defn- all-of-schema
+  "L1 Promote: allOf of objects as one merged object, else an :and of parts."
+  [s opts]
+  (let [parts (get s "allOf")]
+    (if-let [m (merge-all-of parts)]
+      (->malli (merge (dissoc s "allOf") m) opts)
+      (into [:and] (map #(->malli % opts)) parts))))
+
+(defn- untyped
+  "L1 Promote: malli of a schema with no single type, by the first keyword
+   it carries (a closed set); markers and anything unknown are :any."
+  [s opts]
   (cond
     (contains? s "x-autonomous-cycle")      [:any]
     (contains? s "x-autonomous-unresolved") [:any]
-    ;; A coll literal right after the tag would read as malli properties.
-    (contains? s "const")                   (let [c (get s "const")]
-                                              (if (coll? c) [:any] [:= c]))
-    (sequential? (get s "enum"))            (let [vs (remove #(or (nil? %) (coll? %)) (get s "enum"))]
-                                              (if (seq vs) (into [:enum] vs) [:any]))
-    (sequential? (get s "allOf"))           (let [parts (get s "allOf")]
-                                              (if-let [m (merge-all-of parts)]
-                                                (->malli (merge (dissoc s "allOf") m) opts)
-                                                (into [:and] (map #(->malli % opts)) parts)))
+    (contains? s "const")                   (const-schema (get s "const"))
+    (sequential? (get s "enum"))            (enum-schema (get s "enum"))
+    (sequential? (get s "allOf"))           (all-of-schema s opts)
     (sequential? (get s "oneOf"))           (into [:or] (map #(->malli % opts)) (get s "oneOf"))
     (sequential? (get s "anyOf"))           (into [:or] (map #(->malli % opts)) (get s "anyOf"))
     (contains? s "properties")              (object-schema s opts)
     :else                                   [:any]))
 
+(defn- combinator?
+  "L1 Promote: true when `s` is read by its keywords, not its type."
+  [s]
+  (some #(contains? s %) ["enum" "const" "allOf" "oneOf" "anyOf"]))
+
+(defn- base-form
+  "L1 Promote: malli of map schema `s` before its properties and nullability."
+  [s opts]
+  (let [ts (disj (types s) "null")]
+    (cond
+      (combinator? s)  (untyped s opts)
+      (= 1 (count ts)) (typed (first ts) s opts)
+      (seq ts)         (into [:or] (map #(typed % s opts)) (sort ts))
+      :else            (untyped s opts))))
+
 (defn ->malli
-  "Malli form of resolved JSON Schema `s`. opts: :input? true drops
-   readOnly properties (a request never sends them)."
+  "L1 Promote: malli form of resolved JSON Schema `s`. opts: :input? true
+   drops readOnly properties (a request never sends them). Total."
   ([s] (->malli s {}))
   ([s opts]
    (if-not (map? s)
      [:any]
-     (let [ts     (disj (types s) "null")
-           enum?  (or (contains? s "enum") (contains? s "const")
-                      (contains? s "allOf") (contains? s "oneOf") (contains? s "anyOf"))
-           form   (cond
-                    enum?          (untyped s opts)
-                    (= 1 (count ts)) (typed (first ts) s opts)
-                    (seq ts)       (into [:or] (map #(typed % s opts)) (sort ts))
-                    :else          (untyped s opts))
-           form   (with-props form (props s))]
+     (let [form (with-props (base-form s opts) (props s))]
        (if (nullable? s) [:maybe form] form)))))
 
 (defn map-form?

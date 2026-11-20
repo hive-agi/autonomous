@@ -35,6 +35,8 @@
     autonomous.openapi-codec-test
     autonomous.openapi-codec-strata-test
     autonomous.openapi-invoke-test
+    autonomous.openapi-boundary-strata-test
+    autonomous.openapi-pure-strata-test
     autonomous.asyncapi-core-test
     autonomous.asyncapi-source-test
     autonomous.bb-mcp.mount-test])

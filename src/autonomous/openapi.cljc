@@ -20,34 +20,40 @@
             [autonomous.openapi.invoke]))
 
 (defn derive-tools
-  "Ok [[id spec] ...] of the exposed operations, or a refusal. See
-   autonomous.openapi.derive/derive-tools for opts."
+  "L2 Pipeline: Ok [[id spec] ...] of the exposed operations, or a
+   refusal. See autonomous.openapi.derive/derive-tools for opts."
   [bundle-or-doc opts]
   (derive/derive-tools bundle-or-doc opts))
 
 (defn- empty-surface
-  "Pure: the initial Surface, with an explicit app or a name from the source prefix."
+  "L1 Promote: the initial Surface, with an explicit app or one named from
+   the source prefix."
   [{:keys [app prefix]}]
   {:app (or app {:name (or (some-> prefix name) "openapi")}) :tools {} :resources {}})
 
+(defn- add-tool
+  "L1 Promote: Ok `surface` with compiled `tool`, or a :name-clash refusal
+   when its name is taken."
+  [surface {:keys [name] :as tool}]
+  (if (contains? (:tools surface) name)
+    (answer/refusal :name-clash (str "tool name " name " is derived twice"))
+    (answer/ok (assoc-in surface [:tools name] tool))))
+
 (defn- add-tool-spec
-  "Pure: compile one tool spec and add it unless the name is already taken."
+  "L2 Pipeline: one fold step: compile tool spec [id spec] and add it."
   [surface [id spec]]
-  (answer/bind (affordance/->tool id spec)
-               (fn [{:keys [name] :as tool}]
-                 (if (contains? (:tools surface) name)
-                   (answer/refusal :name-clash (str "tool name " name " is derived twice"))
-                   (answer/ok (assoc-in surface [:tools name] tool))))))
+  (answer/bind (affordance/->tool id spec) #(add-tool surface %)))
 
 (defn surface
-  "Pure: Ok Surface of the exposed operations, or the first refusal."
+  "L2 Pipeline: Ok Surface of the exposed operations, or the first refusal."
   [bundle-or-doc opts]
   (answer/bind (derive-tools bundle-or-doc opts)
                #(answer/reduce-answer add-tool-spec (empty-surface opts) %)))
 
 (defn install!
-  "Effect: register the exposed operations in this runtime. Answers Ok of
-   the tool names, or the derivation refusal without registering anything."
+  "L3 Boundary: register the exposed operations in this runtime. Answers
+   Ok of the tool names, or the derivation refusal without registering
+   anything."
   [bundle-or-doc opts]
   (answer/bind (derive-tools bundle-or-doc opts)
                #(answer/ok (mapv (fn [[id spec]] (core/reg-tool id spec)) %))))

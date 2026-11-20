@@ -30,8 +30,8 @@
 ;; Reading the spec
 
 (defn operations
-  "Every operation of `bundle`: [{:operation-id :method :path :path-item
-   :op}] in spec order, unresolved."
+  "L3 Collect: every operation of `bundle`: [{:operation-id :method :path
+   :path-item :op}] in spec order, unresolved."
   [bundle]
   (for [[path item] (get (doc/root-doc bundle) "paths")
         m           methods*
@@ -186,12 +186,17 @@
 ;; -----------------------------------------------------------------------------
 ;; Promoting an Operation to a tool spec
 
-(defn- describe [{:keys [op method path]}]
+(defn- describe
+  "L1 Promote: the default tool description: summary, description and the
+   method and path, blank parts left out."
+  [{:keys [op method path]}]
   (let [s (str/trim (str (get op "summary")))
         d (str/trim (str (get op "description")))]
     (str/join "\n\n" (remove str/blank? [s d (str (str/upper-case method) " " path)]))))
 
-(defn- tool-id [prefix op-id]
+(defn- tool-id
+  "L1 Promote: the tool id of `op-id`, namespaced by `prefix` when given."
+  [prefix op-id]
   (if prefix (keyword (name prefix) op-id) (keyword op-id)))
 
 (defn- read-only?
@@ -223,19 +228,22 @@
 ;; -----------------------------------------------------------------------------
 ;; Guarding and folding the exposure
 
+(defn- unknown-operations
+  "L1 Promote: the :openapi/unknown-operation refusal for `unknown` names."
+  [unknown by-id]
+  (answer/refusal :openapi/unknown-operation
+                  (str "the spec has no operationId " (str/join ", " (map name unknown)))
+                  {:unknown (mapv name unknown) :known (vec (sort (keys by-id)))}))
+
 (defn- checked-exposure
-  "Pure: Ok of the exposure map, or its refusal before any operation is compiled."
+  "L1 Promote: Ok of the exposure map, or its refusal before any operation
+   is compiled: an empty map, or a name the spec does not have."
   [expose by-id]
   (let [unknown (remove #(contains? by-id (name %)) (keys expose))]
     (cond
-      (empty? expose)
-      (answer/refusal :openapi/nothing-exposed "opts :expose names no operationId; nothing is derived")
-
-      (seq unknown)
-      (answer/refusal :openapi/unknown-operation
-                      (str "the spec has no operationId " (str/join ", " (map name unknown)))
-                      {:unknown (mapv name unknown) :known (vec (sort (keys by-id)))})
-      :else (answer/ok expose))))
+      (empty? expose) (answer/refusal :openapi/nothing-exposed "opts :expose names no operationId; nothing is derived")
+      (seq unknown)   (unknown-operations unknown by-id)
+      :else           (answer/ok expose))))
 
 (defn- append-spec
   "Pure: one exposure fold step; append only if the operation compiles."
@@ -243,8 +251,14 @@
   (answer/bind (->spec bundle (by-id (name op-id)) cfg opts)
                #(answer/ok (conj specs %))))
 
+(defn- operations-by-id
+  "L1 Promote: operationId -> operation of every operation in `bundle`."
+  [bundle]
+  (into {} (map (juxt :operation-id identity)) (operations bundle)))
+
 (defn derive-tools
-  "Tool specs of the operations of `bundle-or-doc` that opts :expose names.
+  "L2 Pipeline: tool specs of the operations of `bundle-or-doc` that opts
+   :expose names.
 
    opts:
      :expose     {operationId {:scope kw :scopes [kw] :read-only? bool
@@ -259,6 +273,6 @@
    {:ok [[id spec] ...]} in :expose order, or a refusal."
   [bundle-or-doc {:keys [expose] :as opts}]
   (let [bundle (doc/->bundle bundle-or-doc)
-        by-id  (into {} (map (juxt :operation-id identity)) (operations bundle))]
+        by-id  (operations-by-id bundle)]
     (answer/bind (checked-exposure expose by-id)
                  #(answer/reduce-answer (partial append-spec bundle by-id opts) [] %))))
