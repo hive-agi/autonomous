@@ -37,7 +37,9 @@
    java.util.concurrent.Future). No JVM-only class is named outside the
    :clj-only branch, so the namespace compiles on every runtime."
   [x]
-  #?(:cljs    (and (some? x) (object? x) (fn? (.-then x)))
+  ;; Not `object?`: that is true only for plain {} objects, never for a
+  ;; Promise. The property is read by name so advanced compilation keeps it.
+  #?(:cljs    (and (some? x) (fn? (unchecked-get x "then")))
      :cljw    (or (future? x) (instance? promise-type x))
      :bb      (or (future? x) (instance? promise-type x))
      :default (or (future? x) (instance? promise-type x)
@@ -61,7 +63,7 @@
         settle! (fn [a]
                   (registry/settle! id a)
                   (registry/record! (journal/settled-entry id a (:call-detail (registry/snapshot)))))]
-    #?(:cljs    (-> x
+    #?(:cljs    (-> ^js x
                     (.then (fn [v] (settle! (answer/ok (wire/->wire v)))))
                     (.catch (fn [e] (settle! (answer/from-exception e)))))
        :default (future

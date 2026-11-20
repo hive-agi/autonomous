@@ -36,3 +36,28 @@
     (refusal (or (:autonomous/error data) :tool-threw)
              (or (ex-message e) (str e))
              (not-empty (dissoc data :autonomous/error)))))
+
+(defn bind
+  "Railway: when answer `a` is Ok of v, (f v) — itself an Answer; a Pending
+   or Refusal passes through untouched, so the next step never runs. Pure."
+  [a f]
+  (if (ok? a) (f (:ok a)) a))
+
+(defmacro let-answer
+  "Railway let: each binding's expression is an Answer; its Ok value is
+   bound (destructuring works) and the next step runs. The first Pending
+   or Refusal is the value of the whole form; with all Ok, the body's
+   value. Steps are pairs, like let. Pure."
+  [bindings & body]
+  (if (empty? bindings)
+    `(do ~@body)
+    (let [[sym expr & more] bindings]
+      `(bind ~expr (fn [~sym] (let-answer [~@more] ~@body))))))
+
+(defn reduce-answer
+  "Railway fold: (f acc v) — an Answer — over `coll` from seed `init`,
+   short-circuiting on the first Pending or Refusal f answers. The
+   monoid-fold shape for steps that may fail. Pure."
+  [f init coll]
+  (reduce (fn [a v] (if (ok? a) (f (:ok a) v) (reduced a)))
+          (ok init) coll))

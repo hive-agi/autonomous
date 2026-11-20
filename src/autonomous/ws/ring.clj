@@ -37,19 +37,28 @@
    :hubs             (:hubs opts ws/default-hubs)
    :hello-timeout-ms (:hello-timeout-ms opts ws/hello-timeout-ms)})
 
+(def ^:private open-wait-ms
+  "How long a frame waits for the link `on-open` creates."
+  5000)
+
 (defn- kit-response
-  "http-kit: take over the request's channel."
+  "http-kit: take over the request's channel. http-kit may hand the first
+   frame to :on-receive before :on-open has run (a runtime sends :hello the
+   moment the socket opens), so the link is a promise frames wait for, not
+   an atom they could read while it is still nil."
   [lopts req]
   (let [as-channel (requiring-resolve 'org.httpkit.server/as-channel)
         send!      (requiring-resolve 'org.httpkit.server/send!)
         close      (requiring-resolve 'org.httpkit.server/close)
-        link       (atom nil)]
+        link       (promise)]
     (as-channel req
                 {:on-open    (fn [ch]
-                               (reset! link (ws/open-link lopts {:send!  (fn [text] (send! ch text false))
-                                                                 :close! (fn [_code _reason] (close ch))})))
-                 :on-receive (fn [_ch msg] (when (string? msg) (ws/on-text! lopts @link msg)))
-                 :on-close   (fn [_ch _status] (some-> @link ws/on-close!))})))
+                               (deliver link (ws/open-link lopts {:send!  (fn [text] (send! ch text false))
+                                                                  :close! (fn [_code _reason] (close ch))})))
+                 :on-receive (fn [_ch msg]
+                               (when-let [l (and (string? msg) (deref link open-wait-ms nil))]
+                                 (ws/on-text! lopts l msg)))
+                 :on-close   (fn [_ch _status] (some-> (deref link 0 nil) ws/on-close!))})))
 
 (defn- ring-response
   "Ring 1.11+: a websocket listener response."
