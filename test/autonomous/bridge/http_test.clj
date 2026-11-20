@@ -398,6 +398,14 @@
       (is (seq @seen))
       (is (not-any? #(get-in % [:headers "authorization"]) @seen)))))
 
+(deftest an-empty-credential-policy-never-goes-anonymous
+  (let [[c seen] (spied (assoc target :credentials {}))
+        a        (manifest-as c "agent-a" #{:read})]
+    (is (= :channel/credential-missing (get-in a [:error :type])) (pr-str a))
+    (is (empty? @seen) "nothing was sent"))
+  (testing "and the schema refuses an empty policy"
+    (is (not (m/validate bs/Target (assoc target :credentials {}))))))
+
 (deftest credential-config-promotes-references-only
   (let [entry {:app "todo" :channel :http :url remote-url
                :credentials (credential-policy)}

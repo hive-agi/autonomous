@@ -80,12 +80,13 @@
 
 (defn- selected-reference
   "Ok of `grant`'s credential reference on `target`, nil for a target with
-   no credential configuration at all. A target that configures
-   :credentials fails closed: an actor matching no entry, with no :default
-   and no legacy :token-env, is refused naming only actor and target id."
+   no credential configuration at all. A target that carries the
+   :credentials key fails closed, even when it is empty: an actor matching
+   no entry, with no :default and no legacy :token-env, is refused naming
+   only actor and target id."
   [target grant]
   (let [reference (credential-reference target grant)]
-    (if (and (nil? reference) (seq (:credentials target)))
+    (if (and (nil? reference) (some? (:credentials target)))
       (answer/refusal :channel/credential-missing
                       (str "no credential is configured for agent " (:actor grant)
                            " on " (:target/id target) ", and no :default: refusing to go anonymous")

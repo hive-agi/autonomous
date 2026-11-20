@@ -65,8 +65,9 @@
       (url/bearer-allowed? (:url target))))
 
 (def CredentialPolicy
-  "Remote credential references by caller actor, with an optional :default."
-  [:map-of [:or :string [:= :default]] CredentialReference])
+  "Remote credential references by caller actor, with an optional :default.
+   Never empty: a present but empty policy would read as no policy at all."
+  [:map-of {:min 1} [:or :string [:= :default]] CredentialReference])
 
 (def HttpTarget
   "A remote app reached by URL over MCP-over-HTTP (its own /mcp, the handler
