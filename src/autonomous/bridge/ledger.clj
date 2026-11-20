@@ -16,35 +16,20 @@
   [target runtime {:keys [seq at]}]
   (str target "|" runtime "|" at "|" seq))
 
-(def ^:private optional-fields
-  "L1 Promote: [journal-key entry-attr promote-fn] of the fields an entry
-   may lack; a falsy value is left out."
-  [[:actor :entry/actor str] [:tool :entry/tool str] [:outcome :entry/outcome identity]])
-
-(defn- promote-optional
-  "L1 Promote: `m` with each truthy optional field of `entry` promoted."
-  [m entry]
-  (reduce (fn [m [k attr f]] (if-let [v (get entry k)] (assoc m attr (f v)) m))
-          m optional-fields))
-
 (defn ->ledger-entry
   "L1 Promote: LedgerEntry for journal `entry` drained from `runtime` of
-   `target`."
+   `target`; an optional field with a falsy value is left out."
   [target runtime entry]
-  (promote-optional {:entry/key     (entry-key target runtime entry)
-                     :entry/target  target
-                     :entry/runtime (str runtime)
-                     :entry/seq     (:seq entry)
-                     :entry/at      (:at entry)
-                     :entry/kind    (:kind entry)
-                     :entry/data    (wire/print-edn (apply dissoc entry promoted-keys))}
-                    entry))
-
-(defn- view-optional
-  "L1 Promote: `view` with each truthy optional field of LedgerEntry `e`."
-  [view e]
-  (reduce (fn [v [k attr]] (if-let [x (get e attr)] (assoc v k x) v))
-          view optional-fields))
+  (cond-> {:entry/key     (entry-key target runtime entry)
+           :entry/target  target
+           :entry/runtime (str runtime)
+           :entry/seq     (:seq entry)
+           :entry/at      (:at entry)
+           :entry/kind    (:kind entry)
+           :entry/data    (wire/print-edn (apply dissoc entry promoted-keys))}
+    (:actor entry)   (assoc :entry/actor (str (:actor entry)))
+    (:tool entry)    (assoc :entry/tool (str (:tool entry)))
+    (:outcome entry) (assoc :entry/outcome (:outcome entry))))
 
 (defn ->view
   "L1 Promote: what an agent reads for a LedgerEntry. Where it came from
@@ -52,19 +37,22 @@
    field never collides with a promoted one."
   [e]
   (let [data (wire/read-edn (:entry/data e))]
-    (cond-> (view-optional {:source {:target (:entry/target e) :runtime (:entry/runtime e)}
-                            :seq (:entry/seq e) :at (:entry/at e) :kind (:entry/kind e)}
-                           e)
-      (seq data) (assoc :data data))))
+    (cond-> {:source {:target (:entry/target e) :runtime (:entry/runtime e)}
+             :seq (:entry/seq e) :at (:entry/at e) :kind (:entry/kind e)}
+      (:entry/actor e)   (assoc :actor (:entry/actor e))
+      (:entry/tool e)    (assoc :tool (:entry/tool e))
+      (:entry/outcome e) (assoc :outcome (:entry/outcome e))
+      (seq data)         (assoc :data data))))
 
 (def ^:private query-clauses
-  "L1 Promote: LedgerQuery key -> (fn [query-value entry] bool), a closed set."
-  {:actor  (fn [v e] (= v (:entry/actor e)))
-   :kind   (fn [v e] (= v (:entry/kind e)))
-   :tool   (fn [v e] (= v (:entry/tool e)))
-   :target (fn [v e] (= v (:entry/target e)))
-   :since  (fn [v e] (>= (:entry/at e) v))
-   :until  (fn [v e] (< (:entry/at e) v))})
+  "LedgerQuery key and (fn [query-value entry] bool), in the order they
+   are checked; a closed set."
+  [[:actor  (fn [v e] (= v (:entry/actor e)))]
+   [:kind   (fn [v e] (= v (:entry/kind e)))]
+   [:tool   (fn [v e] (= v (:entry/tool e)))]
+   [:target (fn [v e] (= v (:entry/target e)))]
+   [:since  (fn [v e] (>= (:entry/at e) v))]
+   [:until  (fn [v e] (< (:entry/at e) v))]])
 
 (defn matches?
   "L1 Promote: true when LedgerEntry `e` satisfies every clause LedgerQuery

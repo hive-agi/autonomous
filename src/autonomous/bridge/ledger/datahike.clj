@@ -30,7 +30,7 @@
    :entry/actor :entry/tool :entry/outcome :entry/data])
 
 (def ^:private equality-attrs
-  "L1 Promote: LedgerQuery key -> the attribute it must equal."
+  "LedgerQuery key and the attribute it must equal."
   [[:actor :entry/actor] [:kind :entry/kind] [:tool :entry/tool] [:target :entry/target]])
 
 (defn- equality-clauses

@@ -87,10 +87,11 @@
   (ledger/->ledger-entry "app" 7 {:seq 1 :at 100 :kind :k :actor :a :tool "t" :outcome :ok :x 1}))
 
 (deftest optional-fields-promote-only-when-present
-  (let [promote #'ledger/promote-optional]
+  (let [promoted (fn [e] (select-keys (ledger/->ledger-entry "app" 7 (merge {:seq 1 :at 1 :kind :k} e))
+                                      [:entry/actor :entry/tool :entry/outcome]))]
     (is (= {:entry/actor ":a" :entry/tool "t" :entry/outcome :ok}
-           (promote {} {:actor :a :tool 't :outcome :ok})))
-    (is (= {} (promote {} {:actor nil :outcome false})))))
+           (promoted {:actor :a :tool 't :outcome :ok})))
+    (is (= {} (promoted {:actor nil :outcome false})))))
 
 (deftest views-carry-only-present-optional-fields
   (let [bare (ledger/->ledger-entry "app" 7 {:seq 2 :at 200 :kind :k})]
