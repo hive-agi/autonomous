@@ -193,3 +193,7 @@ neither sees nor calls them. Still, install them only in development builds
 - `expose-db!` lists `:paths` and `:redact`s anything personal.
 - `observe-events!` keeps `:payloads?` off unless the journal may hold what
   users type.
+- `journal-calls!` keeps `:args?` off unless the journal (and the ledger it
+  drains into) may hold what agents send, and `:redact`s every args path
+  that carries a secret or personal data. `:errors?` keeps refusal
+  messages, which may quote what the tool threw.

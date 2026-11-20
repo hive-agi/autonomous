@@ -147,6 +147,14 @@
    [:seq [:int {:min 0}]]
    [:entries [:vector Entry]]])
 
+(def CallDetail
+  "What an app lets the journal keep about each tool call, beyond actor, tool,
+   outcome and duration. Every flag is off by default."
+  [:map {:closed true}
+   [:args? {:optional true} :boolean]
+   [:errors? {:optional true} :boolean]
+   [:redact {:optional true} [:sequential [:vector {:min 1} :any]]]])
+
 ;; =============================================================================
 ;; Requests
 ;; =============================================================================
