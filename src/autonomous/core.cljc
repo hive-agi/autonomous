@@ -75,10 +75,11 @@
   (registry/add-interceptor! interceptor))
 
 (defn decorate!
-  "Replace the surface with the result of Surface -> Surface fns, applied
-   left to right (see autonomous.decorator; lift a Tool -> Tool fn with
-   `each-tool`). Throws, changing nothing, when a result is not a valid
-   Surface."
+  "Decorate the surface agents see with Surface -> Surface fns, applied
+   left to right after earlier ones (see autonomous.decorator; lift a
+   Tool -> Tool fn with `each-tool`). They persist: tools and resources
+   registered later are decorated too. Throws, changing nothing, when a
+   result is not a valid Surface."
   [& decorators]
   (registry/decorate! decorators))
 
