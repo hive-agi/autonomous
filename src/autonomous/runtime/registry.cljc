@@ -207,7 +207,11 @@
     (:name tool)))
 
 (defn remove-tool!
-  "Unregister the tool with id or MCP name `x` (its registered name)."
+  "Unregister the tool with id or MCP name `x` (its registered name).
+   The name is the one given at registration, before decorators: under
+   (prefix-names \"app_\") remove :t/echo or \"t_echo\". The exposed name
+   \"app_t_echo\" matches nothing in the registered surface, so removing
+   by it is a no-op, not an error. Prefer the id."
   [x]
   (update-base! #(answer/ok (surface/drop-tools % [x]))))
 
