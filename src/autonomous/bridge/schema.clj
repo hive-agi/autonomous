@@ -62,7 +62,6 @@
    host other than this one."
   [target]
   (or (not (or (:token-env target) (seq (:credentials target))))
-      (nil? (:url target))
       (url/bearer-allowed? (:url target))))
 
 (def CredentialPolicy
