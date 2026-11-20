@@ -110,8 +110,16 @@
       :else (answer/refusal :app-clash "two surfaces name different apps"
                             {:left a :right b}))))
 
+(defn- tool-data
+  "L1: a tool's identity for merging: every field but the fn-valued ones
+   (handler, compiled decode/explain), which no two compilations share.
+   Two tools of one name and id that differ in scopes, schemas or any
+   other data are different affordances."
+  [tool]
+  (into {} (remove (comp fn? val)) tool))
+
 (defmethod merge-part :tools [_ a b]
-  (keyed-merge "tool" :id :id (:tools a) (:tools b)))
+  (keyed-merge "tool" tool-data :id (:tools a) (:tools b)))
 
 (defmethod merge-part :resources [_ a b]
   (keyed-merge "resource" #(dissoc % :read) :name (:resources a) (:resources b)))

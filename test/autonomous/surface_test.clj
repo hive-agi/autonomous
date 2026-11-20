@@ -63,6 +63,17 @@
     (is (= {:ok a} (surface/merge-surfaces a a)))
     (is (= {:ok a} (surface/merge-surfaces a (s-of {"a_x" t}))))))
 
+(deftest merge-refuses-one-id-under-one-name-with-different-data
+  (let [t (tool :a/x)
+        a (s-of {"a_x" t})]
+    (doseq [[why t'] [["scopes" (assoc t :scopes #{:admin})]
+                      ["description" (assoc t :description "another")]
+                      ["read-only?" (assoc t :read-only? true)]]]
+      (is (= :name-clash (get-in (surface/merge-surfaces a (s-of {"a_x" t'})) [:error :type]))
+          (str "never first-writer-wins on " why)))
+    (is (= {:ok a} (surface/merge-surfaces a (s-of {"a_x" (assoc t :handler (fn [_ _] :other))})))
+        "only fn-valued fields may differ")))
+
 (deftest merge-refuses-two-readers-of-one-uri
   (let [a (s-of {} {"app://x" (assoc (resource "app://x") :description "one")})
         b (s-of {} {"app://x" (assoc (resource "app://x") :description "two")})]
