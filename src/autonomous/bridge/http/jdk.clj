@@ -11,7 +11,7 @@
             [clojure.string :as str])
   (:import (java.io BufferedReader InputStreamReader)
            (java.net URI)
-           (java.net.http HttpClient HttpClient$Redirect HttpRequest HttpRequest$BodyPublisher
+           (java.net.http HttpClient HttpClient$Redirect HttpRequest HttpRequest$Builder HttpRequest$BodyPublisher
                           HttpRequest$BodyPublishers HttpResponse HttpResponse$BodyHandlers)
            (java.time Duration)))
 
