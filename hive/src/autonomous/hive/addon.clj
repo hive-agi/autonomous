@@ -51,7 +51,7 @@
     (when (instance? java.io.Closeable inner) (.close ^java.io.Closeable inner))))
 
 (defn- shared-ledger-config
-  "The fleet's one ledger: :autonomous/ledger, else the first app's
+  "Promote: the fleet's one ledger: :autonomous/ledger, else the first app's
    :app/ledger (the per-app key of earlier versions), else memory."
   [cfg app-cfgs]
   (or (:autonomous/ledger cfg)
@@ -101,14 +101,14 @@
     (fleet-state f ids app-cfgs)))
 
 (defn close-fleet!
-  "Close every member's channel."
+  "Boundary: close every member's channel."
   [st]
   (doseq [[_ ctx] (get-in st [:fleet :members])]
     (when (instance? java.io.Closeable (:channel ctx))
       (.close ^java.io.Closeable (:channel ctx)))))
 
 (defn- session-of
-  "The one session `actor` uses across the fleet, opened on first use."
+  "Boundary: the one session `actor` uses across the fleet, opened on first use."
   [st actor]
   (or (get @(:sessions st) actor)
       (let [ses (s/open-session (str addon-id-value ":hive:" actor)
@@ -116,7 +116,7 @@
         (get (swap! (:sessions st) #(if (contains? % actor) % (assoc % actor ses))) actor))))
 
 (defn- run-tool!
-  "Answer of server tool `tool` with `args` as `actor`, keeping the session
+  "Boundary: answer of server tool `tool` with `args` as `actor`, keeping the session
    it leaves (an attach pins it)."
   [st actor tool args]
   (let [{:keys [answer session]} (server/call-tool (:srv st) (session-of st actor) tool args)]
@@ -128,13 +128,13 @@
 ;; =============================================================================
 
 (defn exposed-tool
-  "Fleet name of tool `tool` of app `app`; `tool` as is when no app is named
+  "Promote: fleet name of tool `tool` of app `app`; `tool` as is when no app is named
    (it is then a fleet name, <app>__<tool>, or a built-in)."
   [app tool]
   (if app (domain/exposed-name (domain/prefix app) tool) tool))
 
 (defn exposed-uri
-  "Fleet uri of resource `uri` of app `app`; `uri` as is when no app is
+  "Promote: fleet uri of resource `uri` of app `app`; `uri` as is when no app is
    named or it already is a fleet uri."
   [app uri]
   (if (and app (not (str/starts-with? (str uri) domain/resource-scheme)))
@@ -142,12 +142,12 @@
     uri))
 
 (defn pending-id
-  "Fleet pending id: `id` qualified by `app` unless it already is."
+  "Promote: fleet pending id: `id` qualified by `app` unless it already is."
   [app id]
   (if (and app (not (str/starts-with? (str id) (str app ":")))) (str app ":" id) id))
 
 (defn ledger-query
-  "The autonomous_ledger arguments of addon `params` (keyword keys): `app`
+  "Promote: the autonomous_ledger arguments of addon `params` (keyword keys): `app`
    reads one app, `by_actor` filters by who acted. The caller's own
    identity (agent_id) is never a filter."
   [{:keys [app by_actor kind tool since until limit]}]
@@ -177,7 +177,7 @@
 (defn- param [params k] (or (get params k) (get params (keyword k))))
 
 (defn actor-of
-  "The caller: agent_id, else \"hive\"."
+  "Promote: the caller: agent_id, else \"hive\"."
   [params]
   (str (or (param params "agent_id") "hive")))
 
@@ -375,12 +375,12 @@
     {:autonomous/dispatch (fn [command params] (dispatch (:fleet-state @state) command params))}))
 
 (defn make-addon
-  "Uninitialized addon. No connection is opened until initialize!, and an
+  "Pipeline: an uninitialized addon. No connection is opened until initialize!, and an
    nREPL connection only on an app's first use."
   ([] (make-addon {}))
   ([seed] (->AutonomousAddon (atom {:lifecycle :new :fleet-state nil}) (or seed {}))))
 
 (defn addon-ctor
-  "hive-addon.mount constructor: config -> uninitialized IAddon."
+  "Pipeline: hive-addon.mount constructor: config -> uninitialized IAddon."
   [config]
   (make-addon config))
