@@ -27,7 +27,9 @@
             [autonomous.openapi.doc :as doc]
             [autonomous.openapi.schema :as schema]
             [malli.core :as m]
-            [malli.error :as me]))
+            [malli.error :as me]
+            [autonomous.domain.affordance :as affordance]
+            [clojure.string :as str]))
 
 (def SchemaForm
   "A JSON Schema object, or malli as EDN text."
@@ -54,12 +56,15 @@
    (answer/refusal :invalid-tool (str "tool " (or id "(no id)") " " message) data)))
 
 (defn- edn-schema
-  "L1 Promote: Ok malli form read from EDN text `s`, or a refusal."
+  "L1 Promote: Ok malli form read from EDN text `s`, or a refusal; blank
+   text is refused rather than read as no schema."
   [id field s]
-  (let [form (try (wire/read-edn s) (catch #?(:clj Exception :cljs :default) e e))]
-    (if #?(:clj (instance? Exception form) :cljs (instance? js/Error form))
-      (invalid id (str field " is not readable EDN") {:cause (ex-message form)})
-      (answer/ok form))))
+  (if (str/blank? s)
+    (invalid id (str field " is blank: write \"[:map]\" or leave " field " out"))
+    (let [form (try (wire/read-edn s) (catch #?(:clj Exception :cljs :default) e e))]
+      (if #?(:clj (instance? Exception form) :cljs (instance? js/Error form))
+        (invalid id (str field " is not readable EDN") {:cause (ex-message form)})
+        (answer/ok form)))))
 
 (defn- problem-text
   "L1 Promote: one schema problem (autonomous.openapi.schema/problems) as
@@ -111,11 +116,19 @@
     (contains? spec "scopes")      (assoc :scopes (set (map keyword (get spec "scopes"))))
     (contains? spec "annotations") (assoc :annotations (update-keys (get spec "annotations") keyword))))
 
+(defn- compiled
+  "L1 Promote: Ok [id spec] when ToolSpec `spec` compiles as a tool (its
+   malli schemas are schemas, its input describes a map), checked with a
+   stub handler; else the :invalid-tool refusal affordance/->tool gives."
+  [id spec]
+  (answer/bind (affordance/->tool id (assoc spec :handler (fn [_ _] nil)))
+               (fn [_] (answer/ok [id spec]))))
+
 (defn ->tool-spec
   "L2 Pipeline: Ok [id spec] of JSON tool `spec`, a ToolSpec without a
-   :handler (the caller supplies how the tool runs). `id` overrides the
-   spec's own \"id\"; `bundle` is the document $refs resolve against
-   (default: the spec itself)."
+   :handler (the caller supplies how the tool runs), already checked to
+   compile as a tool. `id` overrides the spec's own \"id\"; `bundle` is the
+   document $refs resolve against (default: the spec itself)."
   ([spec] (->tool-spec nil spec))
   ([id spec] (->tool-spec id spec (doc/bundle spec)))
   ([id spec bundle]
@@ -127,7 +140,7 @@
        (answer/let-answer [spec   (checked id spec)
                            input  (->malli-form bundle id "input" (get spec "input") {:input? true})
                            output (->malli-form bundle id "output" (get spec "output") {})]
-         (answer/ok [(keyword id) (assemble spec input output)]))))))
+         (compiled (keyword id) (assemble spec input output)))))))
 
 (defn- tools-of
   "L1 Promote: the tool objects of document `d` (one, an array, or under

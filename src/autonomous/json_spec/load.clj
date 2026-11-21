@@ -68,13 +68,21 @@
   [spec]
   (wire/print-edn spec))
 
-(defn -main
-  "`bb tool-spec FILE.json`: print each tool as `id<TAB>edn-spec`, one per
-   line; exit 1 with the refusal on stderr when the file is invalid."
+(defn run
+  "L3 Boundary: `bb tool-spec FILE.json` without the exit: print each tool
+   as `id<TAB>edn-spec`, one per line, and answer 0; on a missing file, an
+   invalid spec or a spec that does not compile as a tool, print the
+   refusal on stderr, print nothing on stdout, and answer 1."
   [& [path]]
   (let [a (if path (read-file path) (answer/refusal :usage "usage: bb tool-spec FILE.json"))]
     (if (answer/ok? a)
-      (doseq [[id spec] (:ok a)]
-        (println (str (subs (str id) 1) "\t" (edn-text spec))))
+      (do (doseq [[id spec] (:ok a)]
+            (println (str (subs (str id) 1) "\t" (edn-text spec))))
+          0)
       (do (binding [*out* *err*] (println (wire/print-edn a)))
-          (System/exit 1)))))
+          1))))
+
+(defn -main
+  "`bb tool-spec FILE.json`: see run; exits with its code."
+  [& args]
+  (System/exit (apply run args)))

@@ -120,3 +120,48 @@
 
 (deftest a-ref-that-resolves-still-registers
   (is (= [:map [:p {:optional true} [:string]]] (-> (input-refusal {"$ref" "#/$defs/Sku"}) :ok first second :input))))
+
+(deftest every-spec-is-checked-as-a-tool
+  (is (= "tool :a :input is not a malli schema"
+         (get-in (js/->tool-spec {"id" "a" "description" "d" "input" "[:mapp [:a :intt]]"}) [:error :message])))
+  (is (= "tool a input is blank: write \"[:map]\" or leave input out"
+         (get-in (js/->tool-spec {"id" "a" "description" "d" "input" "  "}) [:error :message])))
+  (is (= :invalid-tool
+         (get-in (js/->tool-spec {"id" "a" "description" "d" "input" "[:string]"}) [:error :type]))
+      "an input that is not a map is refused before anyone registers it"))
+
+(defn- temp-json
+  "A temp file holding JSON text `s`."
+  [s]
+  (doto (java.io.File/createTempFile "json-spec" ".json") (.deleteOnExit) (spit s)))
+
+(defn- run-captured
+  "[exit-code stdout stderr] of load/run on `args`."
+  [& args]
+  (let [out (java.io.StringWriter.) err (java.io.StringWriter.)
+        code (binding [*out* out *err* err] (apply load/run args))]
+    [code (str out) (str err)]))
+
+(deftest tool-spec-answers-zero-only-for-a-valid-file
+  (let [[code out err] (run-captured fixture)]
+    (is (= 0 code))
+    (is (= 2 (count (clojure.string/split-lines out))))
+    (is (= "" err)))
+  (doseq [[why text] [["a malli typo" "{\"id\":\"a\",\"description\":\"d\",\"input\":\"[:mapp [:a :intt]]\"}"]
+                      ["blank EDN" "{\"id\":\"a\",\"description\":\"d\",\"input\":\"\"}"]
+                      ["a dangling ref" "{\"id\":\"a\",\"description\":\"d\",\"input\":{\"$ref\":\"#/x\"}}"]
+                      ["unreadable JSON" "{nope"]]]
+    (testing why
+      (let [[code out err] (run-captured (str (temp-json text)))]
+        (is (= 1 code))
+        (is (= "" out) "nothing is printed for a host to register")
+        (is (clojure.string/includes? err ":invalid-tool")))))
+  (is (= 1 (first (run-captured "/no/such.json"))))
+  (is (= 1 (first (run-captured))) "no file is a usage error"))
+
+(deftest the-bb-task-exits-with-that-code
+  (let [bb (or (System/getenv "BABASHKA_BIN") "bb")
+        sh (fn [& args] (-> (ProcessBuilder. ^java.util.List (vec args)) (.redirectErrorStream true) .start (doto .waitFor) .exitValue))]
+    (when (try (zero? (sh bb "--version")) (catch Exception _ false))
+      (is (= 0 (sh bb "tool-spec" fixture)))
+      (is (= 1 (sh bb "tool-spec" (str (temp-json "{\"id\":\"a\",\"description\":\"d\",\"input\":\"[:mapp]\"}"))))))))
