@@ -6,7 +6,6 @@
             [autonomous.domain.journal :as journal]
             [autonomous.domain.wire :as wire]
             [autonomous.thenable :as thenable]
-            [clojure.string :as str]
             [malli.core :as m]))
 
 (defn require-scope
@@ -73,11 +72,10 @@
     (stamped d (refusals (:decision d) (:deny refusals)))))
 
 (defn- shown-actor
-  "L1 Promote: `actor` fit to show a human: no control characters, at most
-   64 characters."
+  "L1 Promote: `actor` fit to show a human: control, format and line
+   separator characters escaped (approval/safe-text), at most 64 characters."
   [actor]
-  (let [clean (str/replace (str actor) #"\p{Cntrl}" "")]
-    (subs clean 0 (min 64 (count clean)))))
+  (approval/cap (approval/safe-text actor) 64))
 
 (defn- approval-request
   "L1 Promote: what the asker is asked about one call: the tool name, the

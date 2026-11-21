@@ -56,6 +56,9 @@
       (is (not (.contains ^String line ^String c)) (pr-str c))
       (is (re-find #"\\u" line) "the character is shown escaped, not dropped"))))
 
+(deftest safe-text-keeps-ordinary-text
+  (is (= "Pix R$ 10,00 — ação ✓ 😀" (approval/safe-text "Pix R$ 10,00 — ação ✓ 😀"))))
+
 (deftest the-prompt-is-capped
   (let [line (approval/shown-request {:tool "pay" :args {:memo (apply str (repeat 5000 "x"))}})]
     (is (= approval/max-shown-chars (count line)))
