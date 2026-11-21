@@ -351,3 +351,16 @@
       (swap! now + 1001)
       (bf/probe f (ses "late"))
       (is (= #{"late"} (set (map second (keys @(:last f)))))))))
+
+(deftest the-view-just-written-is-never-the-one-evicted
+  (let [l  (ledger/open {:ledger/kind :memory})
+        f  (bf/make [(member "r" (app-responder "r" ["pay.out"]) l)
+                     (member "o" (app-responder "o" ["x"]) l)]
+                    {:probe-ms 150 :clock (constantly 5) :max-views 2})
+        ses #(s/open-session % {:actor % :scopes #{:read :write}})]
+    (doseq [a ["a1" "a2" "a3"]]
+      (bf/probe f (ses a))
+      (is (= #{a} (set (map second (keys @(:last f)))))
+          (str "with every view touched in the same millisecond, " a "'s two views stay")))
+    (is (= {:app "r" :tool "pay.out" :runtime nil}
+           (:ok (bf/call! f (ses "a3") (fleet-name "r" "pay.out") {}))))))

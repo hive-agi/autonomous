@@ -108,12 +108,17 @@
 
 (defn prune-views
   "`views` without those untouched for `ttl-ms` before `now`, then at most
-   `cap` of them, the most recently touched kept."
+   `cap` of them, the most recently touched kept. Views touched in the same
+   millisecond are ordered by their :seq, so the latest write always stays."
   [views now ttl-ms cap]
   (let [live (into {} (filter (fn [[_ v]] (< (- now (:touched v)) ttl-ms))) views)]
     (if (<= (count live) cap)
       live
-      (into {} (take cap (sort-by (fn [[_ v]] (- (:touched v))) live))))))
+      (into {} (take cap (sort-by (fn [[_ v]] [(- (:touched v)) (- (:seq v 0))]) live))))))
+
+(def ^:private view-seq
+  "A counter that orders view writes made in the same millisecond."
+  (atom 0))
 
 (defn- remember
   "`views` with probe `p` recorded under `k` at `now`. A look that did not
@@ -122,12 +127,15 @@
   (let [old (get views k)]
     (assoc views k {:probe   p
                     :up      (if (= :up (:status p)) p (:up old))
-                    :touched now})))
+                    :touched now
+                    :seq     (swap! view-seq inc)})))
 
 (defn- touch
   "`views` with the view under `k`, when there is one, touched at `now`."
   [views k now]
-  (if (contains? views k) (assoc-in views [k :touched] now) views))
+  (if (contains? views k)
+    (update views k assoc :touched now :seq (swap! view-seq inc))
+    views))
 
 (defn- probe-targets
   "Probes of targets `tids`, in order, for `session`. All are asked at once;
