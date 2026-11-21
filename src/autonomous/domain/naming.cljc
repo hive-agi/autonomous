@@ -50,10 +50,22 @@
     (str (char c))
     (str "\\u" (hex4 c))))
 
+(defn- shown-chars
+  "The shown text of `actor`, one string per character: one escape or ASCII
+   character per code unit, except that a surrogate pair (an astral
+   character) is one item of two escapes, so no cut can split it."
+  [actor]
+  (loop [[u & more :as us] (units actor) out []]
+    (cond
+      (empty? us) out
+      (and (<= 0xD800 u 0xDBFF) more (<= 0xDC00 (first more) 0xDFFF))
+      (recur (rest more) (conj out (str (shown-unit u) (shown-unit (first more)))))
+      :else (recur more (conj out (shown-unit u))))))
+
 (defn actor-text
   "`actor` escaped as shown-actor escapes it, without the cut."
   [actor]
-  (apply str (map shown-unit (units actor))))
+  (apply str (shown-chars actor)))
 
 (defn shown-actor
   "`actor` as the library shows it to a human or to a host, the one rule
@@ -61,15 +73,25 @@
    U+007E) other than \" and \\ is shown as itself. Those two and every
    other UTF-16 code unit become \\uxxxx (lowercase hex): a control, bidi
    or zero-width character becomes visible, and an astral character becomes
-   its surrogate pair (\\ud83d\\ude00), on every runtime. Distinct actors
-   therefore stay distinct, and the text is safe inside quotes. The result
-   is then cut at max-shown-actor characters, never inside an escape. nil
+   its surrogate pair (\\ud83d\\ude00), on every runtime. The text is safe
+   inside quotes, and two distinct actors have distinct actor-text.
+
+   The result is cut at max-shown-actor characters, never inside an escape
+   or between the two halves of a pair. A cut actor may show the same as
+   another one; actor-too-long? says when the cut happens, and a host is
+   never handed a cut actor (autonomous.domain.decision/host-grant). nil
    shows as \"\"."
   [actor]
-  (loop [[t & more] (map shown-unit (units actor)) out ""]
+  (loop [[t & more] (shown-chars actor) out ""]
     (if (and t (<= (+ (count out) (count t)) max-shown-actor))
       (recur more (str out t))
       out)))
+
+(defn actor-too-long?
+  "True when `actor`'s shown form (actor-text) is longer than
+   max-shown-actor characters, so shown-actor would cut it."
+  [actor]
+  (> (count (actor-text actor)) max-shown-actor))
 
 (def ^:private invisible-units
   "Code units that show nothing: whitespace, C0, DEL and C1 controls,
