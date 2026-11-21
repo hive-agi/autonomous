@@ -9,7 +9,8 @@
             [autonomous.runtime.registry :as registry]
             [autonomous.surface :as surface]
             [cljs.test :refer [async deftest is]]
-            [autonomous.core :as a]))
+            [autonomous.core :as a]
+            [malli.core :as m]))
 
 (defn- tool [spec]
   (:ok (affordance/->tool :a/x (merge {:description "x" :handler (fn [_ _] 1)} spec))))
@@ -25,6 +26,20 @@
   (is (not (merged? (tool {:input [:map [:s [:re (js/RegExp. "^a+$" "i")]]]})
                     (tool {:input [:map [:s [:re (js/RegExp. "^a+$")]]]})))
       "the flags tell them apart, as on the JVM"))
+
+(deftest a-property-registry-value-whose-form-hides-its-validator-clashes
+  (let [amount  (fn [p] (m/-simple-schema {:type :my/amount :pred p}))
+        opts    (fn [p] {:registry (merge (m/default-schemas) {:my/amount (amount p)})})
+        strict  #(and (int? %) (< % 100))]
+    (doseq [[why mk] [["A" (fn [p] (m/schema [:map {:registry {::a (m/schema [:map [:amount :my/amount]] (opts p))}} [:x ::a]]))]
+                      ["B" (fn [p] (m/schema [:map {:registry {:my/amount (amount p)}} [:amount :my/amount]]))]
+                      ["H" (fn [p] (m/schema [:schema {:registry {::n (m/schema [:map [:amount :my/amount]] (opts p))}}
+                                              [:map [:x [:ref ::n]]]]))]]]
+      (is (not (merged? (tool {:input (mk strict)}) (tool {:input (mk int?)})))
+          (str why ": equal forms that validate differently never merge"))))
+  (is (merged? (tool {:input (m/schema [:map {:registry {::a [:int {:min 0}]}} [:x ::a]])})
+               (tool {:input (m/schema [:map {:registry {::a [:int {:min 0}]}} [:x ::a]])}))
+      "a property registry of plain forms still merges"))
 
 (def ^:private redacting
   "A tool masking [:token] in its refusal data, and paths through a string."
