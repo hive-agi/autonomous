@@ -94,7 +94,14 @@
   (testing "a plain or qualified key prints as is"
     (is (= ":amount" (approval/shown-key :amount)))
     (is (= ":pay/to" (approval/shown-key :pay/to)))
-    (is (= "0" (approval/shown-key 0)))))
+    (is (= "0" (approval/shown-key 0))))
+  (testing "a plain symbol key is always quoted, so it cannot sit bare beside its keyword twin"
+    (is (= "'amount" (approval/shown-key 'amount)))
+    (is (= "'pay/to" (approval/shown-key 'pay/to)))
+    (let [text (prompt {:tool "pay" :actor "agent" :args {:amount 1000000 'amount 3}})]
+      (is (re-find #"(?m)^    :amount = 1000000$" text))
+      (is (re-find #"(?m)^    'amount = 3$" text))
+      (is (not (re-find #"(?m)^    amount =" text)) "no key is shown bare"))))
 
 (deftest a-long-memo-before-amount-hides-no-field
   (let [text (prompt {:tool "pay" :actor "agent-7" :session "s1"

@@ -139,13 +139,14 @@
   (boolean (re-matches #"([A-Za-z_*+!?<>-][A-Za-z0-9_*+!?<>.-]*/)?[A-Za-z_*+!?<>-][A-Za-z0-9_*+!?<>.-]*" s)))
 
 (defn shown-key
-  "L1: one path element as a human is shown it: a plain keyword or symbol
-   as printed; any other as (keyword \"...\") or (symbol \"...\") with
+  "L1: one path element as a human is shown it: a plain keyword as
+   printed, a plain symbol quoted ('amount, so it never reads as a bare
+   name beside :amount); any other as (keyword \"...\") or (symbol \"...\") with
    every character but [A-Za-z0-9_.-] escaped; any other key as shown-value."
   [k]
   (let [text (cond (keyword? k) (subs (str k) 1) (symbol? k) (str k))]
     (cond (nil? text)        (shown-value k)
-          (plain-name? text) (pr-str k)
+          (plain-name? text) (str (when (symbol? k) "'") (pr-str k))
           :else              (str "(" (if (keyword? k) "keyword" "symbol") " \"" (strict-text text) "\")"))))
 
 (defn- arg-line
