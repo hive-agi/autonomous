@@ -6,7 +6,9 @@
             [clojure.test :refer [deftest is testing]]
             [clojure.test.check :as tc]
             [clojure.test.check.generators :as gen]
-            [clojure.test.check.properties :as prop]))
+            [clojure.test.check.properties :as prop]
+            [autonomous.decorator :as decorator]
+            [malli.core :as m]))
 
 (defn- tool [id]
   (:ok (affordance/->tool id {:description (str id)
@@ -73,6 +75,81 @@
           (str "never first-writer-wins on " why)))
     (is (= {:ok a} (surface/merge-surfaces a (s-of {"a_x" (assoc t :handler (fn [_ _] :other))})))
         "only fn-valued fields may differ")))
+
+(deftest merge-of-two-equally-decorated-surfaces-keeps-one
+  (let [a (s-of {"a_x" (tool :a/x)})
+        d (comp (decorator/each-tool (decorator/redact-output [[:secret]]))
+                (decorator/each-tool (decorator/redact-refusal [[:token]])))]
+    (is (= {:ok (d a)} (surface/merge-surfaces (d a) (d a)))
+        "each application builds equal redaction data, never a fresh closure")
+    (is (= :name-clash (get-in (surface/merge-surfaces
+                                (d a) ((decorator/each-tool (decorator/redact-output [[:other]])) a))
+                               [:error :type]))
+        "different redactions are different affordances")))
+
+(defn- schema-tool
+  "Tool :a/x with `output` as its :output, compiled afresh on each call."
+  [output]
+  (:ok (affordance/->tool :a/x {:description "x" :handler (fn [_ _] 1) :output output})))
+
+(deftest merge-compares-schemas-by-form
+  (doseq [[why make] [["a compiled schema" #(m/schema [:map [:n :int]])]
+                      ["a compiled schema holding a regex" #(m/schema [:map [:s [:re #"^a+$"]]])]
+                      ["a regex in the schema form" #(vector :re (re-pattern "^a+$"))]]]
+    (is (answer/ok? (surface/merge-surfaces (s-of {"a_x" (schema-tool (make))})
+                                            (s-of {"a_x" (schema-tool (make))})))
+        (str "two compilations of " why " are one tool")))
+  (is (= :name-clash (get-in (surface/merge-surfaces (s-of {"a_x" (schema-tool (m/schema [:map [:n :int]]))})
+                                                     (s-of {"a_x" (schema-tool (m/schema [:map [:n :string]]))}))
+                             [:error :type]))
+      "different forms still clash"))
+
+(defn- amount-schema
+  "[:map [:amount :my/amount]] where :my/amount, from the options
+   :registry, is a leaf type validated by `pred`."
+  [pred]
+  (m/schema [:map [:amount :my/amount]]
+            {:registry (merge (m/default-schemas)
+                              {:my/amount (m/-simple-schema {:type :my/amount :pred pred})})}))
+
+(deftest schemas-built-with-a-registry-of-their-own-are-compared-by-identity
+  (let [strict  (amount-schema #(and (int? %) (< % 100)))
+        lenient (amount-schema int?)
+        input-tool #(:ok (affordance/->tool :a/x {:description "x" :handler (fn [_ _] 1) :input %}))]
+    (is (not= (m/validate strict {:amount 5000}) (m/validate lenient {:amount 5000}))
+        "the two schemas share a form but validate differently")
+    (is (= :name-clash (get-in (surface/merge-surfaces (s-of {"a_x" (input-tool strict)})
+                                                       (s-of {"a_x" (input-tool lenient)}))
+                               [:error :type]))
+        "never a silent merge that drops the strict limit")
+    (is (answer/ok? (surface/merge-surfaces (s-of {"a_x" (input-tool strict)})
+                                            (s-of {"a_x" (input-tool strict)})))
+        "the one schema value seen twice is one tool")))
+
+(deftest regexes-that-differ-only-in-flags-clash
+  (let [ci (java.util.regex.Pattern/compile "^a+$" java.util.regex.Pattern/CASE_INSENSITIVE)
+        cs (java.util.regex.Pattern/compile "^a+$")]
+    (is (= :name-clash (get-in (surface/merge-surfaces (s-of {"a_x" (schema-tool [:re ci])})
+                                                       (s-of {"a_x" (schema-tool [:re cs])}))
+                               [:error :type])))
+    (is (answer/ok? (surface/merge-surfaces
+                     (s-of {"a_x" (schema-tool [:re (java.util.regex.Pattern/compile "^a+$" java.util.regex.Pattern/CASE_INSENSITIVE)])})
+                     (s-of {"a_x" (schema-tool [:re ci])})))
+        "same source and same flags are one tool")))
+
+(deftest a-clash-names-the-keys-that-differ
+  (let [t (tool :a/x)
+        m (surface/merge-surfaces (s-of {"a_x" t})
+                                  (s-of {"a_x" (assoc t :scopes #{:admin} :description "other")}))]
+    (is (= {:name "a_x" :left :a/x :right :a/x :differs [:description :scopes]}
+           (get-in m [:error :data])))))
+
+(deftest the-merged-tool-keeps-the-first-handler
+  (let [t (tool :a/x)
+        other (assoc t :handler (fn [_ _] :other))
+        m (surface/merge-surfaces (s-of {"a_x" t}) (s-of {"a_x" other}))]
+    (is (identical? (:handler t) (get-in m [:ok :tools "a_x" :handler]))
+        "fn-valued fields are first-writer-wins")))
 
 (deftest merge-refuses-two-readers-of-one-uri
   (let [a (s-of {} {"app://x" (assoc (resource "app://x") :description "one")})

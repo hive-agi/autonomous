@@ -87,6 +87,35 @@
     (is (= {:user "ana" :card {:pan 0}} (mask (decorator/redact-output [[:card :pan]] 0)))
         "the replacement argument is kept")))
 
+(deftest redactions-are-data-so-equal-decorations-are-equal-tools
+  (let [d (comp (decorator/redact-output [[:card :pan]]) (decorator/redact-refusal [[:token]]))]
+    (is (= (dissoc (d (tool :d/acct {})) :handler :decode :explain)
+           (dissoc (d (tool :d/acct {})) :handler :decode :explain)))))
+
+(deftest project-refusal-masks-only-a-refusal's-data
+  (let [t ((decorator/redact-refusal [[:token]]) (tool :d/acct {}))]
+    (is (= {:error {:type :x :message "m" :data {:token "<redacted>" :n 1}}}
+           (decorator/project-refusal t (answer/refusal :x "m" {:token "abc" :n 1}))))
+    (is (= {:ok {:token "abc"}} (decorator/project-refusal t {:ok {:token "abc"}})) "Ok untouched")
+    (is (= {:pending "p"} (decorator/project-refusal t {:pending "p"})) "Pending untouched")
+    (is (= (answer/refusal :x "m") (decorator/project-refusal t (answer/refusal :x "m"))) "no data, nothing added")
+    (is (= (answer/refusal :x "m" {:token "abc"})
+           (decorator/project-refusal (tool :d/acct {}) (answer/refusal :x "m" {:token "abc"})))
+        "a tool without refusal redactions passes its data")))
+
+(deftest a-path-through-a-scalar-or-a-set-is-absent
+  (let [t ((decorator/redact-refusal [[:set-cookie 0] [:tags "a"] [:n :x] [:v 9]]) (tool :d/acct {}))
+        data {:set-cookie "sid=s3cret" :tags #{"a"} :n 1 :v [1]}]
+    (is (= data (get-in (decorator/project-refusal t (answer/refusal :x "m" data)) [:error :data]))
+        "never a throw, never a key added")))
+
+(deftest refusal-data-is-masked-in-wire-form
+  (let [t ((decorator/redact-refusal [[:reqs 0 :token]]) (tool :d/acct {}))
+        hand-built {:error {:type :x :message "m" :data {:reqs (list {:token "s3cret"})}}}]
+    (is (= {:reqs [{:token "<redacted>"}]}
+           (get-in (decorator/project-refusal t hand-built) [:error :data]))
+        "a list in a refusal map an adapter built itself is reached by index")))
+
 (def ^:private decorator-gen
   (gen/elements [(decorator/prefix-names "p_")
                  audited
