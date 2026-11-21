@@ -20,6 +20,17 @@
      :default (or (future? x) (instance? promise-type x)
                   (instance? java.util.concurrent.Future x))))
 
+#?(:cljs nil
+   :default
+   (defn claim!
+     "L0 host (clj): `v` when it is the first value promise `p` holds (it is
+      delivered now), else the value `p` already holds. A `p` that is not a
+      promise is left alone and `v` is answered."
+     [p v]
+     (cond (not (instance? promise-type p)) v
+           (deliver p v)                    v
+           :else                            @p)))
+
 (defn unwrap-failure
   "L0 host: what a computation threw, given what deref of its future threw.
    Futures wrap a failure in java.util.concurrent.ExecutionException, once

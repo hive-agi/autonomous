@@ -194,12 +194,16 @@
 
 (defn- awaited
   "L1 host: the asker's answer `p`, or `::timeout` after `timeout-ms`; on
-   cljs a thenable that clears its timer when `p` settles first."
+   cljs a thenable that clears its timer when `p` settles first. On clj a
+   timeout claims a promise `p` (thenable/claim!), so a Verdict arriving
+   at that instant either wins outright or finds `p` already timed out:
+   the asker and the Decision always agree on how the request ended."
   [p timeout-ms]
   #?(:cljs    (let [timer (atom nil)
                     t     (js/Promise. (fn [ok _] (reset! timer (js/setTimeout #(ok ::timeout) timeout-ms))))]
                 (.finally (js/Promise.race #js [p t]) #(js/clearTimeout @timer)))
-     :default (deref p timeout-ms ::timeout)))
+     :default (let [v (deref p timeout-ms ::timeout)]
+                (if (= ::timeout v) (thenable/claim! p ::timeout) v))))
 
 (defn- asked
   "L1 host: what `asker` answers for `request`, `::error` when it throws or

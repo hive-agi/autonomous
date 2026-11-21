@@ -260,6 +260,21 @@
     (is (= [:approve :deny] [(decision a) (decision b)]))
     (is (eventually #(re-find #"(?s)request 1 approved.*request 2 denied, not run" (str out))))))
 
+(deftest the-outcome-line-always-matches-the-decision
+  (dotimes [i 20]
+    (let [t     (typist)
+          out   (StringWriter.)
+          asker (typed-asker t out "op" 5000)
+          d     (approval/ask! asker request (+ 40 (rand-int 20)))]
+      (is (eventually #(seq (shown-ids out))))
+      (Thread/sleep (+ 30 (rand-int 30)))
+      ((:type! t) "1 y")
+      (let [decided (:decision (deref d 2000 ::hung))]
+        (is (eventually #(re-find #"request 1 (approved|expired)" (str out))))
+        (is (= (if (= :approve decided) "approved" "expired")
+               (second (re-find #"request 1 (approved|expired)" (str out))))
+            (str "run " i ": the terminal says what the Decision was"))))))
+
 (deftest at-end-of-input-every-waiting-request-is-denied-at-once
   (let [out   (StringWriter.)
         eof   (promise)
