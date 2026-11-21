@@ -107,7 +107,7 @@
    (fn []
      (adapter/reg-event-tool :rf2/boom {:tool-id :a/boom :description "Boom" :frame :app/a})
      (add-tool! :b/add :app/b :result-sub [:rf2/items])
-     (call "a_boom" {})
+     (is (contains? (call "a_boom" {}) :error) "the throwing call answers a refusal")
      (is (= {:ok ["after"]} (call "b_add" {:text "after"})) "the next call lands in its own frame")
      (is (nil? (:items (rf/app-db-value :app/a)))))))
 

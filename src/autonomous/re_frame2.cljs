@@ -41,12 +41,30 @@
            (rf/handler-meta {:frame frame :kind kind :id id})
            (rf/handler-meta kind id))))
 
+(defn- dispatch-sync-or-throw!
+  "dispatch-sync `event` (in `frame` when given) and throw the first error
+   re-frame2 reported while it ran. re-frame2 does not throw from a failing
+   handler; it emits on the :errors listener stream, so this listens there
+   for the length of the call."
+  [event frame]
+  (let [id     (keyword "autonomous.re-frame2" (str "dispatch-" (random-uuid)))
+        errors (atom [])]
+    (rf/register-listener! :errors id #(swap! errors conj %))
+    (try
+      (if frame (rf/dispatch-sync event {:frame frame}) (rf/dispatch-sync event))
+      (finally (rf/unregister-listener! :errors id)))
+    (when-let [{:keys [error event-id exception] :as record} (first @errors)]
+      (throw (ex-info (str "re-frame2 reported " error " for " (pr-str event-id)
+                           (when exception (str ": " (ex-message exception))))
+                      {:autonomous/error :re-frame/handler-error
+                       :error error :event-id event-id :frame (:frame record)})))))
+
 (def host
   "The kernel Host for re-frame2."
   {:frames?       true
    :registered?   registered?
    :dispatch      (fn [event frame] (if frame (rf/dispatch event {:frame frame}) (rf/dispatch event)))
-   :dispatch-sync (fn [event frame] (if frame (rf/dispatch-sync event {:frame frame}) (rf/dispatch-sync event)))
+   :dispatch-sync dispatch-sync-or-throw!
    :read-sub      (fn [query frame] (if frame (rf/subscribe-once query {:frame frame}) (rf/subscribe-once query)))
    :app-db        (fn [frame] (rf/app-db-value (or frame (rf/current-frame-id))))
    :check-frame   check-frame!})
