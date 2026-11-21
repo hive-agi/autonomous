@@ -488,7 +488,8 @@
       (is (m/validate bs/Target (assoc target k 0)))
       (is (m/validate bs/Target (assoc target k 5000)))
       (is (not (m/validate bs/Target (assoc target k "5000"))) "a string is refused")
-      (is (not (m/validate bs/Target (assoc target k -1))) "a negative interval is refused"))))
+      (is (not (m/validate bs/Target (assoc target k -1))) "a negative interval is refused")
+      (is (not (m/validate bs/Target (assoc target k 1.5))) "a fraction is refused"))))
 
 (deftest an-http-target-needs-a-url
   (is (not (m/validate bs/Target (dissoc target :url))) "a Target without one")
@@ -908,8 +909,12 @@
     (deliver release true)
     (is (answer/ok? (deref first* 5000 nil)) "the first look completes")
     (is (answer/ok? (call)) "once the session exists the lock is not needed"))
-  (is (= 2000 (hc/lock-wait-ms target)) "the default wait is the target's timeout")
-  (is (m/validate bs/Target (assoc target :lock-wait-ms 100))))
+  (is (= 2000 (hc/lock-wait-ms target)) "the default wait is the target's timeout"))
+
+(deftest the-lock-wait-is-a-positive-integer
+  (is (m/validate bs/Target (assoc target :lock-wait-ms 100)))
+  (doseq [bad ["100" 0 -1 1.5 nil]]
+    (is (not (m/validate bs/Target (assoc target :lock-wait-ms bad))) (pr-str bad))))
 
 (deftest a-stored-listing-is-fresh-only-at-its-own-revision
   (let [sl (assoc hc/empty-slot :revision 3)]
