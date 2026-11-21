@@ -379,6 +379,14 @@
            {:type (get-in a [:error :type]) :status (get-in a [:error :data :status])}))
     (is (not (str/includes? (pr-str a) (tokens "agent-a"))) "a body echoing the token is not carried")))
 
+(deftest the-stream-and-cache-intervals-are-validated
+  (doseq [k [:stream-retry-ms :ttl-ms]]
+    (testing (name k)
+      (is (m/validate bs/Target (assoc target k 0)))
+      (is (m/validate bs/Target (assoc target k 5000)))
+      (is (not (m/validate bs/Target (assoc target k "5000"))) "a string is refused")
+      (is (not (m/validate bs/Target (assoc target k -1))) "a negative interval is refused"))))
+
 (deftest an-http-target-needs-a-url
   (is (not (m/validate bs/Target (dissoc target :url))) "a Target without one")
   (is (not (m/validate bs/Target (assoc target :url ""))) "an empty one")

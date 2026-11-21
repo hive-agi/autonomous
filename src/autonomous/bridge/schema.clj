@@ -82,7 +82,9 @@
     [:token-env {:optional true} :string]
     [:token {:optional true} no-literal-token]
     [:credentials {:optional true} CredentialPolicy]
-    [:timeout-ms {:optional true} [:int {:min 100}]]]
+    [:timeout-ms {:optional true} [:int {:min 100}]]
+    [:ttl-ms {:optional true} [:int {:min 0}]]
+    [:stream-retry-ms {:optional true} [:int {:min 0}]]]
    [:fn {:error/message "a bearer token rides https, or plain http to this host only"}
     bearer-transport-ok?]])
 
