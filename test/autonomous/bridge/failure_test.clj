@@ -25,6 +25,16 @@
   (testing "any other class is named, not described"
     (is (= "the transport failed (java.lang.RuntimeException)" (failure/message (RuntimeException. "x"))))))
 
+(deftest only-a-failure-before-the-request-is-safe-to-retry
+  (doseq [e [(java.net.ConnectException. "x") (java.net.UnknownHostException. "x")
+             (IllegalArgumentException. "x")]]
+    (is (failure/before-request? e) (str (class e))))
+  (doseq [e [(java.net.http.HttpTimeoutException. "x") (java.net.SocketException. "x")
+             (java.io.EOFException. "x") (java.io.IOException. "x") (RuntimeException. "x")]]
+    (is (not (failure/before-request? e)) (str (class e))))
+  (testing "a read timeout is not a connect timeout"
+    (is (not (failure/before-request? (java.net.http.HttpTimeoutException. "request timed out"))))))
+
 (deftest the-jdk-adapter-shows-only-allowlisted-text
   (let [a (port/-request! (jdk/client) {:method :post :url "http://127.0.0.1:9/mcp" :timeout-ms 500
                                         :headers {"x-probe" "aut_leaked"} :body "{}"})]

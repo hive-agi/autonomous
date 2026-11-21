@@ -238,7 +238,7 @@
 (deftest a-reply-body-is-bounded-in-size-and-time
   (is (= {:ok "abc"} (jdk/read-capped (java.io.StringReader. "abc") 10)))
   (let [a (jdk/read-capped (java.io.StringReader. (str "SECRET-BODY" (apply str (repeat 100 "x")))) 10)]
-    (is (= :channel/transport-failed (get-in a [:error :type])))
+    (is (= :channel/outcome-unknown (get-in a [:error :type])) "an oversized reply came after its headers")
     (is (not (str/includes? (pr-str a) "SECRET")) "no remote text in the refusal"))
   (let [closed (promise)
         a      (jdk/within 100 #(do (Thread/sleep 5000) (answer/ok "late")) #(deliver closed true))]
@@ -300,8 +300,11 @@
         a     (jdk/read-sse-reply (java.io.StringReader. text) 10000 5)]
     (is (str/includes? (:ok a) reply))
     (is (not (str/includes? (:ok a) "NEVER-READ")) "nothing after the reply's event is read")
-    (is (= :channel/transport-failed
-           (get-in (jdk/read-sse-reply (java.io.StringReader. text) 20 5) [:error :type])))))
+    (is (= :channel/outcome-unknown
+           (get-in (jdk/read-sse-reply (java.io.StringReader. text) 20 5) [:error :type])))
+    (is (= :channel/outcome-unknown
+           (get-in (jdk/read-sse-reply (java.io.StringReader. list-changed-event) 10000 5) [:error :type]))
+        "the stream ending before the reply to the id")))
 
 (deftest an-sse-reply-is-read-up-to-its-own-message
   (let [{:keys [url stop!]} (held-sse-server true)]
@@ -320,6 +323,46 @@
   (testing "a request that never connects is a transport failure, not an unknown outcome"
     (let [[a _] (post-to "http://127.0.0.1:9/mcp" 300)]
       (is (= :channel/transport-failed (get-in a [:error :type])) (pr-str a)))))
+
+(defn- scripted-server
+  "An http-kit server on loopback whose POST handler runs `script` on the
+   channel and the request's JSON-RPC id. Answers {:url :stop!}."
+  [script]
+  (let [srv (hk/run-server
+             (fn [req]
+               (let [id (:id (json/read-json (slurp (:body req))))]
+                 (hk/as-channel req {:on-open (fn [chan] (script chan id))})))
+             {:ip "127.0.0.1" :port 0 :legacy-return-value? false})]
+    {:url   (str "http://127.0.0.1:" (hk/server-port srv) "/mcp")
+     :stop! #(deref (hk/server-stop! srv {:timeout 100}))}))
+
+(defn- outcome-against
+  "The error type of a POST to a server running `script`."
+  [script timeout-ms]
+  (let [{:keys [url stop!]} (scripted-server script)]
+    (try (get-in (first (post-to url timeout-ms)) [:error :type])
+         (finally (stop!)))))
+
+(def ^:private sse-headers {:status 200 :headers {"content-type" "text/event-stream"}})
+
+(deftest a-failure-after-the-request-is-sent-is-an-unknown-outcome
+  (testing "the request is accepted and no headers ever come"
+    (is (= :channel/outcome-unknown (outcome-against (fn [_ _]) 300))))
+  (testing "a reply larger than the body cap"
+    (is (= :channel/outcome-unknown
+           (outcome-against (fn [chan _]
+                              (hk/send! chan {:status 200 :headers {"content-type" "application/json"}
+                                              :body (apply str (repeat (inc jdk/max-body-chars) "x"))}))
+                            5000))))
+  (testing "the stream ends before the reply to this id"
+    (is (= :channel/outcome-unknown
+           (outcome-against (fn [chan _] (hk/send! chan sse-headers false)
+                              (hk/send! chan list-changed-event true))
+                            3000))))
+  (testing "a request that never connects stays a safe-to-retry transport failure"
+    (is (= :channel/transport-failed (get-in (first (post-to "http://127.0.0.1:9/mcp" 300)) [:error :type])))
+    (is (= :channel/transport-failed
+           (get-in (first (post-to "http://no-such-host.invalid/mcp" 2000)) [:error :type])))))
 
 (deftest a-stream-line-past-the-cap-closes-the-stream
   (let [ok (pumped "data: a\n\ndata: b\n" 16)]
@@ -827,6 +870,19 @@
           (json-response 200 {:jsonrpc "2.0" :id (:id msg) :error {:code -32603 :message secret}})
           (port/-request! client req))))
     (-open-stream! [_ req sink] (port/-open-stream! client req sink))))
+
+(deftest a-2xx-without-a-reply-to-the-request-is-an-unknown-outcome
+  (let [[client _ _] (open-stub)
+        silent (reify port/IHttpClient
+                 (-request! [_ req]
+                   (if (= "tools/call" (:method (json/read-json (str (:body req)))))
+                     {:ok {:status 200 :headers {"content-type" "text/event-stream"} :body list-changed-event}}
+                     (port/-request! client req)))
+                 (-open-stream! [_ req sink] (port/-open-stream! client req sink)))
+        c (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                               :http/client silent))]
+    (is (= :channel/outcome-unknown
+           (get-in (as c "agent-a" #{:write} {:op :call :tool "todo_add"}) [:error :type])))))
 
 (deftest an-error-reply-is-refused-not-taken-as-empty
   (let [[client _ _] (open-stub)

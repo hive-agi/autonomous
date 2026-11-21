@@ -36,19 +36,30 @@
 
 (def ^:private gone-status 404)
 
+(defn- unknown-without-reply
+  "Answer `a` of reading a 2xx reply, its :channel/bad-answer (no message
+   answers the request) recast as :channel/outcome-unknown."
+  [a]
+  (if (= :channel/bad-answer (get-in a [:error :type]))
+    (answer/refusal :channel/outcome-unknown
+                    "the remote accepted the request but sent no reply to it: the outcome is unknown")
+    a))
+
 (defn- decode
   "Answer of `resp` read as the JSON-RPC reply to request `id`: that
    message, or a refusal. A 404 is :channel/session-gone (the remote forgot
    the session and it must be renewed); any other error status is
    :channel/remote-refused, carrying the status only: an error body is the
-   remote's text and may echo the request's credential back."
+   remote's text and may echo the request's credential back. A 2xx with no
+   reply to `id` is :channel/outcome-unknown: the remote accepted the
+   request and may have acted on it."
   [{:keys [status body headers]} id]
   (cond
     (= gone-status status) (answer/refusal :channel/session-gone "the remote forgot this session")
     (<= 400 status)        (answer/refusal :channel/remote-refused
                                            (str "the remote answered " status)
                                            {:status status})
-    :else                  (rpc/reply-of body (get headers "content-type") id)))
+    :else                  (unknown-without-reply (rpc/reply-of body (get headers "content-type") id))))
 
 (defn open-session!
   "Ok of a session {:id :actor} opened for `grant` on `target`, or a

@@ -19,6 +19,23 @@
    "java.lang.IllegalArgumentException"        "the request could not be built"
    "java.lang.InterruptedException"            "the call was interrupted"})
 
+(def ^:private before-request-classes
+  "Exception classes that are thrown before a request reaches the remote:
+   it cannot have acted, so a retry is safe. Any other failure may come
+   after the request was written."
+  #{"java.net.ConnectException"
+    "java.net.http.HttpConnectTimeoutException"
+    "java.net.UnknownHostException"
+    "java.net.NoRouteToHostException"
+    "javax.net.ssl.SSLHandshakeException"
+    "java.lang.IllegalArgumentException"})
+
+(defn before-request?
+  "Pure: true when exception `e` is known to precede the request reaching
+   the remote (connect, resolve, route, handshake, or building it)."
+  [^Throwable e]
+  (contains? before-request-classes (.getName (class e))))
+
 (defn message
   "Pure: the text a refusal of exception `e` may carry: the fixed message
    of its class from the allowlist, else only its class name. Never the

@@ -43,24 +43,37 @@
   [req]
   (let [b (:body req)] (if (map? b) (rpc/json-text b) b)))
 
+(defn- outcome-unknown
+  "The refusal of a request that may have reached the remote: it may have
+   acted on it, so a caller must not simply retry."
+  [why]
+  (answer/refusal :channel/outcome-unknown
+                  (str "the request may have reached the remote but its reply " why
+                       ": the outcome is unknown")))
+
 (defn- transport-failed
   "The refusal of exception `e` thrown while building or sending a request,
-   in the allowlisted text of autonomous.bridge.failure: an exception's
-   own message may quote a header value or a url, so it is never carried."
+   in the allowlisted text of autonomous.bridge.failure (an exception's own
+   message may quote a header value or a url). :channel/transport-failed
+   only when the failure precedes the request, so a retry is safe; any
+   other is :channel/outcome-unknown."
   [^Exception e]
-  (answer/refusal :channel/transport-failed (failure/message e)))
+  (if (failure/before-request? e)
+    (answer/refusal :channel/transport-failed (failure/message e))
+    (outcome-unknown (str "failed (" (failure/message e) ")"))))
 
 (def max-body-chars
   "The most characters a remote reply body may hold: 4 MiB."
   (* 4 1024 1024))
 
 (defn- too-long
-  "The refusal of a reply body past `cap` characters."
+  "The refusal of a reply body past `cap` characters: its headers came, so
+   the remote may have acted."
   [cap]
-  (answer/refusal :channel/transport-failed (str "the remote reply passed " cap " characters")))
+  (outcome-unknown (str "passed " cap " characters")))
 
 (defn read-capped
-  "Boundary: Ok of the text of `r`, or a :channel/transport-failed refusal
+  "Boundary: Ok of the text of `r`, or a :channel/outcome-unknown refusal
    once it passes `cap` characters. Never holds more than `cap` plus one
    read buffer."
   [^Reader r cap]
@@ -71,14 +84,6 @@
           (neg? n)                   (answer/ok (str sb))
           (< cap (+ (.length sb) n)) (too-long cap)
           :else                      (do (.append sb buf 0 n) (recur)))))))
-
-(defn- outcome-unknown
-  "The refusal of a reply that stopped after the request was accepted: the
-   remote may have acted on it, so a caller must not simply retry."
-  [why]
-  (answer/refusal :channel/outcome-unknown
-                  (str "the remote accepted the request but its reply " why
-                       ": the outcome is unknown")))
 
 (defn within
   "Boundary: the Answer of `read!` run on its own thread. Past `ms`, or when
@@ -113,15 +118,16 @@
 (defn read-sse-reply
   "Boundary: Ok of SSE text read from `r` up to and including the event
    that answers request `id`, so a stream the remote keeps open after its
-   reply is not waited on. EOF first answers the text read; past `cap`
-   characters, a :channel/transport-failed refusal."
+   reply is not waited on. The stream ending first, or passing `cap`
+   characters, is a :channel/outcome-unknown refusal: the headers came, so
+   the remote may have acted."
   [^Reader r cap id]
   (let [sb (StringBuilder.) cr? (volatile! false)]
     (loop [ev []]
       (let [a (line-of r cap cr?) l (:ok a)]
         (cond
           (answer/refused? a)                (too-long cap)
-          (nil? l)                           (answer/ok (str sb))
+          (nil? l)                           (outcome-unknown "ended before its reply")
           (< cap (+ (.length sb) (count l))) (too-long cap)
           :else (do (.append (.append sb l) "\n")
                     (case (sse-step ev l id)
