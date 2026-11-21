@@ -103,6 +103,11 @@
         "names differing only by . and _ never collide")
     (is (mcp-name? (fleet/exposed-name "remote" "a/b")))
     (is (mcp-name? (fleet/exposed-name "remote" "ação"))))
+  (testing "the digest is pinned, so the JVM, babashka and JavaScript compute the same string"
+    (is (= "h8vud5tu2h18" (fleet/digest "r__pay.out")))
+    (is (= "r__pay_out-h8vud5tu2h18" (fleet/exposed-name "r" "pay.out")))
+    (is (= "g5nz4v0mbvf8" (fleet/digest "r__abç")) "a non-ASCII character hashes by its UTF-16 code unit")
+    (is (= "r__ab_-g5nz4v0mbvf8" (fleet/exposed-name "r" "abç"))))
   (testing "a literal name in the digest shape is digested too, so it never takes a digested name"
     (let [squatter "pay_out-h8vud5tu2h18"
           n        (fleet/exposed-name "r" squatter)]
