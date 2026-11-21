@@ -9,8 +9,7 @@
             [autonomous.domain.answer :as answer]
             [autonomous.domain.lease :as lease]
             [autonomous.domain.naming :as naming]
-            [autonomous.domain.scope :as scope]
-            [clojure.string :as str]))
+            [autonomous.domain.scope :as scope]))
 
 (defn refuse [refusal] {:plan/action :refuse :refusal refusal})
 
@@ -70,11 +69,12 @@
 
 (defn host-grant
   "The grant a native host's dispatcher is shown for `grant`: {:actor
-   :scopes}, the shape autonomous.js hands its handlers, with the actor as
-   naming/shown-actor shows it and the scopes as sorted names. nil when no
-   actor is left to show, so a host that attributes changes is never handed
-   an empty grant."
+   :scopes}, the shape autonomous.js hands its handlers. The actor is shown
+   as naming/shown-actor shows it, and the scopes are sorted names.
+
+   nil when the actor names no one (naming/nameless-actor?: nil, empty,
+   whitespace-only or invisible-only), so a host that attributes changes is
+   never handed an empty or blank grant."
   [grant]
-  (let [actor (naming/shown-actor (:actor grant))]
-    (when-not (str/blank? actor)
-      {:actor actor :scopes (scope/names (:scopes grant))})))
+  (when-not (naming/nameless-actor? (:actor grant))
+    {:actor (naming/shown-actor (:actor grant)) :scopes (scope/names (:scopes grant))}))

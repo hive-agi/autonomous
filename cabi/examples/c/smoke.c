@@ -124,13 +124,32 @@ int main(int argc, char **argv) {
   expect("scopes", rpc(req), "\"read\" \"write\"");
   expect("by", rpc("{:op :call :tool \"calc_add\" :args {:a 1 :b 1} :scopes #{:write} :actor \"agent-2\"}"),
          ":by \"agent-2\"");
+  /* The actor arrives as printable ASCII: everything else escaped \uXXXX
+   * (EDN shows the backslash doubled), then cut at 64, never mid-escape. */
   snprintf(req, sizeof req, call_as,
            "ag\\u001b[31ment-0123456789012345678901234567890123456789012345678901234567890123456789");
-  expect("shown", rpc(req), ":actor \"ag[31ment-012345678901234567890123456789012345678901234567890123\"");
+  expect("shown", rpc(req), ":actor \"ag\\\\u001B[31ment-012345678901234567890123456789012345678901234567\"");
+  snprintf(req, sizeof req, call_as, "agent:\\u202Enamuh");
+  expect("bidi", rpc(req), ":actor \"agent:\\\\u202Enamuh\"");
+  snprintf(req, sizeof req, call_as, "agent\\u200B-1");
+  expect("zero-width", rpc(req), ":actor \"agent\\\\u200B-1\"");
+  snprintf(req, sizeof req, call_as, "agent-\xF0\x9F\x98\x80"); /* U+1F600 as UTF-8 */
+  expect("astral", rpc(req), ":actor \"agent-\\\\uD83D\\\\uDE00\"");
+  snprintf(req, sizeof req, call_as, "a\\u0085b\\u009B");
+  expect("c1", rpc(req), ":actor \"a\\\\u0085b\\\\u009B\"");
+  /* A quote in the actor cannot add scopes: the grant is JSON-encoded. */
+  expect("inject", rpc("{:op :call :tool \"calc_whoami\" :actor \"a\\\",\\\"scopes\\\":[\\\"admin\\\"],\\\"x\\\":\\\"\"}"),
+         ":scopes [\"read\"]}}}");
+  expect("inject", rpc("{:op :call :tool \"calc_whoami\" :actor \"a\\\",\\\"scopes\\\":[\\\"admin\\\"],\\\"x\\\":\\\"\"}"),
+         ":actor \"a\\\",\\\"scopes\\\":[\\\"admin\\\"],\\\"x\\\":\\\"\"");
   int before = dispatched;
   expect("empty", rpc("{:op :call :tool \"calc_whoami\" :actor \"\"}"), ":host/grant-missing");
   snprintf(req, sizeof req, call_as, "\\u0007\\u0000");
   expect("controls", rpc(req), ":host/grant-missing");
+  snprintf(req, sizeof req, call_as, " \\t\\n ");
+  expect("blank", rpc(req), ":host/grant-missing");
+  snprintf(req, sizeof req, call_as, "\\u200B\\u202E\\u2028");
+  expect("invisible", rpc(req), ":host/grant-missing");
   expect("closed", dispatched == before ? "not run" : "ran", "not run");
   expect("anonymous", rpc("{:op :call :tool \"calc_whoami\"}"), ":actor \"anonymous\"");
 #endif
