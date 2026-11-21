@@ -39,7 +39,10 @@
           (str why ": equal forms that validate differently never merge"))))
   (is (merged? (tool {:input (m/schema [:map {:registry {::a [:int {:min 0}]}} [:x ::a]])})
                (tool {:input (m/schema [:map {:registry {::a [:int {:min 0}]}} [:x ::a]])}))
-      "a property registry of plain forms still merges"))
+      "a property registry of plain forms still merges")
+  (is (not (merged? (tool {:input (m/schema [:map [:n :int]] {:registry nil})})
+                    (tool {:input (m/schema [:map [:n :int]] {:registry nil})})))
+      "a nil options registry is foreign and never throws"))
 
 (def ^:private redacting
   "A tool masking [:token] in its refusal data, and paths through a string."

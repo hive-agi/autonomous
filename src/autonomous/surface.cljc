@@ -153,11 +153,16 @@
    a default type it lacks, redefines or adds. A key of `own` accounts
    only for a schema the form rebuilds: an IntoSchema object under it (a
    type such as m/-simple-schema, whose predicate the form hides) stays
-   foreign."
+   foreign. A registry whose types cannot be listed (nil, or one that is
+   not a malli registry) is foreign: nothing says it matches the
+   defaults, and reading it must never throw out of merge-surfaces."
   [reg own dflt]
-  (let [sch (mr/-schemas (mr/registry reg))]
+  (let [sch (when (some? reg)
+              (try (mr/-schemas (mr/registry reg))
+                   (catch #?(:clj Throwable :cljs :default) _ nil)))]
     (boolean
-     (or (some (fn [[k v]] (and (or (not (contains? own k)) (m/into-schema? v))
+     (or (not (map? sch))
+         (some (fn [[k v]] (and (or (not (contains? own k)) (m/into-schema? v))
                                 (not (identical? v (get dflt k ::absent)))))
                sch)
          (some #(not (contains? sch %)) (keys dflt))))))

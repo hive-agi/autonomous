@@ -173,6 +173,12 @@
       (is (not= (m/validate (mk strict) value) (m/validate (mk int?) value)) (str why ": they validate differently"))
       (is (clashes? mk) (str why ": so they clash, never a silent merge")))))
 
+(deftest an-unreadable-options-registry-is-foreign-and-never-throws
+  (let [input #(:ok (affordance/->tool :a/x {:description "x" :handler (fn [_ _] 1) :input %}))
+        mk    #(m/schema [:map [:n :int]] {:registry nil})
+        r     (surface/merge-surfaces (s-of {"a_x" (input (mk))}) (s-of {"a_x" (input (mk))}))]
+    (is (= :name-clash (get-in r [:error :type])) "a nil registry is foreign: compared by identity, refused as a clash")))
+
 (deftest regexes-that-differ-only-in-flags-clash
   (let [ci (java.util.regex.Pattern/compile "^a+$" java.util.regex.Pattern/CASE_INSENSITIVE)
         cs (java.util.regex.Pattern/compile "^a+$")]
