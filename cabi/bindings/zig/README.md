@@ -15,7 +15,7 @@ library lives elsewhere). Tested with Zig 0.16.
 ```zig
 const autonomous = @import("autonomous");
 
-fn dispatch(tool: []const u8, args_json: []const u8) [*:0]const u8 { ... }
+fn dispatch(tool: []const u8, args_json: []const u8) anyerror![*:0]const u8 { ... }
 comptime { autonomous.exportDispatch(dispatch); }   // autonomous_host_dispatch
 
 const rt = try autonomous.Runtime.start();
@@ -26,8 +26,13 @@ const answer = try rt.rpc("{:op :call :tool \"calc_add\" :args {:a 1 :b 2} :scop
 
 The executable is linked with `rdynamic` so the library can find
 `autonomous_host_dispatch`. The dispatcher's result must stay valid until the
-next dispatch (the example keeps it in a static buffer); strings the library
-returns stay valid until the next call into it.
+next dispatch (the example keeps it in a static buffer). An error it returns
+is answered as the tool error `{"error":{"message":"<ErrorName>"}}`, so no
+Zig error reaches the library; use checked arithmetic (`std.math.add`)
+rather than an operator that panics. Strings the library returns stay valid
+until the next call into it; `lastRefusal()` is the binding's own copy.
+`rt.unregister(id)` removes a tool. `zig build test` runs the binding's unit
+tests.
 
 **One thread.** jolt runs on the thread that called `jolt_library_init`.
 `Runtime.start` remembers that thread, and every method answers

@@ -47,7 +47,10 @@ and makes every `Runtime` call from `main`. Keep it locked for the life of
 the program: never call `runtime.UnlockOSThread` on that goroutine.
 
 Other goroutines must not call the `Runtime`. Each call checks the calling
-thread and answers `autonomous.ErrWrongThread` off it; the example shows
-that refusal. Hand work to the runtime goroutine over a channel instead,
+thread in the same cgo call that enters the library and answers
+`autonomous.ErrWrongThread` off it, so a call from the wrong thread never
+reaches jolt; the example shows that refusal. `rt.Unregister(id)` removes a
+tool, and a refused re-registration leaves the working one in place.
+`go test` in `cabi/bindings/go` covers the binding (bb cabi-go runs it). Hand work to the runtime goroutine over a channel instead,
 and do slow work in a handler on your own goroutines, answering from what
 they leave behind, because a handler blocks the runtime while it runs.

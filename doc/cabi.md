@@ -113,7 +113,22 @@ can share `$defs`. A file holds one tool, an array of them, or
 `autonomous_reg_tool` takes, so the ABI is the same for both forms. In a
 Clojure host, `autonomous.json-spec.load/register-file!` registers the file
 with a handler per tool id. An invalid spec is refused with what to fix
-(`:invalid-tool`), never half-registered for want of a handler.
+(`:invalid-tool`), never half-registered for want of a handler, and
+`bb tool-spec` then prints nothing and exits 1.
+
+A spec is refused rather than read loosely:
+
+- a `$ref` that does not resolve within the file (a typo, a path out of it,
+  a URL), a `$ref` cycle, or a `type` that is not a JSON Schema type, any of
+  which would otherwise accept any argument;
+- a key the form does not know (`scope`, `readonly`, ...), naming the key
+  meant (`scopes`, `readOnly`);
+- malli EDN that does not compile as a tool, blank EDN, and EDN that
+  carries code (`[:fn ...]`, a list). Only the host can allow code, with
+  `{:allow-fn? true}`; a file cannot.
+
+The OpenAPI source refuses the first kind too
+(`:openapi/unresolved-schema`), except a cycle, which OpenAPI allows.
 
 ## The loop
 
