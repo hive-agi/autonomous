@@ -94,6 +94,17 @@
            (mask (decorator/redact-output [[:set-cookie 0] [:tokens "s3cret"] [:accounts 3 :token]])))
         "a string where a vector was expected and a set are masked; a missed index adds nothing")))
 
+(deftest a-union-field-needs-a-replacement-valid-for-every-branch
+  (let [output [:map [:balance [:or :int [:map [:cents :int]]]]]
+        run    (fn [d raw] (decorator/project-output (d (tool :d/acct {:output output})) raw))]
+    (is (= :output/invalid-redaction
+           (get-in (run (decorator/redact-output [[:balance :cents]]) {:balance 0}) [:error :type]))
+        "a number under the path is masked whole, and the string marker fails :int")
+    (is (= {:ok {:balance -1}} (run (decorator/redact-output [[:balance :cents]] -1) {:balance 0}))
+        "a replacement every branch accepts masks it")
+    (is (= {:ok {:balance {:cents -1}}} (run (decorator/redact-output [[:balance :cents]] -1) {:balance {:cents 5}}))
+        "and still masks inside the map branch")))
+
 (deftest redactions-are-data-so-equal-decorations-are-equal-tools
   (let [d (comp (decorator/redact-output [[:card :pan]]) (decorator/redact-refusal [[:token]]))]
     (is (= (dissoc (d (tool :d/acct {})) :handler :decode :explain)

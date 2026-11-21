@@ -161,6 +161,14 @@
    the string \"<redacted>\". Choose a different replacement if that
    would violate the tool's declared output schema.
 
+   Masking is deliberately broad, so a field whose schema is a union
+   needs a replacement valid for every branch it can hold: with
+   [:balance [:or :int [:map [:cents :int]]]] and the path
+   [:balance :cents], an output {:balance 0} has its number masked
+   whole, and a string replacement then fails :int, refusing the call
+   :output/invalid-redaction. Pick a replacement every branch accepts,
+   or declare the field in terms that admit it.
+
    Paths address the output in WIRE form (autonomous.domain.wire/->wire):
    a lazy seq or list is a vector there, so [:accounts 0 :token] reaches
    into {:accounts (map ...)}. The declared :output schema is then checked
