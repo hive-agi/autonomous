@@ -1,6 +1,6 @@
 #kaocha/v1
 {:tests [{:id :unit
-          :test-paths ["test" "test-cljc"]
+          :test-paths ["test" "test-cljc" "example/sim/test"]
           :ns-patterns ["-test$"]
           :skip-meta [:integration]}
          ;; needs `shadow watch :e2e` and two `node target/e2e/main.js` runtimes

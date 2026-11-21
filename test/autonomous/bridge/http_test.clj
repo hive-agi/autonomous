@@ -510,6 +510,10 @@
       (is (url/bearer-allowed? "http://127.255.255.255/mcp"))
       (is (not (url/bearer-allowed? "http://127.0.0.999/mcp")) "an octet past 255 is no loopback address")
       (is (not (url/bearer-allowed? "http://127.300.0.1/mcp")))
+      (doseq [u ["http://[::1].evil.com" "http://[::1]evil.com:80/mcp" "http://127.0.0.1:8099.evil.com/mcp"
+                 "http://127.0.0.1:x/mcp" "http://localhost:80:80/mcp"]]
+        (is (not (url/loopback? u)) (str u " is not a host and a port"))
+        (is (not (url/bearer-allowed? u)) u))
       (is (not (url/bearer-allowed? plain-remote-url))))))
 
 (deftest a-literal-token-fails-validation

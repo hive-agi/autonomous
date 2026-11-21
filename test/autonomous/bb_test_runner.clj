@@ -9,6 +9,7 @@
   '[autonomous.domain.answer-railway-test
     autonomous.approval-test
     autonomous.require-approval-test
+    autonomous.provider-allowlist-test
     autonomous.surface-test
     autonomous.spi-test
     autonomous.contract-test
@@ -47,7 +48,8 @@
     autonomous.asyncapi-core-test
     autonomous.asyncapi-source-test
     autonomous.json-spec-test
-    autonomous.bb-mcp.mount-test])
+    autonomous.bb-mcp.mount-test
+    sim.control-test])
 
 (defn -main [& _]
   (apply require suites)

@@ -7,14 +7,22 @@
    client with mTLS or a proxy in a cluster)."
   (:require [clojure.string :as str])
   (:import (java.net URI)
-           (java.net.http HttpClient HttpRequest HttpRequest$BodyPublishers
+           (java.net.http HttpClient HttpClient$Redirect HttpRequest HttpRequest$BodyPublishers
                           HttpResponse HttpResponse$BodyHandlers)
            (java.time Duration)))
 
 (def ^:private client
+  "Never follows a redirect: a 3xx is answered as it is, so a request
+   checked against one host cannot be carried to another."
   (delay (-> (HttpClient/newBuilder)
              (.connectTimeout (Duration/ofSeconds 10))
+             (.followRedirects HttpClient$Redirect/NEVER)
              (.build))))
+
+(defn redirect-policy
+  "L3 Boundary: the redirect policy of the default client, as a keyword."
+  []
+  (keyword (str/lower-case (str (.followRedirects ^HttpClient @client)))))
 
 (def ^:private restricted
   "Headers java.net.http sets itself and refuses from callers."

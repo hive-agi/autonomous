@@ -14,15 +14,14 @@
 
 (defn- host-port
   "[host port] of authority `hostport` (no userinfo); an IPv6 host keeps
-   its brackets."
+   its brackets. An authority that is not a host and an optional
+   :port - a bracketed host followed by anything but :port, a port that
+   is not digits - answers [nil nil], so nothing reads it as a host."
   [hostport]
-  (if (str/starts-with? hostport "[")
-    (if-let [j (str/index-of hostport "]")]
-      [(subs hostport 0 (inc j)) (not-empty (subs hostport (min (count hostport) (+ j 2))))]
-      [hostport nil])
-    (if-let [j (str/index-of hostport ":")]
-      [(subs hostport 0 j) (not-empty (subs hostport (inc j)))]
-      [hostport nil])))
+  (if-let [[_ host port] (or (re-matches #"(\[[^\]]*\])(?::([0-9]*))?" hostport)
+                             (re-matches #"([^\[\]:]*)(?::([0-9]*))?" hostport))]
+    [host (not-empty port)]
+    [nil nil]))
 
 (defn parts
   "{:scheme :userinfo? :host :port :path} of `url`, scheme and host lower
@@ -34,7 +33,7 @@
         [host port] (host-port (if at (subs authority (inc at)) authority))]
     {:scheme    (some-> scheme str/lower-case)
      :userinfo? (some? at)
-     :host      (str/lower-case host)
+     :host      (some-> host str/lower-case)
      :port      port
      :path      (str path)}))
 
@@ -67,8 +66,9 @@
    may send anywhere: not loopback."
   [url]
   (let [h (:host (parts url))]
-    (or (contains? loopback-hosts h)
-        (some? (re-matches loopback-v4-re h)))))
+    (and (some? h)
+         (or (contains? loopback-hosts h)
+             (some? (re-matches loopback-v4-re h))))))
 
 (defn bearer-allowed?
   "True when a bearer token may ride `url`: https anywhere, plain http only
