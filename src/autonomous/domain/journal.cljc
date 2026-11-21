@@ -33,14 +33,28 @@
 
 (def redacted "<redacted>")
 
+(defn- present?
+  "L1: true when `path` reaches a value in `m` through maps and vectors
+   only. A step into anything else (a string, a set, a number) is
+   absent: get-in would read a string by index, and assoc-in cannot
+   write into it."
+  [m path]
+  (loop [v m [k & more :as ks] path]
+    (cond
+      (empty? ks) true
+      (map? v)    (and (contains? v k) (recur (get v k) more))
+      (vector? v) (and (int? k) (< -1 k (count v)) (recur (nth v k) more))
+      :else       false)))
+
 (defn- mask-path
   "`m` with the value at `path` replaced by `replacement` when present;
-   the empty path is `m` itself. An absent path adds no key."
+   the empty path is `m` itself. An absent path, or one through a value
+   that is not a map or vector, adds no key and never throws."
   [replacement m path]
   (cond
-    (empty? path)                            replacement
-    (= ::absent (get-in m path ::absent))    m
-    :else                                    (assoc-in m path replacement)))
+    (empty? path)          replacement
+    (not (present? m path)) m
+    :else                  (assoc-in m path replacement)))
 
 (defn redact-paths
   "`m` with the value at every present path of `paths` (vectors of keys or

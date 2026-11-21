@@ -49,14 +49,27 @@
   [a]
   (if (answer/ok? a) (answer/ok (wire/->wire (:ok a))) a))
 
-(defn- settle-value
-  "L2 Pipeline: the Answer of settled value `v`. A complete Answer keeps its
-   variant (and its metadata) with an Ok bound through `project`; any other
-   value is projected. Ok values end in wire form."
-  [v project]
-  (if (answer/complete? v)
-    (with-meta (normalize (answer/bind v project)) (meta v))
-    (normalize (project v))))
+(defn- completed
+  "L2 Pipeline: the Answer of a settled (non-thenable) value `x`: an Answer
+   marked complete (answer/complete?) keeps its variant and metadata, its
+   Ok through `project`; any other value is a tool payload for `project`.
+   Wire-normalized either way."
+  [x project]
+  (if (answer/complete? x)
+    (with-meta (normalize (answer/bind x project)) (meta x))
+    (normalize (project x))))
+
+(defn- guarded
+  "L2 Pipeline: `finish` (Answer -> Answer) that never throws: when it
+   does, a refusal falls back to itself without :data (the value finish
+   could not make safe), any other Answer to itself. The Answer's metadata
+   is kept either way."
+  [finish]
+  (fn [a]
+    (with-meta (try (finish a)
+                    (catch #?(:clj Throwable :cljs :default) _
+                      (if (answer/refused? a) (update a :error dissoc :data) a)))
+      (meta a))))
 
 (defn- settled!
   "L2 Boundary: settle parked call `id` with Answer `a` and journal how it
@@ -66,36 +79,54 @@
   (registry/record! (journal/settled-entry id a (:call-detail (registry/snapshot)))))
 
 (defn- settle-later!
-  "L2 Pipeline: park thenable `x` and answer its Pending. Its value through
-   `settle-value`, or the refusal of what it fails with, settles the call."
-  [x project]
+  "L2 Pipeline: park thenable `x` and answer its Pending. Its value
+   `completed` through `project`, or the refusal of what it fails with,
+   then `finish` (Answer -> Answer, already guarded) settles the call."
+  [x project finish]
   (let [id (registry/park!)]
-    (thenable/chain (thenable/attempt #(thenable/chain x (fn [v] (settle-value v project)))
+    (thenable/chain (thenable/attempt #(thenable/chain x (fn [v] (completed v project)))
                                       answer/from-exception)
-                    #(settled! id %))
+                    (comp (partial settled! id) finish))
     (answer/pending id)))
 
 (defn settle
   "L2 Pipeline: a plain return becomes Ok, a thenable becomes Pending,
-   and an Answer marked complete (answer/complete?) keeps its variant.
-   Tool values are opaque, so an :ok key in one is not unwrapped.
-   `project` (raw -> Answer, default answer/ok) maps every Ok value,
-   direct or settled later, before wire normalization."
+   and an Answer marked complete (answer/complete?) keeps its variant,
+   returned directly or as what a thenable resolves to. Tool values are
+   opaque, so an :ok key in one is not unwrapped. `project` (raw -> Answer,
+   default answer/ok) maps every Ok value, direct or settled later, before
+   wire normalization. `finish` (Answer -> Answer, default identity) maps
+   the final Answer, direct or settled later, refusals included; if it
+   throws, a refusal is kept without its :data, so a call always settles."
   ([x] (settle x answer/ok))
-  ([x project]
-   (if (thenable? x)
-     (settle-later! x project)
-     (settle-value x project))))
+  ([x project] (settle x project identity))
+  ([x project finish]
+   (let [finish (guarded finish)]
+     (if (thenable? x)
+       (settle-later! x project finish)
+       (finish (completed x project))))))
+
+(defn- invoke-gated
+  "L2 Pipeline: the tool's invocation (use! wrappers around invoke-kind)
+   behind its approval gate (autonomous.decorator/gate), which shows the
+   human the args with the app's CallDetail :redact paths masked."
+  [{:keys [tool args grant] :as ctx}]
+  (decorator/gate tool args grant (:redact (:call-detail (registry/snapshot)))
+                  #((chain/handler ctx invoke-kind) tool args grant)))
 
 (defn- terminal
   "L2 Pipeline: the chain's terminal over context {:tool :args :grant}:
-   use! wrappers around invoke-kind, behind the tool's approval gate
-   (autonomous.decorator/gate), settled through its output projection
-   (autonomous.decorator/project-output)."
-  [{:keys [tool args grant] :as ctx}]
-  (settle (decorator/gate tool args grant (:redact (:call-detail (registry/snapshot)))
-                          #((chain/handler ctx invoke-kind) tool args grant))
-          (partial decorator/project-output tool)))
+   the gated invocation (invoke-gated), settled through the tool's output
+   projection (autonomous.decorator/project-output). What the invocation
+   throws becomes its refusal here, so the tool's refusal projection
+   (autonomous.decorator/project-refusal) sees it as it sees a refusal
+   answered or settled later."
+  [{:keys [tool] :as ctx}]
+  (let [finish (partial decorator/project-refusal tool)]
+    (try
+      (settle (invoke-gated ctx) (partial decorator/project-output tool) finish)
+      (catch #?(:clj Throwable :cljs :default) e
+        ((guarded finish) (answer/from-exception e))))))
 
 (defn- run-invoke
   "L2 Pipeline: the Answer of `plan` run through call chain `links`.
