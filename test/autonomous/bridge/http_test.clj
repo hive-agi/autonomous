@@ -243,6 +243,26 @@
     (is (true? (deref closed 1000 false)) "a late reply is closed"))
   (is (= {:ok 1} (jdk/within 1000 #(answer/ok 1) (fn [])))))
 
+(deftest a-lone-cr-dispatches-without-waiting-for-the-next-character
+  (let [text   (str list-changed-line "\r\r")
+        pos    (atom 0)
+        hold   (promise)
+        open   (proxy [java.io.Reader] []
+                 (read ([] (let [i @pos]
+                             (if (< i (count text))
+                               (do (swap! pos inc) (int (.charAt ^String text i)))
+                               (do @hold -1))))
+                       ([_cbuf _off _len] -1))
+                 (close [] (deliver hold true)))
+        [sink seen] (recording-sink)
+        pumper (future (jdk/pump! open sink))
+        got    (loop [n 0] (let [m (map :method (:messages @seen))]
+                             (if (or (seq m) (< 40 n)) m (do (Thread/sleep 25) (recur (inc n))))))]
+    (deliver hold true)
+    (deref pumper 2000 nil)
+    (is (= [rpc/list-changed] got)
+        "the event completes at a blank lone-CR line while the stream is still open")))
+
 (deftest a-stream-line-past-the-cap-closes-the-stream
   (let [ok (pumped "data: a\n\ndata: b\n" 16)]
     (is (= ["data: a\n" "\n" "data: b\n"] (:text ok)))

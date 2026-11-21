@@ -118,12 +118,13 @@
    longer line closes the stream; it is never buffered."
   (* 1024 1024))
 
-(defn- after-cr!
-  "Boundary: after a \r read from `r`, consume the \n of a \r\n pair; a
-   lone \r leaves the next character unread. `r` must support mark."
-  [^Reader r]
-  (.mark r 1)
-  (when-not (= 10 (.read r)) (.reset r)))
+(defn- skip-lf?
+  "Boundary: true when character `c` is the \n of a \r\n pair, i.e. the
+   previous line ended at \r (flag `cr?`); clears the flag either way."
+  [cr? c]
+  (let [skip? (and @cr? (= 10 c))]
+    (vreset! cr? false)
+    skip?))
 
 (defn- overflow
   "The refusal of a line past `cap` characters."
@@ -134,16 +135,19 @@
 (defn- line-of
   "Boundary: Ok of the next line of `r` without its end, Ok nil at EOF, or
    a :channel/stream-overflow refusal once the line passes `cap`
-   characters. A line ends at \r\n, \n or a lone \r, as SSE allows. Never
-   holds more than `cap` characters."
-  [^Reader r cap]
+   characters. A line ends at \r\n, \n or a lone \r, as SSE allows: a line
+   ending at \r sets `cr?`, and the next line then skips a leading \n, so
+   nothing ever waits on a character after \r. Never holds more than `cap`
+   characters."
+  [^Reader r cap cr?]
   (let [sb (StringBuilder.)]
     (loop []
       (let [c (.read r)]
         (cond
           (neg? c)              (answer/ok (when (pos? (.length sb)) (str sb)))
+          (skip-lf? cr? c)      (recur)
           (= 10 c)              (answer/ok (str sb))
-          (= 13 c)              (do (after-cr! r) (answer/ok (str sb)))
+          (= 13 c)              (do (vreset! cr? true) (answer/ok (str sb)))
           (>= (.length sb) cap) (overflow cap)
           :else                 (do (.append sb (char c)) (recur)))))))
 
@@ -156,11 +160,11 @@
   ([^Reader r sink cap]
    (try
      (with-open [r r]
-       (loop []
-         (let [a (line-of r cap)]
+       (loop [cr? (volatile! false)]
+         (let [a (line-of r cap cr?)]
            (cond
              (answer/refused? a) (when-let [failed! (:failed! sink)] (failed! a))
-             (some? (:ok a))     (do ((:text! sink) (str (:ok a) "\n")) (recur))))))
+             (some? (:ok a))     (do ((:text! sink) (str (:ok a) "\n")) (recur cr?))))))
      (catch Exception _client-gone nil)
      (finally (try ((:close! sink)) (catch Exception _closed nil))))))
 
