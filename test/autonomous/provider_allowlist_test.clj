@@ -131,6 +131,20 @@
     (a/decorate! (a/each-tool allowlist))
     (is (= {:ok {:charged 1}} (call {:provider "sicoob-sim" :amount 1})))))
 
+(deftest providers-the-service-could-confuse-are-refused
+  (doseq [ps [[{:code "sicoob-sim" :name "Sicoob"} {:code "756" :name "Sicoob"}]
+              [{:code "sicoob-sim" :name "SICOOB"} {:code "756" :name "sicoob"}]
+              [{:code "sicoob-sim" :name "Sicoob\u212a"} {:code "756" :name "SicoobK"}]
+              [{:code "sicoob-sim" :name "756"} {:code "756" :name "Sicoob"}]
+              [{:code "756" :name "SICOOB-SIM"} {:code "sicoob-sim" :name "SicoobSim"}]
+              [{:code "sicoob-sim"} {:code "sicoob-sim" :name "Other"}]]]
+    (is (= :invalid-allowlist
+           (try (decorator/provider-allowlist {:path [:provider] :providers ps :allowed ["sicoob-sim"]}) nil
+                (catch clojure.lang.ExceptionInfo e (:autonomous/error (ex-data e)))))
+        (pr-str ps)))
+  (is (fn? (decorator/provider-allowlist {:path [:provider] :providers providers :allowed ["sicoob-sim"]}))
+      "the real configuration is accepted"))
+
 (deftest scope-is-checked-first-in-either-order
   (doseq [[label d] [["allowlist outside" (comp allowlist (decorator/require-scope :payments))]
                      ["allowlist inside" (comp (decorator/require-scope :payments) allowlist)]]]

@@ -106,13 +106,26 @@
                                   [:name {:optional true} [:string {:min 1}]]]]]
    [:allowed [:set {:min 1} [:string {:min 1}]]]])
 
+(declare json-fold)
+
 (defn- allowlist-problem
   "L1: what is wrong with allowlist options `al`, nil when nothing is: a
-   shape problem, or an :allowed code no provider has."
+   shape problem; two providers with one code; two names that fold alike
+   (the service's name lookup walks a Go map, so which one it answers is
+   unspecified); a name that folds like another provider's code; or an
+   :allowed code no provider has."
   [al]
   (if-let [e (m/explain ProviderAllowlist al)]
     (me/humanize e)
-    (not-empty (remove (set (map :code (:providers al))) (:allowed al)))))
+    (let [ps    (:providers al)
+          codes (map :code ps)
+          pairs (for [p ps q ps :when (and (:name p) (not= (:code p) (:code q)))] [p q])]
+      (or (not-empty (for [[c n] (frequencies codes) :when (< 1 n)] {:duplicate-code c}))
+          (not-empty (for [[p q] pairs :when (= (json-fold (:name p)) (json-fold (:code q)))]
+                       {:name (:name p) :folds-like-code (:code q)}))
+          (not-empty (for [[p q] pairs :when (and (:name q) (= (json-fold (:name p)) (json-fold (:name q))))]
+                       {:names-fold-alike [(:name p) (:name q)]}))
+          (not-empty (remove (set codes) (:allowed al)))))))
 
 (defn provider-allowlist
   "L1 Tool -> Tool: the value at arg path `:path` (e.g. [:provider]) must
