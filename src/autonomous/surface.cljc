@@ -12,7 +12,8 @@
             [autonomous.domain.schema :as s]
             [malli.core :as m]
             [malli.error :as me]
-            [autonomous.domain.affordance :as affordance])
+            [autonomous.domain.affordance :as affordance]
+            [malli.registry :as mr])
   #?(:cljs (:require-macros [autonomous.domain.answer :as answer])))
 
 (def Interceptor
@@ -131,28 +132,62 @@
 
 (defn- regex-data
   "L1: regex `re` as [source flags], the same on every runtime, so two
-   patterns that differ only in their flags never compare equal."
+   patterns that differ only in their flags never compare equal. On
+   ClojureWasm a Pattern exposes no flags (no .flags, no flag argument
+   to re-pattern): a flag exists only as a leading inline group such as
+   (?i), which stays in the source, so the source alone keeps two such
+   patterns apart and the flags slot is nil."
   [re]
   #?(:cljs    [(.-source re) (.-flags re)]
      :cljw    [(str re) nil]
      :default [(.pattern ^java.util.regex.Pattern re) (.flags ^java.util.regex.Pattern re)]))
 
+(defn- path-prefix?
+  "L1: true when schema path `p` is `q` or one of its ancestors."
+  [p q]
+  (and (<= (count p) (count q)) (= p (subvec (vec q) 0 (count p)))))
+
+(defn- foreign-registry?
+  "L1: true when registry `reg` differs from the default registry `dflt`
+   (a map of type to schema) in anything the keys of `own` do not name:
+   a default type it lacks, redefines or adds."
+  [reg own dflt]
+  (let [sch (mr/-schemas (mr/registry reg))]
+    (boolean
+     (or (some (fn [[k v]] (and (not (contains? own k))
+                                (not (identical? v (get dflt k ::absent)))))
+               sch)
+         (some #(not (contains? sch %)) (keys dflt))))))
+
 (defn- carries-options?
   "L1: true when any schema in compiled `schema`'s tree was built with
-   options (a :registry or any other). Its form names a type its options
-   define, so two such schemas can share a form and still validate
-   differently."
+   options its form does not account for: an option other than
+   :registry, or a registry that adds, redefines or drops a type beyond
+   the :registry properties the schema or its ancestors declare. Such a
+   form names types the options define, so two schemas can share it and
+   still validate differently. A property registry alone is accounted
+   for: malli copies it into the options of the schemas it builds, and
+   recompiling the form rebuilds the same registry."
   [schema]
-  (let [found (volatile! false)]
-    (m/walk schema (fn [s _ _ _] (when (seq (m/options s)) (vreset! found true)) nil))
-    @found))
+  (let [dflt  (mr/-schemas (m/-registry {}))
+        nodes (volatile! [])]
+    (m/walk schema (fn [s path _ _] (vswap! nodes conj [path s]) nil))
+    (let [declared (mapv (fn [[p s]] [p (keys (:registry (m/properties s)))]) @nodes)
+          own      (fn [path] (into #{} (comp (filter #(path-prefix? (first %) path)) (mapcat second)) declared))]
+      (boolean
+       (some (fn [[path s]]
+               (let [o (m/options s)]
+                 (and (seq o)
+                      (or (seq (dissoc o :registry))
+                          (foreign-registry? (:registry o) (own path) dflt)))))
+             @nodes)))))
 
 (defn- schema-data
   "L1: `x` with every compiled malli schema replaced by its form and every
    regex by [source flags], recursively, so two compilations of one schema
-   compare equal. A compiled schema that carries options keeps its own
-   identity: its form does not say what its registry means. Anything else
-   is kept."
+   compare equal. A compiled schema that carries options its form does not
+   account for (`carries-options?`) keeps its own identity: its form does
+   not say what that registry means. Anything else is kept."
   [x]
   (cond
     (m/schema? x)                    (if (carries-options? x) x (schema-data (m/form x)))
@@ -214,10 +249,13 @@
 
    Two tools under one name are one affordance when they agree on every
    field that is not a fn; malli schemas (:input, :output) are compared
-   by form, regexes by source and flags. A compiled schema built with
-   options (its own :registry, say) is compared by identity, because its
-   form names types the options define: two such schemas of one form may
-   validate differently, so they clash unless they are the same value.
+   by form, regexes by source and flags. A :registry the form declares in
+   its own properties is part of the form, so two compilations of it
+   merge. A compiled schema built with options the form does not account
+   for (a custom options registry, any other option) is compared by
+   identity, because its form names types the options define: two such
+   schemas of one form may validate differently, so they clash unless
+   they are the same value.
    The fn-valued fields are first-writer-wins: the merged tool keeps the
    leftmost surface's handler. A schema whose form holds a fn, such as an
    inline [:fn #(...)], is equal only to itself, because two evaluations
