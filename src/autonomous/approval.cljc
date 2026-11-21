@@ -277,7 +277,7 @@
 
 #?(:cljs nil
    :default
-   (defrecord Terminal [read-line! ready? out state lines pumping drained]))
+   (defrecord Terminal [stream read-line! ready? out state lines pumping drained]))
 
 #?(:cljs nil
    :default
@@ -286,15 +286,45 @@
 
 #?(:cljs nil
    :default
+   (defonce ^:private ended
+     (java.util.WeakHashMap.)))
+
+#?(:cljs nil
+   :default
    (defn- new-terminal
-     "L1: a Terminal reading with `read-line!` and prompting on `out`;
-      `ready?`, when given, says whether a line can be read without
-      blocking. Its typed-line queue holds at most max-typed-lines; the
-      lines dropped past it are counted in :dropped. `drained` is delivered
-      once its reader has read what was typed ahead (see pump!)."
-     [read-line! ready? out]
-     (->Terminal read-line! ready? out (atom {:next 0 :queue [] :serving? false :dropped 0})
+     "L1: the Terminal of input `stream`, reading with `read-line!` and
+      prompting on `out`; `ready?`, when given, says whether a line can be
+      read without blocking. Its typed-line queue holds at most
+      max-typed-lines; the lines dropped past it are counted in :dropped.
+      `drained` is delivered once its reader has read what was typed ahead
+      (see pump!)."
+     [stream read-line! ready? out]
+     (->Terminal stream read-line! ready? out (atom {:next 0 :queue [] :serving? false :dropped 0})
                  (java.util.concurrent.LinkedBlockingQueue. (int max-typed-lines)) (atom false) (promise))))
+
+#?(:cljs nil
+   :default
+   (defn- retire!
+     "L1 Boundary: `terminal`'s input has ended: move it out of `terminals`
+      into `ended`, a registry that holds the stream and its Terminal only
+      weakly. While the stream and an asker on it can still be reached, a
+      later asker on the stream finds that Terminal (and is denied) rather
+      than starting a second reader; once they cannot, the entry is gone,
+      so ended streams do not accumulate."
+     [{:keys [stream] :as terminal}]
+     (locking terminals
+       (.put ^java.util.WeakHashMap ended stream (java.lang.ref.WeakReference. terminal))
+       (swap! terminals #(if (identical? terminal (get % stream)) (dissoc % stream) %)))))
+
+#?(:cljs nil
+   :default
+   (defn- registered
+     "L1 Boundary: the Terminal registered for `stream`: a live one, else an
+      ended one still reachable, else nil."
+     [stream]
+     (or (get @terminals stream)
+         (when-let [^java.lang.ref.WeakReference r (.get ^java.util.WeakHashMap ended stream)]
+           (.get r)))))
 
 #?(:cljs nil
    :default
@@ -314,13 +344,15 @@
      "L1 Boundary: the process-wide Terminal of input `stream`, made once
       (reading with `read-line!` and its `ready?`, else `default-read` and
       `default-ready?`; prompting on `out` or *err*); a later asker on the
-      stream must pass the same ports or none."
+      stream must pass the same ports or none. A stream whose input has
+      ended keeps its Terminal while it can be reached (see retire!)."
      [stream read-line! ready? default-read default-ready? out]
-     (-> (swap! terminals #(if (contains? % stream) %
-                               (assoc % stream (new-terminal (or read-line! default-read)
-                                                             (if read-line! ready? default-ready?)
-                                                             (or out *err*)))))
-         (get stream)
+     (-> (locking terminals
+           (or (registered stream)
+               (let [t (new-terminal stream (or read-line! default-read)
+                                     (if read-line! ready? default-ready?) (or out *err*))]
+                 (swap! terminals assoc stream t)
+                 t)))
          (same-ports! read-line! out))))
 
 (defn- enqueued
@@ -401,7 +433,8 @@
                         (when-let [l (read-line!)] (keep-line! terminal l) (recur)))
                       (finally
                         (swap! state assoc :eof? true)
-                        (deliver drained true)))))
+                        (deliver drained true)
+                        (retire! terminal)))))
      terminal))
 
 #?(:cljs nil
@@ -535,10 +568,23 @@
    :default
    (defn- stream-key
      "L1: the Terminal key of an asker: an explicit `stream`, else its
-      `read-line` function, else System/in for no `in` or an `in` that is
-      the process's own reader of System/in (`root`, see root-in), else `in`."
-     [stream read-line in root]
-     (or stream read-line (if (or (nil? in) (identical? in root)) System/in in))))
+      `read-line` function, else `system-in` for no `in` or an `in` that is
+      the process's own reader of it (`root`, see root-in), else `in`."
+     [stream read-line in system-in root]
+     (or stream read-line (if (or (nil? in) (identical? in root)) system-in in))))
+
+#?(:cljs nil
+   :default
+   (defn stdin-asker-on
+     "L1 adapter (clj): stdin-asker over the process input `system-in` and
+      its own reader `root`: the default input, and the reader an :in is
+      compared with. stdin-asker passes System/in and (root-in); a test
+      passes a stream of its own, so it never reads the real System/in."
+     [system-in root {:keys [in read-line ready? stream out approver wait-ms] :or {approver "stdin" wait-ms 60000}}]
+     (let [stream (stream-key stream read-line in system-in root)
+           reader (or in root)]
+       (->StdinAsker (terminal-for stream read-line ready? (line-reader reader) (ready-check reader) out)
+                     stream approver wait-ms))))
 
 #?(:cljs nil
    :default
@@ -568,9 +614,4 @@
       it buffered before the first prompt may answer that prompt.
       Pass :stream System/in with a custom :read-line over System/in."
      ([] (stdin-asker {}))
-     ([{:keys [in read-line ready? stream out approver wait-ms] :or {approver "stdin" wait-ms 60000}}]
-      (let [root   (root-in)
-            stream (stream-key stream read-line in root)
-            reader (or in root)]
-        (->StdinAsker (terminal-for stream read-line ready? (line-reader reader) (ready-check reader) out)
-                      stream approver wait-ms)))))
+     ([opts] (stdin-asker-on System/in (root-in) opts))))

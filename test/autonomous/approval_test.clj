@@ -434,20 +434,40 @@
     (is (shows? out #"request 2 denied, not run: input has ended"))))
 
 (deftest default-askers-under-different-in-bindings-share-system-in
-  (let [a (binding [*in* (BufferedReader. (StringReader. ""))] (approval/stdin-asker {:out *err*}))
-        b (binding [*in* (BufferedReader. (StringReader. ""))] (approval/stdin-asker {:out *err*}))]
-    (is (identical? (:terminal a) (:terminal b)) "one System/in, one terminal")
-    (is (identical? System/in (:stream a)))
-    (testing "an explicit :in that is the root *in* is keyed on System/in too"
-      (let [c (approval/stdin-asker {:in (approval/root-in) :out *err*})]
-        (is (identical? (:terminal a) (:terminal c)))))
+  (let [system-in (java.io.ByteArrayInputStream. (byte-array 0))
+        root      (BufferedReader. (StringReader. ""))
+        asker     #(approval/stdin-asker-on system-in root (merge {:out *err*} %))
+        a (binding [*in* (BufferedReader. (StringReader. ""))] (asker {}))
+        b (binding [*in* (BufferedReader. (StringReader. ""))] (asker {}))]
+    (is (identical? (:terminal a) (:terminal b)) "one process input, one terminal")
+    (is (identical? system-in (:stream a)))
+    (testing "an explicit :in that is the root reader is keyed on the process input too"
+      (is (identical? (:terminal a) (:terminal (asker {:in root})))))
+    (testing "a reader that is not the root is its own stream"
+      (let [other (BufferedReader. (StringReader. ""))]
+        (is (identical? other (:stream (asker {:in other}))))))
+    (testing "stdin-asker keys its default on System/in, and builds without reading it"
+      (let [real (approval/stdin-asker {})]
+        (is (identical? System/in (:stream real)))
+        (is (false? @(:pumping (:terminal real))) "no reader was started on System/in")))
     (testing "the root reader is resolved when the asker is built, never a bound *in*"
       (let [bound (BufferedReader. (StringReader. ""))]
         (binding [*in* bound]
-          (is (not (identical? bound (approval/root-in))))
-          (is (identical? (:terminal a) (:terminal (approval/stdin-asker {:in (approval/root-in) :out *err*}))))
-          (is (not (identical? System/in (:stream (approval/stdin-asker {:in bound :out *err*}))))
-              "a bound reader that is not the root is its own stream"))))))
+          (is (not (identical? bound (approval/root-in)))))))))
+
+(deftest an-ended-stream-leaves-the-live-registry
+  (let [eof   (promise)
+        out   (screen)
+        asker (approval/stdin-asker {:read-line #(do @eof nil) :out (:w out) :wait-ms 60000})
+        live  #(contains? @@#'approval/terminals (:stream asker))
+        a     (approval/ask! asker request 50000)]
+    (is (live) "a live stream is registered")
+    (deliver eof true)
+    (is (= :deny (decision a)))
+    (is (await-ref @#'approval/terminals #(not (contains? % (:stream asker))))
+        "at end of input its Terminal moves out of the live registry")
+    (is (identical? (:terminal asker) (:terminal (approval/stdin-asker {:read-line (:stream asker) :out (:w out)})))
+        "while the stream is reachable, a later asker still finds its ended Terminal")))
 
 (deftest a-second-asker-with-other-ports-is-refused
   (let [t (typist)]
