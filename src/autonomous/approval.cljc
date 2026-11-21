@@ -57,23 +57,20 @@
 ;; What a human may be shown
 ;; =============================================================================
 
-(def max-shown-chars
-  "L1: the longest rendering of one request a human is shown."
-  400)
+(def max-leaf-chars
+  "L1: the longest rendering of one shown value; the rest is counted, not shown."
+  120)
 
-(def ^:private unsafe-bmp
-  "L1: Cc (C0, DEL, C1), the BMP Cf format characters (bidi controls,
-   zero-width characters, BOM) and U+2028/U+2029, as regex class text."
-  (str "\\u0000-\\u001F\\u007F-\\u009F\\u00AD\\u0600-\\u0605\\u061C\\u06DD"
-       "\\u070F\\u08E2\\u180E\\u200B-\\u200F\\u2028-\\u202E\\u2060-\\u2064"
-       "\\u2066-\\u206F\\uFEFF\\uFFF9-\\uFFFB"))
+(def max-shown-args
+  "L1: the most argument values one prompt shows; a request with more is
+   not shown at all (see showable?)."
+  32)
 
 (def ^:private unsafe-re
-  "L1 host: one unsafe character, astral Cf (tag characters included) too."
-  #?(:cljs    (js/RegExp. (str "[" unsafe-bmp "\\u{110BD}\\u{110CD}\\u{1D173}-\\u{1D17A}"
-                               "\\u{E0001}\\u{E0020}-\\u{E007F}]") "gu")
-     :default (re-pattern (str "[" unsafe-bmp "\\x{110BD}\\x{110CD}\\x{1D173}-\\x{1D17A}"
-                               "\\x{E0001}\\x{E0020}-\\x{E007F}]"))))
+  "L1 host: one character outside printable ASCII (a whole code point), or
+   a double quote or backslash."
+  #?(:cljs    (js/RegExp. "[^\\x20\\x21\\x23-\\x5B\\x5D-\\x7E]" "gu")
+     :default #"[^\x20\x21\x23-\x5B\x5D-\x7E]"))
 
 (defn- escape-char
   "L1 host: the visible escape of one unsafe character `c` (a string):
@@ -84,22 +81,53 @@
     (if (< cp 0x10000) (str "\\u" (subs (str "0000" hex) (count hex))) (str "\\u{" hex "}"))))
 
 (defn safe-text
-  "L1: `s` as text with every control, format or line-separator character
-   escaped (see escape-char), so it cannot move a cursor, reorder or hide
-   text on a terminal."
+  "L1: `s` with every character outside printable ASCII, and \" and \\,
+   escaped (see escape-char): only printable ASCII is ever shown."
   [s]
   #?(:cljs    (.replace (str s) unsafe-re escape-char)
      :default (str/replace (str s) unsafe-re escape-char)))
 
 (defn cap
-  "L1: text `s` cut to at most `n` characters, ending in an ellipsis when cut."
+  "L1: text `s` cut to `n` characters, with a visible note of how many were cut."
   [s n]
-  (if (> (count s) n) (str (subs s 0 (dec n)) "\u2026") s))
+  (if (> (count s) n) (str (subs s 0 n) " (+" (- (count s) n) " chars)") s))
 
-(defn safe-leaves
-  "L1: `x` with every string leaf passed through safe-text."
-  [x]
-  (walk/postwalk #(if (string? %) (safe-text %) %) x))
+(defn shown-value
+  "L1: one value as a human is shown it: a string quoted, any other leaf
+   printed, escaped (safe-text), and capped at max-leaf-chars (cap)."
+  [v]
+  (cap (if (string? v) (str "\"" (safe-text v) "\"") (safe-text (pr-str v))) max-leaf-chars))
+
+(defn- leaves
+  "L1: [path leaf] for every leaf of wire value `x` under `path`; an empty
+   collection is a leaf."
+  [path x]
+  (cond
+    (and (coll? x) (empty? x)) [[path x]]
+    (map? x)                   (mapcat (fn [[k v]] (leaves (conj path k) v)) x)
+    (coll? x)                  (mapcat (fn [i v] (leaves (conj path i) v)) (range) x)
+    :else                      [[path x]]))
+
+(defn- arg-line
+  "L1: the prompt line of the argument leaf `v` at `path`."
+  [[path v]]
+  (str "    " (cap (str/join " " (map shown-value path)) max-leaf-chars) " = " (shown-value v)))
+
+(defn showable?
+  "L1: can every argument value of `request` be shown, one per line
+   (at most max-shown-args of them)?"
+  [request]
+  (<= (count (leaves [] (:args request))) max-shown-args))
+
+(defn prompt-lines
+  "L1: what a human is shown for request `id`: tool, actor and session
+   first, then every argument value on its own line (sorted by path), then
+   how to answer. No value is dropped; a long one is capped with a note."
+  [id {:keys [tool actor session args]}]
+  (concat [(str "[" id "] approval requested: tool " (shown-value tool)
+                " actor " (shown-value actor) " session " (shown-value session))]
+          (sort (map arg-line (leaves [] args)))
+          [(str "[" id "] type \"" id " y\" to approve; anything else denies")]))
 
 ;; =============================================================================
 ;; Timed ask
@@ -116,7 +144,7 @@
    is not a Verdict denies."
   [v t0]
   (cond
-    (= ::timeout v)        (stamp {:decision :timeout} t0)
+    (#{::timeout ::expired ::withdrawn} v) (stamp {:decision :timeout} t0)
     (= ::error v)          (stamp {:decision :error} t0)
     (m/validate Verdict v) (stamp (select-keys v [:decision :approver]) t0)
     :else                  (stamp {:decision :deny} t0)))
@@ -183,35 +211,23 @@
   (let [[typed answer & more] (str/split (str/trim (or line "")) #"\s+")]
     (and (= id typed) (contains? #{"y" "yes"} (str/lower-case (or answer ""))) (empty? more))))
 
-(defn shown-request
-  "L1: `request` rendered for a human: every string leaf escaped
-   (safe-leaves), the whole rendering escaped again and capped at
-   max-shown-chars."
-  [request]
-  (cap (safe-text (pr-str (safe-leaves request))) max-shown-chars))
-
-(defn prompt-line
-  "L1: the line the stdin asker prints for request `id` (see shown-request)."
-  [id request]
-  (str "[" id "] approve " (shown-request request) "? type \"" id " y\" to approve; anything else denies"))
-
 (defn- say!
-  "L1 Boundary: print `line` on writer `out`."
-  [out line]
-  #?(:cljs    (.write out (str line "\n"))
-     :default (binding [*out* out] (println line) (flush))))
+  "L1 Boundary: print `lines` on writer `out` as one block no other say!
+   on `out` can interleave with."
+  [out & lines]
+  #?(:cljs    (.write out (str (str/join "\n" lines) "\n"))
+     :default (locking out (binding [*out* out] (run! println lines) (flush)))))
 
 (defn- verdict
   "L1 Promote: the Verdict of `approver` for typed `line` on request `id`."
   [approver id line]
   {:decision (if (approves? id line) :approve :deny) :approver approver})
 
-;; A Terminal is one input stream shared by every stdin asker on it: one
-;; request counter, one FIFO of waiting requests and at most one reader.
+;; Terminal design: memory 20261120025625-307f0e9a.
 
 #?(:cljs nil
    :default
-   (defrecord Terminal [read-line! out state]))
+   (defrecord Terminal [read-line! out state lines pumping]))
 
 #?(:cljs nil
    :default
@@ -220,14 +236,35 @@
 
 #?(:cljs nil
    :default
+   (defn- new-terminal
+     "L1: a Terminal reading with `read-line!` and prompting on `out`."
+     [read-line! out]
+     (->Terminal read-line! out (atom {:next 0 :queue [] :serving? false})
+                 (java.util.concurrent.LinkedBlockingQueue.) (atom false))))
+
+#?(:cljs nil
+   :default
+   (defn- same-ports!
+     "L1 Boundary: `terminal`, refusing ex-info :invalid-approval when a
+      given `read-line!` or `out` is not the one it already has."
+     [terminal read-line! out]
+     (when (or (and read-line! (not= read-line! (:read-line! terminal)))
+               (and out (not (identical? out (:out terminal)))))
+       (throw (ex-info "a stdin asker on this input stream already exists with another :read-line or :out"
+                       {:autonomous/error :invalid-approval})))
+     terminal))
+
+#?(:cljs nil
+   :default
    (defn- terminal-for
      "L1 Boundary: the process-wide Terminal of input `stream`, made once
-      with `read-line!` and `out`; every asker on the stream shares it."
-     [stream read-line! out]
-     (get (swap! terminals #(if (contains? % stream) %
-                                (assoc % stream (->Terminal read-line! out
-                                                            (atom {:next 0 :queue [] :serving? false})))))
-          stream)))
+      (reading with `read-line!` or `default-read`, prompting on `out` or
+      *err*); a later asker on the stream must pass the same ports or none."
+     [stream read-line! default-read out]
+     (-> (swap! terminals #(if (contains? % stream) %
+                               (assoc % stream (new-terminal (or read-line! default-read) (or out *err*)))))
+         (get stream)
+         (same-ports! read-line! out))))
 
 (defn- enqueued
   "L1: terminal state `st` with request `entry` queued under the next
@@ -236,31 +273,83 @@
   (let [id (str (inc (:next st)))]
     (-> st (assoc :next (inc (:next st))) (update :queue conj (assoc entry :id id)))))
 
-(defn- dequeued
-  "L1: terminal state `st` without its first request; :serving? stays true
-   only while requests remain."
-  [st]
-  (let [q (subvec (:queue st) 1)] (assoc st :queue q :serving? (boolean (seq q)))))
+(defn- without
+  "L1: terminal state `st` without the request answering to promise `p`;
+   :serving? stays true only while requests remain."
+  [st p]
+  (let [q (filterv #(not (identical? p (:p %))) (:queue st))]
+    (assoc st :queue q :serving? (boolean (seq q)))))
+
+#?(:cljs nil
+   :default
+   (defn- daemon!
+     "L1 host: run thunk `f` on a new daemon thread, so it never keeps a host
+      JVM alive."
+     [f]
+     (doto (Thread. ^Runnable f) (.setDaemon true) (.start))))
+
+(defn- outcome-line
+  "L1: what the terminal says once request `id` ended with `v` (a Verdict,
+   or the ::expired / ::withdrawn / ::unshowable marks)."
+  [id v]
+  (str "request " id " "
+       (case (if (map? v) (:decision v) v)
+         :approve     "approved"
+         :deny        "denied, not run"
+         ::unshowable "denied, not run: too many argument values to show"
+         "expired, not run")))
+
+#?(:cljs nil
+   :default
+   (defn- pump!
+     "L1 Boundary: once per terminal, a daemon thread moving every line read
+      into the terminal's `lines` queue, so no request waits on a read. At
+      end of input the stream's terminal is let go."
+     [{:keys [read-line! lines pumping]} stream]
+     (when (compare-and-set! pumping false true)
+       (daemon! #(do (loop [] (when-let [l (read-line!)] (.put lines l) (recur)))
+                     (swap! terminals dissoc stream))))))
+
+#?(:cljs nil
+   :default
+   (defn- await-line
+     "L1 Boundary: the first line typed within `ms` while promise `p` is still
+      undelivered, or nil; looks again every 50 ms."
+     [{:keys [lines]} p ms]
+     (let [deadline (+ (now-ms) ms)]
+       (loop []
+         (let [left (- deadline (now-ms))]
+           (when (and (pos? left) (not (realized? p)))
+             (or (.poll lines (min 50 left) java.util.concurrent.TimeUnit/MILLISECONDS)
+                 (recur))))))))
+
+#?(:cljs nil
+   :default
+   (defn- answer!
+     "L1 Boundary: prompt request `entry` on `terminal` and deliver its
+      Verdict for the next line, or ::expired when no line comes in its
+      :wait-ms or it is withdrawn first."
+     [{:keys [out] :as terminal} {:keys [id p approver request wait-ms]}]
+     (apply say! out (prompt-lines id request))
+     (let [line (await-line terminal p wait-ms)]
+       (deliver p (if line (verdict approver id line) ::expired)))))
 
 #?(:cljs nil
    :default
    (defn- serve-one!
-     "L1 Boundary: prompt and read the first queued request; a request that
-      expired while waiting, or while its line was being typed, is told so
-      and gets no Verdict from that line."
-     [{:keys [read-line! out state]}]
-     (let [{:keys [id p approver request]} (first (:queue @state))]
+     "L1 Boundary: decide the head request (denied unshown when not
+      showable?), say how it ended, and answer the state without it."
+     [{:keys [out state] :as terminal}]
+     (let [{:keys [id p request] :as entry} (first (:queue @state))]
        (when-not (realized? p)
-         (say! out (prompt-line id request))
-         (let [line (read-line!)]
-           (when-not (deliver p (verdict approver id line))
-             (say! out (str "request " id " expired; that line answered nothing")))))
-       (swap! state dequeued))))
+         (if (showable? request) (answer! terminal entry) (deliver p ::unshowable))
+         (say! out (outcome-line id @p)))
+       (swap! state without p))))
 
 #?(:cljs nil
    :default
    (defn- serve!
-     "L1 Boundary: the terminal's one reader: serve queued requests in order
+     "L1 Boundary: the terminal's one server: serve queued requests in order
       until none is left."
      [{:keys [state] :as terminal}]
      (try (loop [] (when (:serving? (serve-one! terminal)) (recur)))
@@ -268,34 +357,37 @@
 
 #?(:cljs nil
    :default
-   (defn- queued-id
-     "L1: the number of the request answering to promise `p` on `terminal`."
-     [{:keys [state]} p]
-     (some #(when (identical? p (:p %)) (:id %)) (:queue @state))))
+   (defn- start-server!
+     "L1 Boundary: queue `entry` on `terminal` and start its server on a
+      daemon thread unless one is running."
+     [{:keys [state] :as terminal} stream entry]
+     (pump! terminal stream)
+     (let [[before _] (swap-vals! state #(assoc (enqueued % entry) :serving? true))]
+       (when-not (:serving? before) (daemon! #(serve! terminal))))))
 
 #?(:cljs nil
    :default
-   (defn- start-reader!
-     "L1 Boundary: queue `entry` on `terminal` and start its reader unless
-      one is running. Answers the request's number."
-     [{:keys [state] :as terminal} entry]
-     (let [[before after] (swap-vals! state #(assoc (enqueued % entry) :serving? true))]
-       (when-not (:serving? before) (future (serve! terminal)))
-       (:id (peek (:queue after))))))
+   (defn- withdraw-entry!
+     "L1 Boundary: end the queued request whose ask! answer is `answer`:
+      deliver it ::withdrawn and drop it unless it is the head, whose
+      server ends it and says it expired. Nothing is printed for a request
+      that was never prompted."
+     [{:keys [state]} answer]
+     (when-let [{:keys [p]} (some #(when (identical? answer (:p %)) %) (:queue @state))]
+       (deliver p ::withdrawn)
+       (swap! state (fn [st] (if (identical? p (:p (first (:queue st)))) st (without st p)))))))
 
 #?(:cljs nil
    :default
-   (defrecord StdinAsker [terminal approver]
+   (defrecord StdinAsker [terminal stream approver wait-ms]
      Asker
      (-ask! [_ request]
        (let [p (promise)]
-         (start-reader! terminal {:p p :approver approver :request request})
+         (start-server! terminal stream {:p p :approver approver :request request :wait-ms wait-ms})
          p))
      Withdraw
-     (-withdraw! [_ p]
-       (let [id (queued-id terminal p)]
-         (when (and id (not (realized? p)) (deliver p ::withdrawn))
-           (say! (:out terminal) (str "request " id " expired")))))))
+     (-withdraw! [_ answer]
+       (withdraw-entry! terminal answer))))
 
 #?(:cljs nil
    :default
@@ -308,16 +400,21 @@
    :default
    (defn stdin-asker
      "L1 adapter (clj): asks on a terminal. Every stdin asker on one input
-      stream shares one process-wide queue, counter and reader: requests are
-      prompted one at a time in call order, each numbered, and only
-      \"<n> y\" approves request n. A timed-out request is withdrawn and the
-      terminal says it expired; a line typed for it answers nothing.
-      Options :in (a BufferedReader, default *in*), or :read-line (a
+      stream (default System/in) shares one process-wide queue, counter and
+      reader: requests are prompted one at a time in call order, tool, actor
+      and session first and each argument on its own line, and only
+      \"<n> y\" approves request n. A request waits up to :wait-ms (default
+      60000) from its prompt; the terminal then says it expired, and says
+      how every request ended. Give require-approval a :timeout-ms that
+      covers the queue wait too. A request that times out before its turn is
+      dropped unprompted. Refuses (ex-info :invalid-approval) a :read-line
+      or :out other than the stream's first asker's, and a request with
+      more than max-shown-args argument values is denied unshown.
+      Options :in (a BufferedReader on System/in) or :read-line (a
       zero-argument function) with :stream (its identity, default the
       function), :out (default *err*), :approver (default \"stdin\")."
      ([] (stdin-asker {}))
-     ([{:keys [in read-line stream out approver] :or {approver "stdin"}}]
-      (let [in (or in *in*)]
-        (->StdinAsker (terminal-for (or stream read-line in) (or read-line (line-reader in))
-                                    (or out *err*))
-                      approver)))))
+     ([{:keys [in read-line stream out approver wait-ms] :or {approver "stdin" wait-ms 60000}}]
+      (let [stream (or stream read-line in System/in)]
+        (->StdinAsker (terminal-for stream read-line (line-reader (or in *in*)) out)
+                      stream approver wait-ms)))))

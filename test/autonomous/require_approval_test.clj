@@ -145,9 +145,9 @@
         seen  (first @(:requests asker))]
     (is (= "pay" (:tool seen)))
     (is (= {:amount 10 :pin "<redacted>"} (:args seen)) "never the raw pin")
-    (is (= 64 (count (:actor seen))))
-    (is (not (re-find #"[\x00-\x1F\x7F-\x9F\u202e]" (:actor seen))) "C0, C1 and bidi are gone")
-    (is (.startsWith ^String (:actor seen) "evil\\u001b[2J\\u000a\\u0085\\u202e") "shown escaped")))
+    (is (re-matches #"[\x20-\x7E]+" (:actor seen)) "printable ASCII only")
+    (is (.startsWith ^String (:actor seen) "evil\\u001b[2J\\u000a\\u0085\\u202e") "shown escaped")
+    (is (re-find #" \(\+\d+ chars\)$" (:actor seen)) "a cut actor says how much was cut")))
 
 (deftest a-deny-is-journaled-with-its-approver
   (approving! [{:decision :deny :approver "bob"}] 1000)

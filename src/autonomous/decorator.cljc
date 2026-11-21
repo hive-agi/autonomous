@@ -76,8 +76,9 @@
     (stamped d (refusals (:decision d) (:deny refusals)))))
 
 (defn- shown-actor
-  "L1 Promote: `actor` fit to show a human: control, format and line
-   separator characters escaped (approval/safe-text), at most 64 characters."
+  "L1 Promote: `actor` fit to show a human: everything outside printable
+   ASCII escaped (approval/safe-text), at most 64 characters with a
+   visible note of the rest (approval/cap)."
   [actor]
   (approval/cap (approval/safe-text actor) 64))
 
