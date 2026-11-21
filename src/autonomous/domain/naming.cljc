@@ -73,8 +73,10 @@
    U+007E) other than \" and \\ is shown as itself. Those two and every
    other UTF-16 code unit become \\uxxxx (lowercase hex): a control, bidi
    or zero-width character becomes visible, and an astral character becomes
-   its surrogate pair (\\ud83d\\ude00), on every runtime. The text is safe
-   inside quotes, and two distinct actors have distinct actor-text.
+   its surrogate pair (\\ud83d\\ude00), on every runtime. The text holds no
+   quote, and a backslash only ever starts an escape; written into JSON or
+   EDN it still needs that format's escaping (else the reader decodes
+   \\u202e back into U+202E). Two distinct actors have distinct actor-text.
 
    The result is cut at max-shown-actor characters, never inside an escape
    or between the two halves of a pair. A cut actor may show the same as

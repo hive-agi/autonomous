@@ -16,7 +16,10 @@
 #ifdef SMOKE_V1
 #define WHO(grant) "C"
 #else
-/* The caller's actor, copied out of grant_json {"actor":"...","scopes":[..]}. */
+/* The caller's actor, copied out of grant_json {"actor":"...","scopes":[..]}
+ * still JSON-escaped (a shown \u202e arrives as \\u202e), so it can go back
+ * into a JSON result as is. A real host parses grant_json with a JSON
+ * parser and never slices it; this smoke test only needs the bytes. */
 static char who[AUTONOMOUS_MAX_SHOWN_ACTOR * 6 + 1];
 static const char *actor_of(const char *grant) {
   const char *p = grant ? strstr(grant, "\"actor\":\"") : NULL;
