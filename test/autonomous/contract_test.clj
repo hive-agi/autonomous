@@ -133,6 +133,14 @@
   (is (false? (:ok? (:schema-round-trip (codec-checks {:encode not-an-answer}))))
       "an encode failure breaks the sample round trip"))
 
+(deftest a-codec-refusing-with-a-guard-type-is-still-total
+  (let [own {:encode (fn [_ args]
+                       (if (and (map? args) (string? (:text args)))
+                         (answer/ok (:text args))
+                         (answer/refusal :codec/encode "the codec's own refusal")))}]
+    (is (:ok? (:codecs-total (codec-checks own)))
+        "the guard is told apart by its marker, not by the refusal type")))
+
 (deftest fixture-failures-are-contained-as-check-data
   (let [report (contract/check-adapter echo-adapter
                                        (assoc (fixture) :human-call
