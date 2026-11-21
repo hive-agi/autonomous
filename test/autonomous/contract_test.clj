@@ -68,6 +68,15 @@
             :decorators-preserve-schemas :codecs-total]
            (mapv :check (:checks report))))))
 
+(deftest require-approval-is-in-the-decorator-law-and-preserves-schemas
+  (let [gate (:require-approval contract/tool-decorators)
+        tool (:contract-test/echo exposed)]
+    (is (fn? gate) "the law applies require-approval")
+    (is (contains? (gate tool) :autonomous.decorator/approval)
+        "the decorator under the law really installs the approval gate")
+    (is (= (select-keys tool [:input :output]) (select-keys (gate tool) [:input :output])))
+    (is (:ok? (contract/decorators-preserve-schemas echo-adapter (fixture))))))
+
 (deftest a-mount-that-changes-the-human-path-fails-the-contract
   (let [by-id (checks-by-id (contract/check-adapter echo-adapter
                                                     (fixture (fn [_] (constantly :hijacked)))))]
