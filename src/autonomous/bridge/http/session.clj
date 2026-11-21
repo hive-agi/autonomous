@@ -41,13 +41,13 @@
    the session and it must be renewed); any other error status is
    :channel/remote-refused, carrying the status only: an error body is the
    remote's text and may echo the request's credential back."
-  [{:keys [status body]} id]
+  [{:keys [status body headers]} id]
   (cond
     (= gone-status status) (answer/refusal :channel/session-gone "the remote forgot this session")
     (<= 400 status)        (answer/refusal :channel/remote-refused
                                            (str "the remote answered " status)
                                            {:status status})
-    :else                  (rpc/reply-of body id)))
+    :else                  (rpc/reply-of body (get headers "content-type") id)))
 
 (defn open-session!
   "Ok of a session {:id :actor} opened for `grant` on `target`, or a

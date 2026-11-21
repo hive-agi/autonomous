@@ -130,27 +130,28 @@
       (contains? res :structuredContent) (answer/ok body)
       :else                          (answer/ok (or (content-text res) {})))))
 
-(defn- sse-body?
-  "True when reply body `body` is SSE framing rather than bare JSON."
-  [body]
-  (let [t (str/triml (str body))]
-    (or (str/starts-with? t "data:") (str/starts-with? t ":") (str/starts-with? t "event:"))))
+(defn sse-type?
+  "Pure: true when Content-Type `content-type` names an SSE stream
+   (text/event-stream, any parameters and case)."
+  [content-type]
+  (= sse-accept (str/trim (str/lower-case (first (str/split (str content-type) #";"))))))
 
 (defn- messages-of
-  "Every JSON-RPC message in reply body `body`: an SSE-framed reply, a
-   batch, or one object. Throws when bare JSON does not parse."
-  [body]
-  (if (sse-body? body)
+  "Every JSON-RPC message in reply body `body`, read as SSE when `sse?`,
+   else as one JSON object or batch. Throws when JSON does not parse."
+  [body sse?]
+  (if sse?
     (read-messages body)
     (let [v (json/read-json (str body))]
       (if (map? v) [v] (filterv map? v)))))
 
 (defn reply-of
-  "Pure: Ok of the message in reply body `body` that answers request `id`,
-   skipping notifications and other replies, or a :channel/bad-answer
-   refusal when none does or the body is not JSON-RPC."
-  [body id]
-  (let [msgs (try (messages-of body) (catch Exception _not-json nil))]
+  "Pure: Ok of the message in reply body `body` of Content-Type
+   `content-type` that answers request `id`, skipping notifications and
+   other replies, or a :channel/bad-answer refusal when none does or the
+   body is not JSON-RPC. The header decides the framing, never the body."
+  [body content-type id]
+  (let [msgs (try (messages-of body (sse-type? content-type)) (catch Exception _not-json nil))]
     (if-let [m (first (filter #(and (contains? % :id) (= id (:id %))) msgs))]
       (answer/ok m)
       (answer/refusal :channel/bad-answer "the remote sent no reply to this request"))))
