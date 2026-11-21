@@ -19,19 +19,27 @@ pub fn build(b: *std.Build) void {
         .link_libc = true,
     });
 
+    // -Dblind=true: the example exports the grant-blind dispatcher (0.2 style).
+    const options = b.addOptions();
+    options.addOption(bool, "blind", b.option(bool, "blind", "export the grant-blind dispatcher") orelse false);
+
     const root = b.createModule(.{
         .root_source_file = b.path("example/main.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
-        .imports = &.{.{ .name = "autonomous", .module = autonomous }},
+        .imports = &.{
+            .{ .name = "autonomous", .module = autonomous },
+            .{ .name = "options", .module = options.createModule() },
+        },
     });
     root.addLibraryPath(.{ .cwd_relative = lib_dir });
     root.addRPath(.{ .cwd_relative = lib_dir });
     root.linkSystemLibrary("autonomous", .{});
 
     const exe = b.addExecutable(.{ .name = "zig-example", .root_module = root });
-    // The library finds autonomous_host_dispatch in the executable.
+    // The library finds autonomous_host_dispatch_v2 (or, -Dblind, the 0.2
+    // autonomous_host_dispatch) in the executable.
     exe.rdynamic = true;
     b.installArtifact(exe);
 

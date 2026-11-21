@@ -1,5 +1,5 @@
 // Link libautonomous (AUTONOMOUS_LIB_DIR, default ../../build) and export the
-// executable's symbols, so the library finds autonomous_host_dispatch.
+// executable's symbols, so the library finds autonomous_host_dispatch_v2.
 fn main() {
     let dir = std::env::var("AUTONOMOUS_LIB_DIR").unwrap_or_else(|_| {
         let here = std::env::var("CARGO_MANIFEST_DIR").unwrap();

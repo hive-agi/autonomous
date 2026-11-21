@@ -18,8 +18,11 @@
 // reaches the library.
 //
 // Build: libautonomous.so in ../../build (bb cabi), or set CGO_LDFLAGS to
-// -L<dir> -Wl,-rpath,<dir>. The executable exports autonomous_host_dispatch
-// (-rdynamic, set below) so the library can find it.
+// -L<dir> -Wl,-rpath,<dir>. The executable exports autonomous_host_dispatch_v2
+// and the 0.2 autonomous_host_dispatch (-rdynamic, set below) so the library
+// can find them; a process must hold only one definition of each. Use
+// ToolAs for a handler that is told who called (a Grant), Tool for one
+// that is not.
 package autonomous
 
 /*
@@ -85,7 +88,7 @@ var (
 	started   *Runtime
 	startErr  error
 
-	handlers = map[string]Handler{}
+	handlers = map[string]body{}
 	// ids maps each registered tool's MCP name to its id.
 	ids = map[string]string{}
 )
@@ -190,6 +193,18 @@ func registered(out string) string {
 // with h. Answers the MCP name. A refused spec leaves an earlier
 // registration of id, and its handler, as they were.
 func (rt *Runtime) Tool(id, specEDN string, h Handler) (string, error) {
+	return rt.register(id, specEDN, blindBody(h))
+}
+
+// ToolAs declares tool id like Tool, with a handler that is told who
+// called it (a Grant), to attribute what it changes. It fails closed: a
+// call that reaches it without a grant (a libautonomous older than 0.3) or
+// with an unreadable one is refused, and h does not run.
+func (rt *Runtime) ToolAs(id, specEDN string, h GrantHandler) (string, error) {
+	return rt.register(id, specEDN, grantBody(id, h))
+}
+
+func (rt *Runtime) register(id, specEDN string, b body) (string, error) {
 	cid, cspec := cs(id), cs(specEDN)
 	defer free(cid)
 	defer free(cspec)
@@ -202,7 +217,7 @@ func (rt *Runtime) Tool(id, specEDN string, h Handler) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("autonomous: tool %s refused: %s", id, out)
 	}
-	handlers[id] = h
+	handlers[id] = b
 	ids[name] = id
 	return name, nil
 }
