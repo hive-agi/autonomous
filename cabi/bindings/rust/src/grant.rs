@@ -3,12 +3,14 @@
 use serde_json::Value;
 
 /// The most characters of an actor the library hands a host
-/// (`AUTONOMOUS_MAX_SHOWN_ACTOR` in autonomous.h).
+/// (`AUTONOMOUS_MAX_SHOWN_ACTOR` in autonomous.h). The shown actor is
+/// printable ASCII, so this is also its most bytes.
 pub const MAX_SHOWN_ACTOR: usize = 64;
 
 /// Who called a tool, as libautonomous shows a caller to its host: the
-/// actor, never empty, with control characters dropped and at most
-/// [`MAX_SHOWN_ACTOR`] characters, and the granted scopes as sorted names.
+/// actor, never empty, as printable ASCII with everything else escaped
+/// `\uXXXX` and at most [`MAX_SHOWN_ACTOR`] characters, and the granted
+/// scopes as sorted names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Grant {
     pub actor: String,
@@ -17,13 +19,43 @@ pub struct Grant {
 
 impl Grant {
     /// The grant in `grant_json` (`{"actor": .., "scopes": [..]}`), or None
-    /// when it names no actor.
+    /// when it is not JSON or names no actor. [`GrantIn::read`] tells the two
+    /// apart.
     pub fn from_json(grant_json: &str) -> Option<Grant> {
-        let v: Value = serde_json::from_str(grant_json).ok()?;
-        let actor = v.get("actor")?.as_str()?.to_string();
-        if actor.is_empty() {
-            return None;
+        match GrantIn::read(grant_json) {
+            GrantIn::Given(g) => Some(g),
+            _ => None,
         }
+    }
+
+    /// True when the caller holds `scope`, or `admin`, which covers every scope.
+    pub fn has(&self, scope: &str) -> bool {
+        self.scopes.iter().any(|s| s == scope || s == "admin")
+    }
+}
+
+/// What reached the dispatcher about the caller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum GrantIn {
+    /// A grant naming an actor.
+    Given(Grant),
+    /// No grant: a libautonomous older than 0.3 called the 2-argument dispatcher.
+    NotPassed,
+    /// A grant was passed but is not `{"actor": "<non-empty>", ...}`; the reason.
+    Unreadable(String),
+}
+
+impl GrantIn {
+    pub(crate) fn read(grant_json: &str) -> GrantIn {
+        let v: Value = match serde_json::from_str(grant_json) {
+            Ok(v) => v,
+            Err(e) => return GrantIn::Unreadable(format!("not JSON ({e})")),
+        };
+        let actor = match v.get("actor").and_then(Value::as_str) {
+            Some(a) if !a.is_empty() => a.to_string(),
+            Some(_) => return GrantIn::Unreadable("its actor is empty".into()),
+            None => return GrantIn::Unreadable("it has no actor string".into()),
+        };
         let scopes = v
             .get("scopes")
             .and_then(Value::as_array)
@@ -33,21 +65,24 @@ impl Grant {
                     .collect()
             })
             .unwrap_or_default();
-        Some(Grant { actor, scopes })
-    }
-
-    /// True when the caller holds `scope`, or `admin`, which covers every scope.
-    pub fn has(&self, scope: &str) -> bool {
-        self.scopes.iter().any(|s| s == scope || s == "admin")
+        GrantIn::Given(Grant { actor, scopes })
     }
 }
 
-/// What the dispatcher runs: a handler and the grant it was called with,
-/// None when the library is too old to pass one.
-pub(crate) type Body = Box<dyn FnMut(&Value, Option<&Grant>) -> Result<Value, String>>;
+/// What the dispatcher runs: a handler and what it learned of the caller.
+pub(crate) type Body = Box<dyn FnMut(&Value, &GrantIn) -> Result<Value, String>>;
 
-/// The body of a grant-aware tool `id`: it fails closed, refusing a call
-/// that arrives without a grant before `handler` runs.
+/// The body of a grant-blind tool.
+pub(crate) fn blind_body<F>(mut handler: F) -> Body
+where
+    F: FnMut(&Value) -> Result<Value, String> + 'static,
+{
+    Box::new(move |args, _| handler(args))
+}
+
+/// The body of a grant-aware tool `id`. It fails closed: a call that
+/// arrives without a readable grant is refused before `handler` runs, with
+/// a message that says whether no grant was passed or the grant was unreadable.
 pub(crate) fn grant_body<F>(id: &str, mut handler: F) -> Body
 where
     F: FnMut(&Value, &Grant) -> Result<Value, String> + 'static,
@@ -55,9 +90,12 @@ where
     let tool = id.to_string();
     Box::new(move |args, grant| {
         match grant {
-        Some(g) => handler(args, g),
-        None => Err(format!(
+        GrantIn::Given(g) => handler(args, g),
+        GrantIn::NotPassed => Err(format!(
             "{tool} needs the caller's grant, which this libautonomous does not pass (0.3 or later does)"
+        )),
+        GrantIn::Unreadable(why) => Err(format!(
+            "{tool} refused: the caller's grant is unreadable: {why}"
         )),
     }
     })
@@ -86,6 +124,19 @@ mod tests {
     }
 
     #[test]
+    fn unreadable_is_not_missing() {
+        assert!(
+            matches!(GrantIn::read("not json"), GrantIn::Unreadable(w) if w.starts_with("not JSON"))
+        );
+        assert!(
+            matches!(GrantIn::read(r#"{"actor":""}"#), GrantIn::Unreadable(w) if w.contains("empty"))
+        );
+        assert!(
+            matches!(GrantIn::read(r#"{"actor":7}"#), GrantIn::Unreadable(w) if w.contains("no actor"))
+        );
+    }
+
+    #[test]
     fn a_grant_body_fails_closed_without_a_grant() {
         let seen = Rc::new(Cell::new(0));
         let s = seen.clone();
@@ -93,17 +144,16 @@ mod tests {
             s.set(s.get() + 1);
             Ok(json!({"by": g.actor}))
         });
-        let refused = body(&json!({}), None).unwrap_err();
-        assert!(refused.contains("todo/add"), "{refused}");
-        assert_eq!(seen.get(), 0, "the handler did not run");
-        let g = Grant {
-            actor: "agent-1".into(),
-            scopes: vec!["write".into()],
-        };
-        assert_eq!(
-            body(&json!({}), Some(&g)).unwrap(),
-            json!({"by": "agent-1"})
+        let missing = body(&json!({}), &GrantIn::NotPassed).unwrap_err();
+        assert!(
+            missing.contains("todo/add") && missing.contains("does not pass"),
+            "{missing}"
         );
+        let bad = body(&json!({}), &GrantIn::read("{")).unwrap_err();
+        assert!(bad.contains("unreadable"), "{bad}");
+        assert_eq!(seen.get(), 0, "the handler did not run");
+        let g = GrantIn::read(r#"{"actor":"agent-1","scopes":["write"]}"#);
+        assert_eq!(body(&json!({}), &g).unwrap(), json!({"by": "agent-1"}));
         assert_eq!(seen.get(), 1);
     }
 }

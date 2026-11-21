@@ -53,8 +53,9 @@ type I1 = unsafe extern "C" fn(*const c_char) -> c_int;
 type L1 = unsafe extern "C" fn(*const c_char) -> c_long;
 
 mod grant;
-use grant::{grant_body, Body};
+use grant::{blind_body, grant_body, Body, GrantIn};
 pub use grant::{Grant, MAX_SHOWN_ACTOR};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
 /// A tool body: validated arguments in, a JSON result or an error message out.
 pub type Handler = Box<dyn FnMut(&Value) -> Result<Value, String>>;
@@ -78,16 +79,38 @@ fn cs(s: &str) -> CString {
     CString::new(s.replace('\0', "")).unwrap()
 }
 
-fn run(tool: *const c_char, args: *const c_char, grant: Option<&Grant>) -> *const c_char {
+/// Run the handler of `tool`. Its entry is taken out of HANDLERS for the
+/// call, so the handler may call back into the runtime (a nested dispatch
+/// of another tool), and is put back afterwards unless the handler replaced
+/// it. A panic becomes an `{"error": ..}` result and never unwinds into the
+/// library.
+fn run(tool: *const c_char, args: *const c_char, grant: &GrantIn) -> *const c_char {
     let tool = text(tool);
     let args: Value = serde_json::from_str(&text(args)).unwrap_or(Value::Null);
-    let out = HANDLERS.with(|h| match h.borrow_mut().get_mut(&tool) {
-        Some(f) => match f(&args, grant) {
-            Ok(v) => v,
-            Err(e) => json!({"error": {"message": e}}),
-        },
-        None => json!({"error": {"message": format!("no handler for {tool}")}}),
-    });
+    let taken = HANDLERS.with(|h| h.borrow_mut().remove(&tool));
+    let out = match taken {
+        None => {
+            json!({"error": {"message": format!("no handler for {tool} (or it is already running)")}})
+        }
+        Some(mut f) => {
+            let r = catch_unwind(AssertUnwindSafe(|| f(&args, grant)));
+            HANDLERS.with(|h| {
+                h.borrow_mut().entry(tool.clone()).or_insert(f);
+            });
+            match r {
+                Ok(Ok(v)) => v,
+                Ok(Err(e)) => json!({"error": {"message": e}}),
+                Err(p) => {
+                    let why = p
+                        .downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| p.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "panic".into());
+                    json!({"error": {"message": format!("{tool} panicked: {why}")}})
+                }
+            }
+        }
+    };
     LAST.with(|l| {
         *l.borrow_mut() = cs(&out.to_string());
         l.borrow().as_ptr()
@@ -102,8 +125,7 @@ pub extern "C" fn autonomous_host_dispatch_v2(
     args: *const c_char,
     grant: *const c_char,
 ) -> *const c_char {
-    let grant = Grant::from_json(&text(grant));
-    run(tool, args, grant.as_ref())
+    run(tool, args, &GrantIn::read(&text(grant)))
 }
 
 /// Called by libautonomous 0.2, which passes no grant.
@@ -112,7 +134,7 @@ pub extern "C" fn autonomous_host_dispatch(
     tool: *const c_char,
     args: *const c_char,
 ) -> *const c_char {
-    run(tool, args, None)
+    run(tool, args, &GrantIn::NotPassed)
 }
 
 /// Where and how a runtime dials its bridge.
@@ -209,11 +231,11 @@ impl Runtime {
 
     /// Declare tool `id` ("todo/add", MCP name todo_add) from an EDN spec
     /// with a malli `:input`; `handler` runs it. Answers the MCP name.
-    pub fn tool<F>(&self, id: &str, spec_edn: &str, mut handler: F) -> Result<String, String>
+    pub fn tool<F>(&self, id: &str, spec_edn: &str, handler: F) -> Result<String, String>
     where
         F: FnMut(&Value) -> Result<Value, String> + 'static,
     {
-        self.register(id, spec_edn, Box::new(move |args, _| handler(args)))
+        self.register(id, spec_edn, blind_body(handler))
     }
 
     /// Declare tool `id` like [`Runtime::tool`], with a `handler` that is
@@ -317,5 +339,69 @@ impl Runtime {
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod dispatch_tests {
+    use super::*;
+
+    fn call(tool: &str, grant: &str) -> Value {
+        let (t, a, g) = (cs(tool), cs("{}"), cs(grant));
+        serde_json::from_str(&text(autonomous_host_dispatch_v2(
+            t.as_ptr(),
+            a.as_ptr(),
+            g.as_ptr(),
+        )))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_panic_is_an_error_result_and_the_tool_stays_registered() {
+        HANDLERS.with(|h| {
+            h.borrow_mut()
+                .insert("t/boom".into(), blind_body(|_| panic!("kaboom")))
+        });
+        let r = call("t/boom", r#"{"actor":"a","scopes":[]}"#);
+        assert!(
+            r["error"]["message"].as_str().unwrap().contains("kaboom"),
+            "{r}"
+        );
+        assert!(HANDLERS.with(|h| h.borrow().contains_key("t/boom")));
+    }
+
+    #[test]
+    fn a_handler_may_dispatch_another_tool() {
+        HANDLERS.with(|h| {
+            let mut h = h.borrow_mut();
+            h.insert("t/inner".into(), blind_body(|_| Ok(json!({"inner": true}))));
+            h.insert(
+                "t/outer".into(),
+                grant_body("t/outer", |_, g| {
+                    let inner = call("t/inner", r#"{"actor":"x","scopes":[]}"#);
+                    Ok(json!({"outer": g.actor, "inner": inner}))
+                }),
+            );
+        });
+        let r = call("t/outer", r#"{"actor":"agent-1","scopes":["write"]}"#);
+        assert_eq!(r, json!({"outer": "agent-1", "inner": {"inner": true}}));
+    }
+
+    #[test]
+    fn an_unreadable_grant_is_refused_by_a_grant_aware_tool() {
+        HANDLERS.with(|h| {
+            h.borrow_mut().insert(
+                "t/aware".into(),
+                grant_body("t/aware", |_, _| Ok(json!({}))),
+            )
+        });
+        let r = call("t/aware", "{oops");
+        assert!(
+            r["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("unreadable"),
+            "{r}"
+        );
     }
 }
