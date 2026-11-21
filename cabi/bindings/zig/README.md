@@ -24,8 +24,18 @@ _ = try rt.tool("calc/add", "{:description \"Add\" :input [:map [:a :int] [:b :i
 const answer = try rt.rpc("{:op :call :tool \"calc_add\" :args {:a 1 :b 2} :scopes #{:write}}");
 ```
 
+**Who called (libautonomous 0.3).** `exportDispatchAs(f)` exports
+`autonomous_host_dispatch_v2` (and a 0.2 fallback): `f(tool, args_json, who)`
+is handed an `autonomous.Grant` with `actor` and `scopes` (`who.has("write")`).
+A call that arrives without a grant (a 0.2 library) or with an unreadable one
+fails closed with `GrantNotPassed` / `GrantUnreadable`, and `f` does not run.
+`exportDispatch(f)` stays grant-blind. Export one of the two, never both. The
+actor is printable ASCII whose escapes start with a backslash, so escape it
+before writing it into JSON (the example does). `zig build run -Dblind=true`
+builds the example grant-blind; `bb cabi-zig` runs both.
+
 The executable is linked with `rdynamic` so the library can find
-`autonomous_host_dispatch`. The dispatcher's result must stay valid until the
+`autonomous_host_dispatch_v2` or `autonomous_host_dispatch`. The dispatcher's result must stay valid until the
 next dispatch (the example keeps it in a static buffer). An error it returns
 is answered as the tool error `{"error":{"message":"<ErrorName>"}}`, so no
 Zig error reaches the library; use checked arithmetic (`std.math.add`)

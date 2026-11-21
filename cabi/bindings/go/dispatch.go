@@ -1,6 +1,7 @@
 package autonomous
 
-// The library calls autonomous_host_dispatch (dispatch.c), which calls
+// The library calls autonomous_host_dispatch_v2 (0.3, with the caller's
+// grant) or autonomous_host_dispatch (0.2) in dispatch.c, which call
 // goAutonomousDispatch here, on the runtime's thread.
 
 /*
@@ -22,7 +23,7 @@ func errorJSON(msg string) []byte {
 	return b
 }
 
-func run(tool string, argsJSON string) []byte {
+func run(tool string, argsJSON string, in grantIn) []byte {
 	h, ok := handlers[tool]
 	if !ok {
 		return errorJSON("no handler for " + tool)
@@ -41,7 +42,7 @@ func run(tool string, argsJSON string) []byte {
 				err = fmt.Errorf("handler panicked: %v", r)
 			}
 		}()
-		out, err = h(args)
+		out, err = h(args, in)
 	}()
 	if err != nil {
 		return errorJSON(err.Error())
@@ -54,8 +55,12 @@ func run(tool string, argsJSON string) []byte {
 }
 
 //export goAutonomousDispatch
-func goAutonomousDispatch(tool, args *C.char) *C.char {
-	out := C.CString(string(run(C.GoString(tool), C.GoString(args))))
+func goAutonomousDispatch(tool, args, grant *C.char, withGrant C.int) *C.char {
+	in := grantIn{}
+	if withGrant != 0 {
+		in = readGrant(C.GoString(grant))
+	}
+	out := C.CString(string(run(C.GoString(tool), C.GoString(args), in)))
 	if last != nil {
 		C.free(unsafe.Pointer(last))
 	}

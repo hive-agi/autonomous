@@ -75,8 +75,10 @@
                      (shell {:dir "cabi/build"} "./go-example"))}
 
   cabi-zig {:doc  "Build and run the Zig example over libautonomous (cabi/bindings/zig, after bb cabi); fails on a wrong answer"
-            :task (shell {:dir "cabi/bindings/zig"} "zig" "build" "test" "run"
-                         "--prefix" "../../build/zig-out" "--cache-dir" "../../build/zig-cache")}
+            :task (do (shell {:dir "cabi/bindings/zig"} "zig" "build" "test" "run"
+                             "--prefix" "../../build/zig-out" "--cache-dir" "../../build/zig-cache")
+                      (shell {:dir "cabi/bindings/zig"} "zig" "build" "run" "-Dblind=true"
+                             "--prefix" "../../build/zig-out-blind" "--cache-dir" "../../build/zig-cache"))}
 
   cabi-bindings {:doc  "libautonomous and every binding example that builds here: C smoke, Go, Zig, Rust"
                  :depends [cabi cabi-go cabi-zig cabi-rust]}

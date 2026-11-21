@@ -60,6 +60,67 @@ pub fn exportDispatch(comptime f: Dispatch) void {
     @export(&Shim.call, .{ .name = "autonomous_host_dispatch" });
 }
 
+/// The most characters of an actor the library hands a host
+/// (AUTONOMOUS_MAX_SHOWN_ACTOR); longer actors are refused, not cut.
+pub const max_shown_actor = 64;
+
+/// Who called a tool, as libautonomous 0.3 shows the caller: the actor,
+/// never empty, printable ASCII with everything else escaped \uxxxx, and the
+/// granted scopes as sorted names. Valid only for the dispatch it is passed to.
+pub const Grant = struct {
+    actor: []const u8,
+    scopes: []const []const u8,
+
+    /// True when the caller holds `scope`, or admin, which covers every scope.
+    pub fn has(self: Grant, scope: []const u8) bool {
+        for (self.scopes) |s| {
+            if (std.mem.eql(u8, s, scope) or std.mem.eql(u8, s, "admin")) return true;
+        }
+        return false;
+    }
+};
+
+/// A tool body that is told who called it: the tool id, its validated JSON
+/// args and the caller's Grant in, the JSON result out, as for Dispatch.
+pub const DispatchAs = *const fn (tool: []const u8, args_json: []const u8, who: Grant) anyerror![*:0]const u8;
+
+/// Why a grant-aware dispatcher refused a call before running.
+pub const GrantError = error{ GrantNotPassed, GrantUnreadable };
+
+var grant_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+
+/// The Grant in `grant_json`, in memory valid until the next parse; an
+/// unparseable grant or one naming no actor is error.GrantUnreadable.
+pub fn parseGrant(grant_json: []const u8) GrantError!Grant {
+    _ = grant_arena.reset(.retain_capacity);
+    const parsed = std.json.parseFromSliceLeaky(Grant, grant_arena.allocator(), grant_json, .{
+        .ignore_unknown_fields = true,
+    }) catch return error.GrantUnreadable;
+    if (parsed.actor.len == 0) return error.GrantUnreadable;
+    return parsed;
+}
+
+/// Export `f` as both dispatchers. libautonomous 0.3 calls
+/// autonomous_host_dispatch_v2, and `f` is handed the parsed Grant. A 0.2
+/// library calls autonomous_host_dispatch, and the call fails closed
+/// (error.GrantNotPassed) without running `f`, as does an unreadable grant
+/// (error.GrantUnreadable). A process must hold only one definition of each.
+pub fn exportDispatchAs(comptime f: DispatchAs) void {
+    const Shim = struct {
+        fn v2(tool: [*:0]const u8, args: [*:0]const u8, grant: [*:0]const u8) callconv(.c) [*:0]const u8 {
+            const who = parseGrant(std.mem.span(grant)) catch |e| return errorJson(e);
+            return f(std.mem.span(tool), std.mem.span(args), who) catch |e| errorJson(e);
+        }
+        fn v1(tool: [*:0]const u8, args: [*:0]const u8) callconv(.c) [*:0]const u8 {
+            _ = tool;
+            _ = args;
+            return errorJson(error.GrantNotPassed);
+        }
+    };
+    @export(&Shim.v2, .{ .name = "autonomous_host_dispatch_v2" });
+    @export(&Shim.v1, .{ .name = "autonomous_host_dispatch" });
+}
+
 pub const Error = error{ InitFailed, MissingExport, WrongThread, ToolRefused };
 
 fn lookup(comptime T: type, name: [*:0]const u8) Error!T {
@@ -221,6 +282,17 @@ test "lastRefusal owns its bytes" {
     keepRefusal(&lib);
     @memset(&lib, 'x');
     try std.testing.expectEqualStrings("{\"error\":{\"message\":\"no\"}}", lastRefusal());
+}
+
+test "parseGrant reads a grant and refuses one naming no actor" {
+    const g = try parseGrant("{\"actor\":\"agent-1\",\"scopes\":[\"read\",\"write\"]}");
+    try std.testing.expectEqualStrings("agent-1", g.actor);
+    try std.testing.expectEqual(@as(usize, 2), g.scopes.len);
+    try std.testing.expect(g.has("write") and !g.has("admin"));
+    try std.testing.expect((try parseGrant("{\"actor\":\"r\",\"scopes\":[\"admin\"]}")).has("billing"));
+    try std.testing.expectError(error.GrantUnreadable, parseGrant("{\"actor\":\"\",\"scopes\":[]}"));
+    try std.testing.expectError(error.GrantUnreadable, parseGrant("{\"scopes\":[]}"));
+    try std.testing.expectError(error.GrantUnreadable, parseGrant("{oops"));
 }
 
 test "a dispatch error becomes error JSON" {

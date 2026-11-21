@@ -12,20 +12,52 @@ const Args = struct { a: i64, b: i64 };
 
 var out_buf: [256]u8 = undefined;
 
+/// Built with -Dblind=true the example exports the grant-blind dispatcher
+/// (exportDispatch), otherwise the grant-aware one (exportDispatchAs). A
+/// process holds only one of them.
+const blind = @import("options").blind;
+
 /// The app's tools. Args arrive as validated JSON, e.g. {"a":2,"b":40}; an
-/// error (bad args, an overflowing sum) is answered as a tool error.
-fn dispatch(tool: []const u8, args_json: []const u8) anyerror![*:0]const u8 {
+/// error (bad args, an overflowing sum) is answered as a tool error. `by` is
+/// who the change is attributed to.
+fn run(tool: []const u8, args_json: []const u8, by: []const u8) anyerror![*:0]const u8 {
+    if (std.mem.eql(u8, tool, "calc/whoami")) {
+        return (try std.fmt.bufPrintZ(&out_buf, "{{\"by\":\"{s}\"}}", .{by})).ptr;
+    }
     if (!std.mem.eql(u8, tool, "calc/add")) return error.UnknownTool;
     const parsed = try std.json.parseFromSlice(Args, std.heap.page_allocator, args_json, .{
         .ignore_unknown_fields = true,
     });
     defer parsed.deinit();
     const sum = try std.math.add(i64, parsed.value.a, parsed.value.b);
-    return (try std.fmt.bufPrintZ(&out_buf, "{{\"sum\":{d},\"by\":\"zig\"}}", .{sum})).ptr;
+    return (try std.fmt.bufPrintZ(&out_buf, "{{\"sum\":{d},\"by\":\"{s}\"}}", .{ sum, by })).ptr;
+}
+
+fn dispatch(tool: []const u8, args_json: []const u8) anyerror![*:0]const u8 {
+    return run(tool, args_json, "zig");
+}
+
+var by_buf: [2 * autonomous.max_shown_actor]u8 = undefined;
+
+/// The shown actor is printable ASCII with no quote, but its escapes begin
+/// with a backslash ("agent:\u202enamuh"), so it is JSON-escaped like any
+/// string before it goes into the JSON result; otherwise the library would
+/// decode \u202e back into the character it stands for.
+fn dispatchAs(tool: []const u8, args_json: []const u8, who: autonomous.Grant) anyerror![*:0]const u8 {
+    var n: usize = 0;
+    for (who.actor) |c| {
+        if (c == '\\' or c == '"') {
+            by_buf[n] = '\\';
+            n += 1;
+        }
+        by_buf[n] = c;
+        n += 1;
+    }
+    return run(tool, args_json, by_buf[0..n]);
 }
 
 comptime {
-    autonomous.exportDispatch(dispatch);
+    if (blind) autonomous.exportDispatch(dispatch) else autonomous.exportDispatchAs(dispatchAs);
 }
 
 var failures: c_int = 0;
@@ -69,6 +101,18 @@ pub fn main() !u8 {
         if (!ok) failures += 1;
         _ = printf("%s refuse   %.*s\n", if (ok) "ok  " else "FAIL", @as(c_int, @intCast(r.len)), r.ptr);
     }
+
+    // The caller's grant reaches a grant-aware dispatcher (libautonomous 0.3);
+    // a grant-blind one attributes to "zig". A nameless actor never runs.
+    _ = try rt.tool("calc/whoami", "{:description \"Who called\" :input [:map] :read-only? true}");
+    if (blind) {
+        check(rt, "blind", "{:op :call :tool \"calc_whoami\" :actor \"agent-1\"}", ":by \"zig\"");
+    } else {
+        check(rt, "grant", "{:op :call :tool \"calc_whoami\" :actor \"agent-1\"}", ":by \"agent-1\"");
+        check(rt, "grant", "{:op :call :tool \"calc_add\" :args {:a 1 :b 2} :scopes #{:write} :actor \"agent-2\"}", ":by \"agent-2\"");
+        check(rt, "bidi", "{:op :call :tool \"calc_whoami\" :actor \"agent:\\u202Enamuh\"}", ":by \"agent:\\\\u202enamuh\"");
+    }
+    check(rt, "blank", "{:op :call :tool \"calc_whoami\" :actor \" \"}", if (blind) ":by \"zig\"" else ":host/grant-missing");
 
     // Unregistered, the tool is gone.
     _ = try rt.tool("calc/tmp", "{:description \"Temporary\" :input [:map]}");
