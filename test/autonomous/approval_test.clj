@@ -385,6 +385,40 @@
     (is (shows? out #"request 2 denied, not run: input has ended"))))
 
 
+(defn- ended-stream
+  "A read-line that answers end of input once `eof` is delivered, counting
+   its calls in `reads`."
+  [eof reads]
+  #(do (swap! reads inc) @eof nil))
+
+(deftest an-asker-built-after-end-of-input-is-denied-at-once
+  (let [out   (screen)
+        eof   (promise)
+        reads (atom 0)
+        read! (ended-stream eof reads)
+        early (approval/stdin-asker {:read-line read! :out (:w out) :approver "op" :wait-ms 60000})
+        a     (approval/ask! early (assoc request :tool "a") 50000)]
+    (deliver eof true)
+    (is (= :deny (decision a)))
+    (is (await-ref (:state (:terminal early)) :eof?))
+    (let [later (approval/stdin-asker {:read-line read! :out (:w out) :approver "op" :wait-ms 60000})]
+      (is (= :deny (decision (approval/ask! later (assoc request :tool "b") 50000)))
+          "denied at once, not left to wait 50 s")
+      (is (shows? out #"request 2 denied, not run: input has ended")))))
+
+(deftest the-terminal-stays-registered-after-end-of-input
+  (let [out   (screen)
+        eof   (promise)
+        reads (atom 0)
+        read! (ended-stream eof reads)
+        early (approval/stdin-asker {:read-line read! :out (:w out) :approver "op" :wait-ms 60000})]
+    (deliver eof true)
+    (is (= :deny (decision (approval/ask! early (assoc request :tool "a") 50000))))
+    (let [later (approval/stdin-asker {:read-line read! :out (:w out) :approver "op" :wait-ms 60000})]
+      (is (identical? (:terminal early) (:terminal later)) "a later asker on the ended stream shares its Terminal")
+      (is (= :deny (decision (approval/ask! later (assoc request :tool "b") 50000))))
+      (is (= 1 @reads) "no second reader was started on the ended stream"))))
+
 (deftest a-reader-that-throws-ends-input-and-every-request-is-denied-at-once
   (let [out   (screen)
         boom  (promise)
