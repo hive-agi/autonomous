@@ -1,6 +1,4 @@
-/* The one function libautonomous calls by name. cgo exports Go functions
- * with non-const C types, so this shim keeps the header's const signature
- * and hands the call to Go. */
+/* autonomous_host_dispatch, the function libautonomous calls, handed to Go. */
 #include "autonomous.h"
 #include "_cgo_export.h"
 

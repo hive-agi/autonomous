@@ -14,8 +14,7 @@ import (
 	"unsafe"
 )
 
-// last is the previous result; the library copies a result before the next
-// dispatch, so it is freed then.
+// last is the result of the previous dispatch, freed at the next one.
 var last *C.char
 
 func errorJSON(msg string) []byte {
