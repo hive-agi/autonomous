@@ -11,6 +11,7 @@
             [clojure.test.check.clojure-test :as tc]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]
+            [clojure.test :refer [deftest is]]
             [hive-test.trifecta :refer [deftrifecta]]
             [malli.core :as m]))
 
@@ -202,6 +203,10 @@
                ["no length cut" (fn [g] (when-not (naming/nameless-actor? (:actor g))
                                           {:actor (apply str (filter #(<= 0x20 (int %) 0x7E) (str (:actor g))))
                                            :scopes (scope/names (:scopes g))}))]
+               ["cuts instead of refusing" (fn [g] (or (host-grant* g)
+                                                       (when-not (naming/nameless-actor? (:actor g))
+                                                         {:actor (naming/shown-actor (:actor g))
+                                                          :scopes (scope/names (:scopes g))})))]
                ["empty grant passes" (fn [g] (or (host-grant* g) {:actor "" :scopes []}))]
                ["blank grant passes" (fn [g] (if (seq (str (:actor g)))
                                                {:actor (str (:actor g)) :scopes ["read"]}
@@ -213,13 +218,50 @@
 (tc/defspec host-grant-keeps-the-callers-scopes 300
   (prop/for-all [g grant-gen]
     (let [out (decision/host-grant g)]
-      (if (naming/nameless-actor? (:actor g))
+      (if (decision/host-grant-refusal g)
         (nil? out)
         (and (= (:scopes out) (vec (sort (map name (:scopes g)))))
-             (= (:actor out) (naming/shown-actor (:actor g))))))))
+             (= (:actor out) (naming/actor-text (:actor g))))))))
 
-(tc/defspec shown-actor-keeps-distinct-actors-distinct 300
+(tc/defspec a-host-is-never-handed-a-cut-actor 300
+  (prop/for-all [g grant-gen]
+    (let [out (decision/host-grant g)]
+      (or (nil? out) (= (:actor out) (naming/actor-text (:actor g)))))))
+
+(tc/defspec actors-a-host-sees-stay-distinct 300
   (prop/for-all [a nasty-actor b nasty-actor]
-    (let [sa (naming/shown-actor a) sb (naming/shown-actor b)]
-      (or (= a b) (not= sa sb)
-          (>= (count sa) (- naming/max-shown-actor 5))))))
+    (let [ga (decision/host-grant {:actor a :scopes #{}})
+          gb (decision/host-grant {:actor b :scopes #{}})]
+      (or (= a b) (nil? ga) (nil? gb) (not= (:actor ga) (:actor gb))))))
+
+(tc/defspec actor-text-keeps-distinct-actors-distinct 300
+  (prop/for-all [a nasty-actor b nasty-actor]
+    (or (= a b) (not= (naming/actor-text a) (naming/actor-text b)))))
+
+(tc/defspec the-cut-never-splits-an-escape-or-a-pair 300
+  (prop/for-all [a nasty-actor]
+    (let [s (naming/shown-actor a)]
+      (and (<= (count s) naming/max-shown-actor)
+           (.startsWith ^String (naming/actor-text a) s)
+           (not (re-find #"\\u[0-9a-f]{0,3}$" s))
+           (not (re-find #"\\ud[89ab][0-9a-f]{2}$" s))))))
+
+(deftest a-long-actor-is-refused-not-cut
+  (let [shared (apply str (repeat 10 (char 0x202E)))]
+    (is (= :host/actor-too-long (decision/host-grant-refusal {:actor (str shared "alice")})))
+    (is (nil? (decision/host-grant {:actor (str shared "alice")})))
+    (is (nil? (decision/host-grant {:actor (str shared "abcd-1")})))
+    (is (nil? (decision/host-grant {:actor (str shared "abcd-2")})))
+    (is (= (naming/shown-actor (str shared "abcd-1")) (naming/shown-actor (str shared "abcd-2")))
+        "cut, abcd-1 and abcd-2 would show the same, which is why they are refused")
+    (is (some? (decision/host-grant {:actor (str shared "bob")})) "63 characters fit")
+    (is (= :host/actor-too-long (decision/host-grant-refusal {:actor (apply str (repeat 65 "x"))})))
+    (is (some? (decision/host-grant {:actor (apply str (repeat 64 "x"))})) "64 printable characters fit")
+    (is (= :host/grant-missing (decision/host-grant-refusal {:actor " \t"})) "blank comes first")))
+
+(deftest the-cut-keeps-a-surrogate-pair-whole
+  (let [emoji (String. (Character/toChars 0x1F600))]
+    (is (= (apply str (repeat 58 "x")) (naming/shown-actor (str (apply str (repeat 58 "x")) emoji)))
+        "the pair does not fit, so neither half is shown")
+    (is (= (str (apply str (repeat 52 "x")) "\\ud83d\\ude00")
+           (naming/shown-actor (str (apply str (repeat 52 "x")) emoji))))))

@@ -3,17 +3,11 @@
  :backslash {:actor "a\\u005cu0041", :scopes ["read"]},
  :bidi {:actor "agent:\\u202enamuh", :scopes ["write"]},
  :c1 {:actor "a\\u0085b\\u009b", :scopes ["read"]},
- :cap-at-escape
- {:actor
-  "abc\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9\\u00e9",
-  :scopes ["read"]},
+ :cap-at-escape nil,
  :control-chars
  {:actor "ag\\u001b[31m\\u000aent\\u007f", :scopes ["read"]},
  :empty nil,
- :long
- {:actor
-  "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
-  :scopes ["admin"]},
+ :long nil,
  :long-escapes nil,
  :many-scopes
  {:actor "a",
@@ -22,10 +16,7 @@
  :nil-actor nil,
  :no-scopes {:actor "a", :scopes []},
  :only-invisible nil,
- :quote-injection
- {:actor
-  "a\\u0022,\\u0022scopes\\u0022:[\\u0022admin\\u0022],\\u0022x\\u0022:",
-  :scopes ["read"]},
+ :quote-injection nil,
  :whitespace-only nil,
  :writer {:actor "agent-1", :scopes ["read" "write"]},
  :zero-width {:actor "agent\\u200b-1", :scopes ["write"]}}

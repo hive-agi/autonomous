@@ -31,6 +31,7 @@
   (:require [autonomous.core :as a]
             [autonomous.domain.answer :as answer]
             [autonomous.domain.decision :as decision]
+            [autonomous.domain.naming :as naming]
             [autonomous.domain.wire :as wire]
             [autonomous.mcp.json :as json]
             [autonomous.ws :as ws]
@@ -49,13 +50,19 @@
       (ex-info (str (or (when (map? e) (:message e)) e "tool failed"))
                (if (map? e) e {:error e})))))
 
-(defn grant-missing
-  "The exception refusing a call of tool `id` that a grant-aware host would
-   be handed with no actor to attribute it to: the call fails closed, the
-   host never runs."
-  [id]
-  (ex-info (str "tool " id " needs a caller with an actor; the call names none")
-           {:autonomous/error :host/grant-missing :tool id}))
+(defn grant-refused
+  "The exception refusing a call of tool `id` that a grant-aware host may
+   not be handed, for `reason` (decision/host-grant-refusal):
+   :host/grant-missing when the actor names no one, :host/actor-too-long
+   when it is too long to show whole. The call fails closed: the host
+   never runs."
+  [id reason]
+  (ex-info (case reason
+             :host/actor-too-long
+             (str "tool " id " needs an actor that shows in at most "
+                  naming/max-shown-actor " characters; this one is longer")
+             (str "tool " id " needs a caller with an actor; the call names none"))
+           {:autonomous/error reason :tool id}))
 
 (defn hello-frame
   "The websocket :hello frame for a native runtime."
@@ -86,10 +93,10 @@
   "The host's JSON answer for tool `id` with `args`, called for `grant`."
   [id args grant]
   (if @grant-aware-host?
-    (if-let [g (decision/host-grant grant)]
+    (if-let [reason (decision/host-grant-refusal grant)]
+      (throw (grant-refused id reason))
       ((ffi/foreign-fn "autonomous_host_dispatch_v2" [:string :string :string] :string)
-       id (json/write args) (json/write g))
-      (throw (grant-missing id)))
+       id (json/write args) (json/write (decision/host-grant grant))))
     ((ffi/foreign-fn "autonomous_host_dispatch" [:string :string] :string)
      id (json/write args))))
 

@@ -67,14 +67,25 @@
    :scopes  (if (contains? req :scopes) (scope/normalize (:scopes req)) #{:read})
    :session (:session req)})
 
+(defn host-grant-refusal
+  "Why `grant` may not be handed to a native host, or nil when it may:
+   :host/grant-missing when its actor names no one (naming/nameless-actor?:
+   nil, empty, whitespace-only or invisible-only), :host/actor-too-long when
+   its shown form would be cut (naming/actor-too-long?), since a cut actor
+   could show the same as another one."
+  [grant]
+  (cond
+    (naming/nameless-actor? (:actor grant)) :host/grant-missing
+    (naming/actor-too-long? (:actor grant)) :host/actor-too-long))
+
 (defn host-grant
   "The grant a native host's dispatcher is shown for `grant`: {:actor
    :scopes}, the shape autonomous.js hands its handlers. The actor is shown
-   as naming/shown-actor shows it, and the scopes are sorted names.
+   as naming/shown-actor shows it, uncut, and the scopes are sorted names.
 
-   nil when the actor names no one (naming/nameless-actor?: nil, empty,
-   whitespace-only or invisible-only), so a host that attributes changes is
-   never handed an empty or blank grant."
+   nil when host-grant-refusal refuses it (an actor that names no one, or
+   one too long to show whole), so a host that attributes changes is never
+   handed an empty, blank or ambiguous actor."
   [grant]
-  (when-not (naming/nameless-actor? (:actor grant))
+  (when-not (host-grant-refusal grant)
     {:actor (naming/shown-actor (:actor grant)) :scopes (scope/names (:scopes grant))}))
