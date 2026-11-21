@@ -19,7 +19,9 @@
 
      const char *autonomous_host_dispatch(const char *tool_id, const char *args_json)
 
-   The library prefers _v2 when the executable exports it. Either answers
+   The library looks _v2 up once per process, process-wide (any loaded
+   object that exports it counts), and then calls only _v2, so a process
+   must hold exactly one definition of each. Either answers
    the tool's result as JSON, or {\"error\": {\"message\": ..}}. The
    executable must export it (-Wl,--export-dynamic, or -rdynamic).
 

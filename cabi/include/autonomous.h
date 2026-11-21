@@ -13,7 +13,9 @@
  * thread. The library calls the app's dispatcher on that thread too.
  *
  * Strings: arguments are copied by the library. Returned strings stay valid
- * until the next call into the library; copy what you keep.
+ * until the next call into the library; copy what you keep. The strings the
+ * library passes to the app's dispatcher (tool_id, args_json, grant_json)
+ * are valid only for the duration of that call.
  */
 #ifndef AUTONOMOUS_H
 #define AUTONOMOUS_H
@@ -22,7 +24,9 @@
 #define AUTONOMOUS_VERSION_MAJOR 0
 #define AUTONOMOUS_VERSION_MINOR 3
 
-/* The most characters of an actor the library hands a host. */
+/* The most characters of an actor the library hands a host. The shown actor
+ * is printable ASCII only, so this is also its most bytes (excluding the
+ * terminating NUL). */
 #define AUTONOMOUS_MAX_SHOWN_ACTOR 64
 
 #ifdef __cplusplus
@@ -83,15 +87,34 @@ typedef const char *(*autonomous_ws_reply_fn)(const char *frame);
 /* Run tool `tool_id` with `args_json` (already validated against the tool's
  * input schema) for the caller `grant_json`:
  *   {"actor": "agent-1", "scopes": ["read", "write"]}
- * The actor is shown the way the library shows actors everywhere: control
- * characters dropped, at most AUTONOMOUS_MAX_SHOWN_ACTOR characters; scopes
- * are sorted names. Answer the result as JSON, or
+ * The actor is shown the way the library shows actors everywhere: printable
+ * ASCII (0x20..0x7E) as itself, and a backslash and every other UTF-16 code
+ * unit escaped as the six characters \uXXXX (so a bidi, zero-width or
+ * control character is visible, and an astral character arrives as its
+ * surrogate pair, e.g. \uD83D\uDE00). Distinct actors stay distinct. The
+ * result is cut at AUTONOMOUS_MAX_SHOWN_ACTOR characters, never inside an
+ * escape. Scopes are sorted names. Answer the result as JSON, or
  * {"error": {"message": "..."}}. The library copies the result before the
  * next dispatch.
  *
- * Preferred since 0.3. When the executable exports it the library calls it
- * and not autonomous_host_dispatch, and it never calls it without an actor:
- * a call with none is refused (:host/grant-missing) before the app runs. */
+ * tool_id, args_json and grant_json are valid only for the duration of the
+ * call: copy what you keep. The decoded actor is at most
+ * AUTONOMOUS_MAX_SHOWN_ACTOR characters of printable ASCII, so at most 64
+ * bytes (plus the NUL). The 64 counts characters of the shown form, so a
+ * \uXXXX escape counts 6 and is never split. Inside grant_json, JSON
+ * escapes a quote or backslash once more, so the actor's JSON string takes
+ * at most 128 bytes; parse grant_json, never slice it.
+ *
+ * Preferred since 0.3. The library looks the symbol up ONCE per process,
+ * process-wide (dlsym over every loaded object, as RTLD_DEFAULT does), so a
+ * process must hold exactly one definition of each dispatcher: if any
+ * loaded shared object exports autonomous_host_dispatch_v2, the library
+ * calls it and never autonomous_host_dispatch. The Rust binding crate
+ * (cabi/bindings/rust) exports BOTH, so do not link it into a process that
+ * defines its own dispatcher. When the library calls _v2 it never calls it
+ * without an actor:
+ * a call whose actor is empty, whitespace-only or invisible-only is refused
+ * (:host/grant-missing) before the app runs. */
 const char *autonomous_host_dispatch_v2(const char *tool_id, const char *args_json,
                                         const char *grant_json);
 

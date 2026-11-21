@@ -77,10 +77,20 @@ sees it as a tool error and the journal records `:tool-threw`.
 `grant_json` is the caller, in the shape `autonomous.js` hands its handlers:
 `{"actor": "agent-1", "scopes": ["read", "write"]}`. Use the actor to say
 who changed what. The library shows the actor the way it shows actors
-everywhere else: control characters are dropped and it is cut at
-`AUTONOMOUS_MAX_SHOWN_ACTOR` (64) characters. Scopes are sorted names. When
-the executable exports `_v2`, the library calls it and not the old one. It
-never hands `_v2` an empty actor: such a call is refused with
+everywhere else (`autonomous.domain.naming/shown-actor`). It is printable
+ASCII only: a backslash and every other UTF-16 code unit is escaped as
+`\uXXXX`, so a bidi override (`\u202E`), a zero-width space (`\u200B`) or a
+control character is visible, and an emoji arrives as its surrogate pair
+(`\uD83D\uDE00`). Two different actors never show the same, unless both
+are cut. The result is cut at `AUTONOMOUS_MAX_SHOWN_ACTOR` (64) characters,
+which are also 64 bytes, and never inside an escape. Scopes are sorted names. The
+library looks `_v2` up once per process and process-wide (dlsym over every
+loaded object), so a process must hold exactly one definition of each
+dispatcher. If any loaded object exports `_v2`, the library calls only
+`_v2`. The Rust binding crate exports both dispatchers, so do not link it
+into a process that defines its own. It
+never hands `_v2` an actor that names no one: an empty, whitespace-only or
+invisible-only actor (controls, zero-width, bidi, separators) is refused with
 `:host/grant-missing` before your code runs. A request with no actor at all
 reaches the host as `"anonymous"`, as everywhere in autonomous. An app built
 against 0.2 keeps working unchanged; the version is in
