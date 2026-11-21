@@ -135,6 +135,12 @@
     (is (= {"t" :up} (fa/status-by-target {["t" "a"] up ["t" "b"] dn} "me" now)) "a fresh :up beats a newer :down")
     (is (= {"t" :down} (fa/status-by-target {["t" "a"] old ["t" "b"] dn} "me" now)) "a stale :up does not")))
 
+(deftest views-fold-to-the-newest-probe-per-target-and-actor
+  (is (= {["t" "a"] {:status :up :at 9} ["t" "b"] {:status :down :at 3}}
+         (fa/probes-by-actor {["t" "a" #{:read} nil]        {:probe {:status :down :at 4}}
+                              ["t" "a" #{:read :write} nil] {:probe {:status :up :at 9}}
+                              ["t" "b" #{:read} nil]        {:probe {:status :down :at 3}}}))))
+
 (deftest an-addon-without-its-own-credential-is-not-down-forever
   (let [now     100000
         refused {:status :down :at (- now 5) :error {:type :channel/credential-missing}}]

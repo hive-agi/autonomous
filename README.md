@@ -153,6 +153,7 @@ is the example's, shortened:
 | guide | what |
 |---|---|
 | [concepts](doc/concepts.md) | tools, resources, scopes, grants, sessions, leases, journal, ledger, actors |
+| [naming](doc/naming.md) | how a tool id becomes its MCP name: `[A-Za-z0-9_-]{1,64}`, hyphens kept, fleet names |
 | [security](doc/security.md) | remote exposure, tokens, Origin checks, tunnels, secrets via hive-compose |
 | [swarms](doc/swarms.md) | many agents on one app: spread over instances or share one under leases |
 | [fleet](doc/fleet.md) | one bridge over many apps: UI builds and microservices, each with its own tools and nREPL |

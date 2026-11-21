@@ -1,6 +1,6 @@
 (ns autonomous.domain.naming
-  "Names agents see. MCP tool names allow [A-Za-z0-9_-] and at most 64
-   characters, while application ids are namespaced keywords. Pure.")
+  "Names agents see: tool names of [A-Za-z0-9_-], 1..64 characters, from
+   application ids that are namespaced keywords. Pure.")
 
 (def max-length 64)
 
@@ -14,13 +14,20 @@
        (<= 1 (count s) max-length)
        (every? name-chars (seq s))))
 
+(defn sanitize
+  "`s` with every character (UTF-16 code unit) outside [A-Za-z0-9_-]
+   replaced by _. The length is unchanged."
+  [s]
+  (apply str (map #(if (name-chars %) % "_") (str s))))
+
 (defn tool-name
   "MCP-safe name for a tool id: :todo/add is \"todo_add\", :app.todos/add-item
    is \"app_todos_add-item\". Every character outside [A-Za-z0-9_-] becomes _,
-   and the result is cut at 64 characters. An empty id names \"_\"."
+   and the result is cut at 64 characters. An empty id names \"_\". Always a
+   valid tool name; a valid name maps to itself."
   [id]
   (let [s   (if (keyword? id) (subs (str id) 1) (str id))
-        out (apply str (map #(if (name-chars %) % "_") (take max-length s)))]
+        out (sanitize (apply str (take max-length s)))]
     (if (= "" out) "_" out)))
 
 (def max-target-id-length 48)
