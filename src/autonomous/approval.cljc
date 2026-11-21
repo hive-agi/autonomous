@@ -7,6 +7,7 @@
    Decision  what `ask!` answers: a Verdict or :timeout, with :ms waited."
   (:require [autonomous.thenable :as thenable]
             [clojure.string :as str]
+            [clojure.walk :as walk]
             [malli.core :as m]))
 
 (def Verdict
@@ -51,6 +52,54 @@
   "L1 host: a promise (clj) or thenable (cljs) that never settles."
   []
   #?(:cljs (js/Promise. (fn [_ _] nil)) :default (promise)))
+
+;; =============================================================================
+;; What a human may be shown
+;; =============================================================================
+
+(def max-shown-chars
+  "L1: the longest rendering of one request a human is shown."
+  400)
+
+(def ^:private unsafe-bmp
+  "L1: Cc (C0, DEL, C1), the BMP Cf format characters (bidi controls,
+   zero-width characters, BOM) and U+2028/U+2029, as regex class text."
+  (str "\\u0000-\\u001F\\u007F-\\u009F\\u00AD\\u0600-\\u0605\\u061C\\u06DD"
+       "\\u070F\\u08E2\\u180E\\u200B-\\u200F\\u2028-\\u202E\\u2060-\\u2064"
+       "\\u2066-\\u206F\\uFEFF\\uFFF9-\\uFFFB"))
+
+(def ^:private unsafe-re
+  "L1 host: one unsafe character, astral Cf (tag characters included) too."
+  #?(:cljs    (js/RegExp. (str "[" unsafe-bmp "\\u{110BD}\\u{110CD}\\u{1D173}-\\u{1D17A}"
+                               "\\u{E0001}\\u{E0020}-\\u{E007F}]") "gu")
+     :default (re-pattern (str "[" unsafe-bmp "\\x{110BD}\\x{110CD}\\x{1D173}-\\x{1D17A}"
+                               "\\x{E0001}\\x{E0020}-\\x{E007F}]"))))
+
+(defn- escape-char
+  "L1 host: the visible escape of one unsafe character `c` (a string):
+   \\uXXXX in the BMP, \\u{X} beyond it."
+  [c]
+  (let [cp  #?(:cljs (.codePointAt c 0) :default (.codePointAt ^String c 0))
+        hex #?(:cljs (.toString cp 16) :default (Integer/toHexString cp))]
+    (if (< cp 0x10000) (str "\\u" (subs (str "0000" hex) (count hex))) (str "\\u{" hex "}"))))
+
+(defn safe-text
+  "L1: `s` as text with every control, format or line-separator character
+   escaped (see escape-char), so it cannot move a cursor, reorder or hide
+   text on a terminal."
+  [s]
+  #?(:cljs    (.replace (str s) unsafe-re escape-char)
+     :default (str/replace (str s) unsafe-re escape-char)))
+
+(defn cap
+  "L1: text `s` cut to at most `n` characters, ending in an ellipsis when cut."
+  [s n]
+  (if (> (count s) n) (str (subs s 0 (dec n)) "\u2026") s))
+
+(defn safe-leaves
+  "L1: `x` with every string leaf passed through safe-text."
+  [x]
+  (walk/postwalk #(if (string? %) (safe-text %) %) x))
 
 ;; =============================================================================
 ;; Timed ask
@@ -134,10 +183,17 @@
   (let [[typed answer & more] (str/split (str/trim (or line "")) #"\s+")]
     (and (= id typed) (contains? #{"y" "yes"} (str/lower-case (or answer ""))) (empty? more))))
 
+(defn shown-request
+  "L1: `request` rendered for a human: every string leaf escaped
+   (safe-leaves), the whole rendering escaped again and capped at
+   max-shown-chars."
+  [request]
+  (cap (safe-text (pr-str (safe-leaves request))) max-shown-chars))
+
 (defn prompt-line
-  "L1: the line the stdin asker prints for request `id`."
+  "L1: the line the stdin asker prints for request `id` (see shown-request)."
   [id request]
-  (str "[" id "] approve " (pr-str request) "? type \"" id " y\" to approve; anything else denies"))
+  (str "[" id "] approve " (shown-request request) "? type \"" id " y\" to approve; anything else denies"))
 
 #?(:cljs nil
    :default

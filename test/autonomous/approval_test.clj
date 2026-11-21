@@ -42,6 +42,25 @@
     (doseq [typed ["y\n" "yes\n" "2 y\n" "1 y please\n" "n\n" ""]]
       (is (= :deny (:decision (ask (stdin-asker typed (StringWriter.)) 500))) typed))))
 
+(def ^:private hostile
+  "Characters that move a cursor, end a line or reorder text on a terminal."
+  ["\u001b[2J" "\r" "\n" "\u0007" "\u0085" "\u009b" "\u2028" "\u2029" "\u202e" "\u2066" "\u200f"
+   "\ufeff" (String. (Character/toChars 0xE0041))])
+
+(deftest the-prompt-escapes-control-characters-in-every-string-leaf
+  (doseq [c hostile]
+    (let [req  {:tool "pay" :args {:memo (str "ok" c "x") (str "k" c) [(str "v" c)]} :actor "a"}
+          line (approval/prompt-line "1" req)]
+      (is (not (re-find #"[\x00-\x1F\x7F-\x9F\u2028\u2029\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]" line))
+          (pr-str c))
+      (is (not (.contains ^String line ^String c)) (pr-str c))
+      (is (re-find #"\\u" line) "the character is shown escaped, not dropped"))))
+
+(deftest the-prompt-is-capped
+  (let [line (approval/shown-request {:tool "pay" :args {:memo (apply str (repeat 5000 "x"))}})]
+    (is (= approval/max-shown-chars (count line)))
+    (is (.endsWith ^String line "\u2026"))))
+
 (defn- typist
   "A fake terminal: read-line blocks until a line is typed with `type!`."
   []
