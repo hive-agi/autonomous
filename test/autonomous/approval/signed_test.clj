@@ -15,29 +15,37 @@
 
 (defn- cloak [sym] (try (requiring-resolve (symbol "hive-cloak.api" (name sym))) (catch Throwable _ nil)))
 
-(defn- gpg-available? [] (try (zero? (:exit (sh/sh "gpg" "--version"))) (catch Exception _ false)))
+(defn- gpg-sh
+  "gpg with --batch, a loopback empty passphrase (the throwaway keys have
+   none) and a hard 60 s `timeout`, so a test can never wait on a prompt."
+  [home & args]
+  (apply sh/sh "timeout" "60" "gpg" "--homedir" home "--batch" "--yes"
+         "--pinentry-mode" "loopback" "--passphrase" "" args))
+
+(defn- gpg-available? [] (try (zero? (:exit (sh/sh "timeout" "10" "gpg" "--version"))) (catch Exception _ false)))
 
 (defn- temp-dir [prefix]
   (str (java.nio.file.Files/createTempDirectory prefix (make-array java.nio.file.attribute.FileAttribute 0))))
 
 (defn- gpg! [home & args]
-  (let [{:keys [exit out]} (apply sh/sh "gpg" "--homedir" home "--batch" "--yes"
-                                  "--pinentry-mode" "loopback" "--passphrase" "" args)]
+  (let [{:keys [exit out]} (apply gpg-sh home args)]
     (when-not (zero? exit) (throw (ex-info "gpg failed in a test keyring" {:args (vec args)})))
     out))
 
-(def ^:private safe-agent-conf
-  "ignore-cache-for-signing\nno-allow-loopback-pinentry\npinentry-program /usr/bin/pinentry-tty\n")
+(defn- private! [f mode]
+  (java.nio.file.Files/setPosixFilePermissions
+   (.toPath (io/file f)) (java.nio.file.attribute.PosixFilePermissions/fromString mode)))
 
 (defn- make-key! [label]
   (let [home (temp-dir (str "auto-approval-" label "-"))]
     (gpg! home "--quick-gen-key" (str label " <" label "@approval.test.invalid>") "ed25519" "cert,sign" "never")
     (let [fpr (->> (str/split-lines (gpg! home "--with-colons" "--list-keys"))
                    (some #(when (str/starts-with? % "fpr:") (nth (str/split % #":") 9))))
-          pub (io/file home "pub.asc")]
-      (spit pub (gpg! home "--armor" "--export" fpr))
-      (spit (io/file home "gpg-agent.conf") safe-agent-conf)
-      {:home home :fpr fpr :pub (str pub)})))
+          pins (io/file home "pins.edn")]
+      (spit pins (pr-str {:pins {fpr label} :public-keys (gpg! home "--armor" "--export" fpr)}))
+      (private! home "rwx------")
+      (private! pins "rw-------")
+      {:home home :fpr fpr :pins (str pins)})))
 
 (defn- delete-tree! [path]
   (doseq [f (reverse (file-seq (io/file path)))] (io/delete-file f true)))
@@ -59,20 +67,18 @@
       (let [ks {:pedro (make-key! "pedro") :other (make-key! "other")}]
         (try (binding [*k* ks] (t))
              (finally (doseq [{:keys [home]} (vals ks)]
-                        (sh/sh "gpgconf" "--homedir" home "--kill" "gpg-agent")
+                        (sh/sh "timeout" "10" "gpgconf" "--homedir" home "--kill" "gpg-agent")
                         (delete-tree! home))))))))
 
 (defn- pins []
-  (:ok ((cloak 'approval-pins) {:approval-pins (str (get-in *k* [:pedro :fpr]) "=pedro")
-                                :approval-public-keys (get-in *k* [:pedro :pub])})))
+  (:ok ((cloak 'approval-pins) (get-in *k* [:pedro :pins]) (System/getProperty "user.name"))))
 
 (defn- sign-as
   "A detached signature by `who`'s key over `text`, made the way the
    operator's gpg makes one."
   [who text]
-  (:out (sh/sh "gpg" "--homedir" (get-in *k* [who :home]) "--batch" "--yes" "--pinentry-mode" "loopback"
-               "--passphrase" "" "--armor" "--detach-sign" "--local-user" (get-in *k* [who :fpr])
-               :in text)))
+  (:out (gpg-sh (get-in *k* [who :home]) "--armor" "--detach-sign" "--local-user" (get-in *k* [who :fpr])
+                :in text)))
 
 (defn- statement [{:keys [nonce request-sha256 expires-ms]} & {:keys [decision] :or {decision :approve}}]
   (:ok ((cloak 'approval-statement) {:nonce nonce :request-sha256 request-sha256
@@ -188,8 +194,46 @@
 
 (deftest no-answer-in-time-is-a-timeout
   (with-keys
-    (let [asker (signed/signed-asker {:pins (pins) :solicit (fn [_] (promise))})]
-      (is (= :timeout (:decision (deref (approval/ask! asker request 100) 2000 ::hung)))))))
+    (testing "the gate's own wait runs out first"
+      (let [asker (signed/signed-asker {:pins (pins) :solicit (fn [_] (promise))})]
+        (is (= :timeout (:decision (deref (approval/ask! asker request 100) 2000 ::hung))))))
+    (testing "the statement's ttl runs out first: still a :timeout, never a :deny"
+      (let [why   (atom [])
+            asker (signed/signed-asker {:pins (pins) :ttl-ms 50 :on-refusal #(swap! why conj %)
+                                        :solicit (fn [_] (promise))})]
+        (is (= :timeout (:decision (deref (approval/ask! asker request 5000) 6000 ::hung))))
+        (is (= [:timeout] @why))))))
+
+(deftest the-gate-keeps-the-verifier-it-was-built-with
+  (with-keys
+    (testing "rebinding hive-cloak's verify-approval after construction cannot approve a forgery"
+      (let [v     (cloak 'verify-approval)
+            orig  @v
+            [asker why] (asker-with (fn [_] {:statement "forged" :signature "-----BEGIN PGP SIGNATURE-----\nx\n-----END PGP SIGNATURE-----\n"}))]
+        (try
+          (alter-var-root v (constantly (fn [& _] {:ok {:decision :approve :approver "pedro" :nonce "n" :expires-ms 0}})))
+          (is (= :deny (:decision (decide asker))) "the asker still verifies with the function it captured")
+          (is (= [:invalid-statement] @why))
+          (finally (alter-var-root v (constantly orig))))))))
+
+(deftest the-hive-transport-must-be-injected
+  (with-keys
+    (let [refused? #(try (%) false (catch clojure.lang.ExceptionInfo e
+                                     (= :invalid-approval (:autonomous/error (ex-data e)))))]
+      (is (refused? #(signed/hive-solicit {:agent-id "ling-1"})) "no in-process default ask")
+      (is (refused? #(signed/hive-solicit {:ask! "not a fn" :agent-id "ling-1"}))))))
+
+(deftest the-hive-ask-shows-the-request-line-by-line-with-its-hash-prefix
+  (with-keys
+    (let [asked (atom nil)
+          ask!  (fn [_ _ _ & {:keys [context]}] (reset! asked context) {:answer "no"})
+          asker (signed/signed-asker {:pins (pins) :solicit (signed/hive-solicit {:ask! ask! :agent-id "ling-1"})})
+          req   (assoc-in request [:args :memo] "x\n    :amount = 1")]
+      (is (= :deny (:decision (dissoc (deref (approval/ask! asker req 5000) 6000 ::hung) :ms))))
+      (let [lines (str/split-lines @asked)]
+        (is (= 1 (count (filter #(re-find #"^    :amount = " %) lines))) "a newline in a value cannot forge an argument line")
+        (is (some #(re-find #"request hash [0-9a-f]{3} [0-9a-f]{3} [0-9a-f]{3} [0-9a-f]{3}" %) lines))
+        (is (not (re-find #"type \"[0-9a-f]+ y\"" @asked)) "no stdin wording in the signed flow")))))
 
 (deftest it-refuses-to-build-without-pins-or-transport
   (let [refused? #(try (%) false (catch clojure.lang.ExceptionInfo e
@@ -199,4 +243,6 @@
         (is (refused? #(signed/signed-asker {:pins {"F" {}} :solicit (fn [_] (promise))}))))
       (do
         (is (refused? #(signed/signed-asker {:pins {} :solicit (fn [_] (promise))})))
+        (is (refused? #(signed/signed-asker {:solicit (fn [_] (promise))}))
+            ":pins is required: there is no config default an agent could rewrite")
         (is (refused? #(signed/signed-asker {:pins {"F" {}}})))))))
