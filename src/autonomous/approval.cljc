@@ -98,6 +98,16 @@
   [v]
   (cap (if (string? v) (str "\"" (safe-text v) "\"") (safe-text (pr-str v))) max-leaf-chars))
 
+(def max-actor-chars
+  "L1: the longest actor a human is shown; the rest is counted, not shown."
+  64)
+
+(defn shown-actor
+  "L1: the actor as a human is shown it: quoted, escaped once (safe-text),
+   capped at max-actor-chars with a visible note of the rest."
+  [actor]
+  (str "\"" (cap (safe-text (str actor)) max-actor-chars) "\""))
+
 (defn- leaves
   "L1: [path leaf] for every leaf of wire value `x` under `path`; an empty
    collection is a leaf."
@@ -151,7 +161,7 @@
    how to answer. No value is dropped; a long one is capped with a note."
   [id {:keys [tool actor session args]}]
   (concat [(str "[" id "] approval requested: tool " (shown-value tool)
-                " actor " (shown-value actor) " session " (shown-value session))]
+                " actor " (shown-actor actor) " session " (shown-value session))]
           (sort (map arg-line (leaves [] args)))
           [(str "[" id "] type \"" id " y\" to approve; anything else denies")]))
 

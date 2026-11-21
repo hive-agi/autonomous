@@ -76,21 +76,15 @@
     (approved run d)
     (stamped d (refusals (:decision d) (:deny refusals)))))
 
-(defn- shown-actor
-  "L1 Promote: `actor` fit to show a human: everything outside printable
-   ASCII escaped (approval/safe-text), at most 64 characters with a
-   visible note of the rest (approval/cap)."
-  [actor]
-  (approval/cap (approval/safe-text actor) 64))
-
 (defn- approval-request
   "L1 Promote: what the asker is asked about one call: the tool name, the
    args in wire form with the journal's `redact` paths masked, the actor
-   (see shown-actor) and the session."
+   and the session, as data. Rendering them for a human (escaping,
+   capping) is the asker's (autonomous.approval/prompt-lines)."
   [tool args grant redact]
   {:tool    (:name tool)
    :args    (journal/redact-paths (wire/->wire (or args {})) redact)
-   :actor   (shown-actor (:actor grant))
+   :actor   (:actor grant)
    :session (:session grant)})
 
 (defn- strip-approval
