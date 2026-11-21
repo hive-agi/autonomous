@@ -8,6 +8,8 @@ registered calc_add
 ok   call     {:ok {:by "go", :sum 42}}
 ok   invalid  {:error {:type :invalid-args, ...}}
 ok   scope    {:error {:type :forbidden, ...}}
+ok   kept     {:ok {:by "go", :sum 3}}
+ok   unreg    {:error {:type :unknown-tool, ...}}
 ok   thread   another OS thread is refused
 ```
 
