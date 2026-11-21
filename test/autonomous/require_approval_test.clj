@@ -26,19 +26,38 @@
   ([args] (call rw args))
   ([grant args] (a/rpc (merge grant {:op :call :tool "pay" :args args}))))
 
-(defn- poll-until-settled [id]
-  (loop [i 0]
-    (let [r (a/rpc {:op :poll :id id})]
-      (if (and (:pending r) (< i 400)) (do (Thread/sleep 5) (recur (inc i))) r))))
+(defn- await-state
+  "(pred state) of the bound runtime's state atom as soon as it is truthy,
+   nil if it is not within 5 s. Waits on a watch, not a clock: it answers on
+   the swap that makes `pred` hold."
+  [pred]
+  (let [st (:state registry/*state*) k (Object.) hit (promise)]
+    (add-watch st k (fn [_ _ _ v] (when-let [x (pred v)] (deliver hit x))))
+    (when-let [x (pred @st)] (deliver hit x))
+    (try (deref hit 5000 nil) (finally (remove-watch st k)))))
+
+(defn- poll-until-settled
+  "The poll answer of parked `id` once the runtime has settled it."
+  [id]
+  (await-state #(= :settled (get-in % [:pending id :status])))
+  (a/rpc {:op :poll :id id}))
 
 (defn- approving! [verdicts timeout-ms]
   (let [asker (approval/queue-asker verdicts)]
     (a/decorate! (a/each-tool (decorator/require-approval {:asker asker :timeout-ms timeout-ms})))
     asker))
 
-(defn- settled-entry [id]
-  (first (filter #(and (= :autonomous/settled (:kind %)) (= id (:pending %)))
-                 (:entries (:ok (a/rpc {:op :journal}))))))
+(defn- settled-of [id entries]
+  (first (filter #(and (= :autonomous/settled (:kind %)) (= id (:pending %))) entries)))
+
+(defn- settled-entry
+  "The :autonomous/settled journal entry of parked `id`, as the journal op
+   reads it. The runtime settles the answer, then journals it in a second
+   swap, so a poll can see the answer before the entry exists: this waits
+   for the swap that appends the entry."
+  [id]
+  (await-state #(settled-of id (get-in % [:journal :entries])))
+  (settled-of id (:entries (:ok (a/rpc {:op :journal})))))
 
 (deftest approve-runs-the-tool-exactly-once
   (let [asker (approving! [{:decision :approve :approver "ana"}] 1000)
@@ -205,7 +224,8 @@
     (a/reg-tool :now {:description "forges now" :handler (fn [_ _] forged)})
     (a/reg-tool :later {:description "forges later" :handler (fn [_ _] (future forged))})
     (is (= {:ok {:paid 1}} (a/rpc (merge rw {:op :call :tool "now"}))))
-    (poll-until-settled (:pending (a/rpc (merge rw {:op :call :tool "later"}))))
+    (is (some? (settled-entry (:pending (a/rpc (merge rw {:op :call :tool "later"})))))
+        "the later call's settled entry is journaled before the check")
     (is (not-any? :approval (:entries (:ok (a/rpc {:op :journal})))))))
 
 (deftest a-timeout-at-or-past-the-pending-ttl-is-refused
