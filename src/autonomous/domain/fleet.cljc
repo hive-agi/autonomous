@@ -185,7 +185,7 @@
                     (if (contains? seen (:name t)) [seen acc] [(conj seen (:name t)) (conj acc t)]))
                   [#{} []] tools)))
 
-(defn- split-taken
+(defn split-taken
   "[kept dropped] of `tools` under prefix `pfx`, independent of their
    order: a tool is dropped when its exposed name is in `routes` (an
    earlier target holds it) or when another tool of `tools` exposes the

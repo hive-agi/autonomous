@@ -9,6 +9,7 @@
             [autonomous.bridge.ledger :as ledger]
             [autonomous.bridge.port :as port]
             [autonomous.bridge.session :as s]
+            [autonomous.domain.fleet]
             [autonomous.mcp.server :as server]
             [clojure.test :refer [deftest is testing]]
             [autonomous.mcp.stdio :as stdio]))
@@ -122,7 +123,8 @@
     (is (= [:up :down :slow]
            (map :status (get-in (call srv rw "autonomous_apps" {}) [:answer :ok :apps]))))
     (is (= {:ok {:app "todo" :tool "todo_add" :runtime nil}} (:answer (call srv rw "todo__todo_add" {}))))
-    (is (= :channel/connect-failed (get-in (call srv rw "api__refund" {}) [:answer :error :type])))
+    (is (= :unknown-tool (get-in (call srv rw "api__refund" {}) [:answer :error :type]))
+        "a tool the app never listed is refused, not sent as it is")
     (testing "it comes back on reconnect, and the fingerprint moves"
       (reset! state :up)
       (is (contains? (set (map :name (server/list-tools srv rw))) "api__refund"))
@@ -223,3 +225,85 @@
     (is (wait-for changed?) "the app coming back moves the fleet fingerprint")
     (deliver done true)
     (deref runner 3000 nil)))
+
+(defn- fleet-name [tid tool]
+  (autonomous.domain.fleet/exposed-name (autonomous.domain.fleet/prefix tid) tool))
+
+(defn- listing-responder
+  "A runtime whose manifest lists (@listing actor scopes) and answers a call
+   with the tool it was given; @mode :slow sleeps past the probe deadline,
+   :down refuses."
+  [listing mode]
+  (fn [{:keys [op tool actor scopes]} _]
+    (case op
+      :manifest (case @mode
+                  :slow (do (Thread/sleep 400) (apply manifest "r" (@listing actor scopes)))
+                  :down {:error {:type :channel/connect-failed :message "down"}}
+                  (apply manifest "r" (@listing actor scopes)))
+      :call     {:ok {:tool tool}}
+      {:ok nil})))
+
+(defn- routing-fleet [listing mode]
+  (let [l (ledger/open {:ledger/kind :memory})]
+    (bf/make [(member "r" (listing-responder listing mode) l)
+              (member "o" (app-responder "o" ["x"]) l)]
+             {:probe-ms 150})))
+
+(defn- tool-names [f ses]
+  (set (map :name (:tools (bf/surface f ses)))))
+
+(deftest sanitized-and-colliding-names-route-by-the-original-name
+  (let [listing (atom (constantly ["pay.out" "pay_out"]))
+        mode    (atom :up)
+        f       (routing-fleet listing mode)
+        dotted  (fleet-name "r" "pay.out")
+        names   (tool-names f rw)]
+    (is (contains? names "r__pay_out"))
+    (is (contains? names dotted) "the dotted tool gets its own digested name")
+    (is (= {:ok {:tool "pay_out"}} (bf/call! f rw "r__pay_out" {})))
+    (is (= {:ok {:tool "pay.out"}} (bf/call! f rw dotted {})))
+    (testing "a reorder of the listing rebinds nothing"
+      (reset! listing (constantly ["pay_out" "pay.out"]))
+      (tool-names f rw)
+      (is (= {:ok {:tool "pay_out"}} (bf/call! f rw "r__pay_out" {})))
+      (is (= {:ok {:tool "pay.out"}} (bf/call! f rw dotted {}))))
+    (testing "a tool the target stops listing is refused, not sent as it is"
+      (reset! listing (constantly ["pay_out"]))
+      (tool-names f rw)
+      (is (= :unknown-tool (get-in (bf/call! f rw dotted {}) [:error :type]))))))
+
+(deftest a-slow-or-down-look-never-erases-the-listing-a-name-routes-by
+  (let [listing (atom (constantly ["pay.out"]))
+        mode    (atom :up)
+        f       (routing-fleet listing mode)
+        dotted  (fleet-name "r" "pay.out")]
+    (tool-names f rw)
+    (doseq [m [:slow :down]]
+      (reset! mode m)
+      (tool-names f rw)
+      (is (= {:ok {:tool "pay.out"}} (bf/call! f rw dotted {}))
+          (str "after a " (name m) " look the name still reaches its tool")))
+    (testing "a name the agent never saw listed is refused, even unprobed"
+      (let [fresh (s/open-session "s9" {:actor "agent-9" :scopes #{:read :write}})]
+        (reset! mode :down)
+        (is (= :unknown-tool (get-in (bf/call! f fresh dotted {}) [:error :type])))
+        (is (= :unknown-tool (get-in (bf/call! f fresh "r__pay_out" {}) [:error :type])))))
+    (testing "with no listing yet, the call probes the target first"
+      (let [fresh (s/open-session "s8" {:actor "agent-8" :scopes #{:read :write}})]
+        (reset! mode :up)
+        (is (= {:ok {:tool "pay.out"}} (bf/call! f fresh dotted {})))))))
+
+(deftest two-sessions-of-one-actor-keep-their-own-listing
+  (let [listing (atom (fn [_actor scopes]
+                        (if (contains? (set scopes) :write) ["pay.out"] ["pay_out" "pay.out"])))
+        mode    (atom :up)
+        f       (routing-fleet listing mode)
+        ro      (s/open-session "s-ro" {:actor "agent-1" :scopes #{:read}})
+        dotted  (fleet-name "r" "pay.out")]
+    (tool-names f rw)
+    (tool-names f ro)
+    (is (= {:ok {:tool "pay.out"}} (bf/call! f rw dotted {}))
+        "the read-only session's later look does not change where rw's call goes")
+    (is (= {:ok {:tool "pay_out"}} (bf/call! f ro "r__pay_out" {})))
+    (is (= :unknown-tool (get-in (bf/call! f rw "r__pay_out" {}) [:error :type]))
+        "rw was never listed pay_out")))
