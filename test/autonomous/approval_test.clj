@@ -1,5 +1,6 @@
 (ns autonomous.approval-test
   (:require [autonomous.approval :as approval]
+            [autonomous.thenable :as thenable]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [malli.core :as m])
@@ -321,19 +322,32 @@
     (is (shows? out #"(?s)request 1 approved.*request 2 denied, not run"))))
 
 (deftest the-outcome-line-always-matches-the-decision
-  (dotimes [i 20]
-    (let [t     (typist)
-          out   (screen)
-          asker (typed-asker t out "op" 5000)
-          d     (approval/ask! asker request (+ 40 (rand-int 20)))]
-      (is (await-ref (:text out) #(seq (re-find #"approval requested" %))))
-      (Thread/sleep (+ 30 (rand-int 30)))
+  (testing "a line that answers before the timeout: approved, and said so"
+    (let [t (typist) out (screen) asker (typed-asker t out "op" 60000)
+          d (approval/ask! asker request 30000)]
+      (type-at! t out "1" "1 y")
+      (is (= :approve (decision d)))
+      (is (shows? out #"request 1 approved"))
+      (is (not (re-find #"request 1 expired" (text out))))))
+  (testing "a line typed once the timeout has claimed the request: a timeout, and said expired"
+    (let [t (typist) out (screen) asker (typed-asker t out "op" 60000)
+          d (approval/ask! asker request 50)]
+      (is (await-ref (:text out) #(re-find #"\[1\] approval requested" %)))
+      (is (= :timeout (decision d)) "the Decision is made before the line is typed")
       ((:type! t) "1 y")
-      (let [decided (:decision (deref d 2000 ::hung))]
-        (is (shows? out #"request 1 (approved|expired)"))
-        (is (= (if (= :approve decided) "approved" "expired")
-               (second (re-find #"request 1 (approved|expired)" (text out))))
-            (str "run " i ": the terminal says what the Decision was"))))))
+      (is (shows? out #"request 1 expired, not run"))
+      (is (not (re-find #"request 1 approved" (text out))))))
+  (testing "a Verdict and the timeout claim released at the same instant agree on how it ended"
+    (dotimes [i 500]
+      (let [p     (promise)
+            go    (java.util.concurrent.CountDownLatch. 1)
+            asker (future (.await go) (deliver p {:decision :approve :approver "op"}))
+            claim (future (.await go) (thenable/claim! p ::timeout))]
+        (.countDown go)
+        @asker
+        (is (= @p (deref claim 5000 ::hung))
+            (str "run " i ": the asker's ending (what its outcome line says) is the Decision's"))))))
+
 
 (deftest at-end-of-input-every-waiting-request-is-denied-at-once
   (let [out   (screen)
