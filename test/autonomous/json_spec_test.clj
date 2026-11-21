@@ -130,6 +130,27 @@
          (get-in (js/->tool-spec {"id" "a" "description" "d" "input" "[:string]"}) [:error :type]))
       "an input that is not a map is refused before anyone registers it"))
 
+(deftest an-unknown-key-is-refused-and-a-look-alike-named
+  (doseq [[k v hint] [["scope" ["admin"] "unknown key; did you mean \"scopes\"?"]
+                      ["readonly" true "unknown key; did you mean \"readOnly\"?"]
+                      ["inputSchema" {"type" "object"} "unknown key; did you mean \"input\"?"]
+                      ["handler" "rm -rf" "unknown key"]]]
+    (testing k
+      (let [a (js/->tool-spec {"id" "a" "description" "d" k v})]
+        (is (= (str "tool a JSON spec has unknown key " (pr-str k)) (get-in a [:error :message])))
+        (is (= {k hint} (get-in a [:error :data])))))))
+
+(deftest the-real-keys-set-scopes-and-read-only
+  (let [[_ spec] (:ok (js/->tool-spec {"id" "a" "description" "d" "scopes" ["admin"] "readOnly" true}))]
+    (is (= #{:admin} (:scopes spec)))
+    (is (true? (:read-only? spec)))))
+
+(deftest a-single-tool-document-may-carry-its-own-defs
+  (is (= [:map [:p {:optional true} [:int]]]
+         (-> (load/parse "{\"$schema\":\"x\",\"$defs\":{\"N\":{\"type\":\"integer\"}},\"id\":\"a\",\"description\":\"d\",
+                          \"input\":{\"type\":\"object\",\"properties\":{\"p\":{\"$ref\":\"#/$defs/N\"}}}}")
+             :ok first second :input))))
+
 (defn- temp-json
   "A temp file holding JSON text `s`."
   [s]

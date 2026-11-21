@@ -19,7 +19,8 @@
    JSON Schema resolves against the document the tool came from, so a file
    can share {\"$defs\": ...} between its tools.
 
-   The field names follow autonomous.js (readOnly, camelCase). A document
+   The field names follow autonomous.js (readOnly, camelCase), and no other
+   key is accepted: a misspelt one is refused, naming the key meant. A document
    is one tool object, an array of them, or {\"tools\": [...]} beside shared
    definitions. Answers {:ok ...} or a refusal of type :invalid-tool."
   (:require [autonomous.domain.answer :as answer]
@@ -37,8 +38,11 @@
    (fn [x] (or (string? x) (and (map? x) (every? string? (keys x)))))])
 
 (def JsonToolSpec
-  "One tool as JSON data. `id` may be absent when the caller names the tool."
-  [:map
+  "One tool as JSON data. `id` may be absent when the caller names the tool.
+   Closed: an unknown key is refused, since a misspelt scopes or readOnly
+   would otherwise leave the tool with the default scopes. $defs and
+   definitions hold schemas $refs reach; $schema and $comment are notes."
+  [:map {:closed true}
    ["id" {:optional true} [:string {:min 1}]]
    ["description" [:string {:min 1}]]
    ["title" {:optional true} :string]
@@ -47,7 +51,29 @@
    ["output" {:optional true} SchemaForm]
    ["readOnly" {:optional true} :boolean]
    ["scopes" {:optional true} [:sequential [:string {:min 1}]]]
-   ["annotations" {:optional true} [:map-of :string :any]]])
+   ["annotations" {:optional true} [:map-of :string :any]]
+   ["$defs" {:optional true} [:map-of :string :any]]
+   ["definitions" {:optional true} [:map-of :string :any]]
+   ["$schema" {:optional true} :string]
+   ["$comment" {:optional true} :string]])
+
+(def ^:private look-alikes
+  "Keys authors write for a real key: the refusal names the one to use."
+  {"scope" "scopes" "readonly" "readOnly" "read_only" "readOnly" "readOnly?" "readOnly"
+   "read-only" "readOnly" "read-only?" "readOnly" "inputSchema" "input" "input_schema" "input"
+   "outputSchema" "output" "output_schema" "output" "desc" "description"})
+
+(defn- unknown-keys
+  "L1 Promote: {key hint} of the keys of `spec` JsonToolSpec does not know,
+   each hint naming the key meant when it is a known look-alike."
+  [spec]
+  (let [known (set (map first (m/children JsonToolSpec)))]
+    (into (sorted-map)
+          (comp (remove known)
+                (map (fn [k] [k (if-let [real (look-alikes k)]
+                                  (str "unknown key; did you mean \"" real "\"?")
+                                  "unknown key")])))
+          (keys spec))))
 
 (defn- invalid
   "L1 Promote: the :invalid-tool refusal for tool `id`."
@@ -98,11 +124,18 @@
 
 (defn- checked
   "L1 Promote: Ok `spec` when it is a JsonToolSpec, else a refusal with the
-   humanized problems."
+   humanized problems; an unknown key names the key it looks like."
   [id spec]
-  (if-let [e (m/explain JsonToolSpec spec)]
-    (invalid id "JSON spec is invalid" (me/humanize e))
-    (answer/ok spec)))
+  (let [unknown (unknown-keys spec)]
+    (cond
+      (seq unknown)
+      (invalid id (str "JSON spec has unknown key" (when (> (count unknown) 1) "s") " "
+                       (str/join ", " (map pr-str (keys unknown))))
+               unknown)
+      :else
+      (if-let [e (m/explain JsonToolSpec spec)]
+        (invalid id "JSON spec is invalid" (me/humanize e))
+        (answer/ok spec)))))
 
 (defn- assemble
   "L1 Promote: the ToolSpec of checked JSON `spec` and its compiled schemas."
