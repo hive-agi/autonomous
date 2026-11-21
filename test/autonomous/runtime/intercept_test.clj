@@ -187,6 +187,16 @@
       (is (= {:error {:type :tool-threw :message "late"}} (poll-until-settled pending))
           "async: the same, and the call settles"))))
 
+(deftest a-future-of-a-marked-refusal-settles-as-that-refusal-redacted
+  (a/reg-tool :t/later-refusal {:description "Async refusal" :read-only? true
+                                :handler (fn [_ _] (future (invoke/return-answer
+                                                            (answer/refusal :t/denied "no" {:token "s3cret"}))))})
+  (a/decorate! (decorator/each-tool (decorator/redact-refusal [[:token]])))
+  (let [{:keys [pending]} (call "t_later-refusal" {})]
+    (is (= {:error {:type :t/denied :message "no" :data {:token "<redacted>"}}}
+           (poll-until-settled pending))
+        "never {:ok {:error ...}}, and the refusal projection applies")))
+
 (deftest require-scope-through-a-decorated-runtime
   (a/decorate! (decorator/each-tool (decorator/require-scope :audit)))
   (is (= :forbidden (get-in (call "t_echo" {:text "x"}) [:error :type])))

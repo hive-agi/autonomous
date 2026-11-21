@@ -93,11 +93,12 @@
            (if (answer/refused? a) (update a :error dissoc :data) a)))))
 
 (defn- settle-later!
-  "Park thenable `x`; its value, through `project` (raw -> Answer), and
-   then `finish` (Answer -> Answer, already guarded), becomes the parked
-   answer and a journal entry (:autonomous/settled), so the ledger knows
-   how an async call ended. A failure goes through `finish` too. The
-   entry follows the app's CallDetail as it is when the call settles."
+  "Park thenable `x`; what it resolves to, `completed` through `project`
+   (so a marked Answer keeps its variant, as `settle` keeps it), then
+   `finish` (Answer -> Answer, already guarded), becomes the parked answer
+   and a journal entry (:autonomous/settled), so the ledger knows how an
+   async call ended. A failure goes through `finish` too. The entry
+   follows the app's CallDetail as it is when the call settles."
   [x project finish]
   (let [id      (registry/park!)
         settle! (fn [a]
@@ -105,10 +106,10 @@
                     (registry/settle! id a)
                     (registry/record! (journal/settled-entry id a (:call-detail (registry/snapshot))))))]
     #?(:cljs    (-> ^js x
-                    (.then (fn [v] (settle! (normalize (project v)))))
+                    (.then (fn [v] (settle! (completed v project))))
                     (.catch (fn [e] (settle! (answer/from-exception e)))))
        :default (future
-                  (settle! (try (normalize (project (deref x)))
+                  (settle! (try (completed (deref x) project)
                                 (catch Throwable t
                                   (answer/from-exception (unwrap-deref-failure t)))))))
     (answer/pending id)))
