@@ -37,3 +37,9 @@
   "EDN of JSON text `s`, object keys as keywords."
   [s]
   (json/read-str s :key-fn keyword))
+
+(defn read-data
+  "EDN of JSON text `s` exactly as JSON says it: object keys stay strings.
+   For JSON documents read as documents (a JSON tool spec, a JSON Schema)."
+  [s]
+  (json/read-str s))

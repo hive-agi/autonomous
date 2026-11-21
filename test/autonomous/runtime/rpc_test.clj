@@ -170,6 +170,13 @@
       (call s1 "echo_args" {:text "y"})
       (is (not (contains? (last (calls)) :args))))))
 
+(deftest a-journal-args-path-that-stops-at-a-string-masks-it-whole
+  (a/journal-calls! {:args? true :redact [[:text 0] [:n :x]]})
+  (call rw "echo_args" {:text "s3cret" :n 2})
+  (let [entry (last (filter (comp #{:autonomous/call} :kind) (:entries (:ok (a/rpc {:op :journal})))))]
+    (is (= {:text "<redacted>" :n "<redacted>"} (:args entry))
+        "a string or a number where the path expected a collection is masked, not kept as absent")))
+
 (deftest middleware-wraps-every-invocation
   (let [seen (atom [])]
     (a/use! (fn [h] (fn [tool args grant] (swap! seen conj [(:name tool) (:actor grant)]) (h tool args grant))))

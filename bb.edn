@@ -21,6 +21,20 @@
   test  {:doc  "Every unit suite on babashka (the datahike ledger contract is JVM-only)"
          :task (exec 'autonomous.bb-test-runner/-main)}
 
+  -node-deps {:doc  "npm ci from package-lock.json, only when node_modules is absent"
+              :task (when-not (babashka.fs/exists? "node_modules")
+                      (shell "npm" "ci" "--no-audit" "--no-fund"))}
+
+  test-cljs {:doc     "The ClojureScript suite on re-frame 1 (shadow :test, run on node)"
+             :depends [-node-deps]
+             :task    (do (clojure "-M:cljs" "-m" "shadow.cljs.devtools.cli" "compile" "test")
+                          (shell "node" "target/cljs-test/test.js"))}
+
+  test-rf2 {:doc     "autonomous.re-frame2 against real re-frame2 (alias :cljs-rf2, shadow :rf2-test, run on node)"
+            :depends [-node-deps]
+            :task    (do (clojure "-M:cljs-rf2" "-m" "shadow.cljs.devtools.cli" "compile" "rf2-test")
+                         (shell "node" "target/cljs-rf2-test/test.js"))}
+
   demo  {:doc  "Open the todo app and let an agent drive it over MCP: [--no-open] [--no-script] [--exit] [--step-ms N] [--record OUT.gif]. Ctrl-C stops everything it started."
          :task (apply (requiring-resolve 'autonomous.demo.runner/-main) *command-line-args*)}
 
@@ -40,6 +54,22 @@
 
   cabi-rust {:doc  "Build the Rust example app over libautonomous (cabi/examples/rust)"
              :task (shell {:dir "cabi/examples/rust"} "cargo" "build" "--release")}
+
+  cabi-go {:doc  "Build and run the Go (cgo) example over libautonomous (cabi/bindings/go, after bb cabi); fails on a wrong answer"
+           :task (do (shell {:dir "cabi/bindings/go/example"} "go" "vet" "./" "../")
+                     (shell {:dir "cabi/bindings/go"} "go" "test" "-count=1" "./")
+                     (shell {:dir "cabi/bindings/go/example"} "go" "build" "-o" "../../../build/go-example" ".")
+                     (shell {:dir "cabi/build"} "./go-example"))}
+
+  cabi-zig {:doc  "Build and run the Zig example over libautonomous (cabi/bindings/zig, after bb cabi); fails on a wrong answer"
+            :task (shell {:dir "cabi/bindings/zig"} "zig" "build" "test" "run"
+                         "--prefix" "../../build/zig-out" "--cache-dir" "../../build/zig-cache")}
+
+  cabi-bindings {:doc  "libautonomous and every binding example that builds here: C smoke, Go, Zig, Rust"
+                 :depends [cabi cabi-go cabi-zig cabi-rust]}
+
+  tool-spec {:doc  "Print a JSON tool-spec file as EDN specs for autonomous_reg_tool: FILE.json (autonomous.json-spec)"
+             :task (apply (requiring-resolve 'autonomous.json-spec.load/-main) *command-line-args*)}
 
   cabi-e2e {:doc  "Live: the Rust example dials a ws-only bb bridge; agents call its tools over MCP HTTP (doc/cabi.md)"
             :task (exec 'autonomous.e2e.cabi-runner/-main)}

@@ -17,6 +17,12 @@
          :ns-regexp "-test$"
          :autorun   false}
 
+  ;; Needs the :cljs-rf2 classpath (real re-frame2); see deps.edn.
+  :rf2-test {:target    :node-test
+             :output-to "target/cljs-rf2-test/test.js"
+             :ns-regexp "-rf2-test$"
+             :autorun   false}
+
   :e2e  {:target    :node-script
          :main      todo.node/main
          :output-to "target/e2e/main.js"}

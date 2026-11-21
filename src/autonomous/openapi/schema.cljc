@@ -176,6 +176,57 @@
   [form]
   (contains? #{:map :map-of} (if (vector? form) (first form) form)))
 
+(def json-types
+  "The JSON Schema type names; any other \"type\" is a typo, read as :any."
+  #{"string" "integer" "number" "boolean" "array" "object" "null"})
+
+(def ^:private schema-vals
+  "Keys whose value is a map of name to subschema."
+  ["properties" "patternProperties"])
+
+(def ^:private schema-one
+  "Keys whose value is one subschema (or, for items, a vector of them)."
+  ["items" "additionalProperties" "not" "contains"])
+
+(def ^:private schema-many
+  "Keys whose value is a vector of subschemas."
+  ["allOf" "oneOf" "anyOf" "prefixItems"])
+
+(defn- node-problems
+  "L1 Promote: what `s` itself says ->malli would read as :any: an
+   unresolved $ref, a cycle, or a type outside json-types."
+  [s path]
+  (let [unknown (remove json-types (types s))]
+    (cond-> []
+      (contains? s "x-autonomous-unresolved")
+      (conj {:problem :unresolved-ref :ref (get s "x-autonomous-unresolved") :path path})
+      (contains? s "x-autonomous-cycle")
+      (conj {:problem :cycle :ref (get s "x-autonomous-cycle") :path path})
+      (seq unknown)
+      (conj {:problem :unknown-type :type (vec unknown) :path path}))))
+
+(defn- children
+  "L1 Promote: [path-segment subschema] of every subschema of `s`, data
+   keys (enum, const, default, examples) left out."
+  [s]
+  (concat
+   (for [k schema-vals [n sub] (get s k)] [[k n] sub])
+   (for [k schema-one :let [v (get s k)] [i sub] (if (vector? v) (map-indexed vector v) [[nil v]])]
+     [(if i [k i] [k]) sub])
+   (for [k schema-many [i sub] (map-indexed vector (get s k))] [[k i] sub])))
+
+(defn problems
+  "L1 Promote: every place in RESOLVED JSON Schema `s` that ->malli would
+   silently read as :any: [{:problem :unresolved-ref|:cycle|:unknown-type
+   :ref|:type .. :path [..]}], depth first; empty when there is none."
+  ([s] (problems s []))
+  ([s path]
+   (if-not (map? s)
+     []
+     (into (node-problems s path)
+           (mapcat (fn [[seg sub]] (problems sub (into path seg))))
+           (children s)))))
+
 (defn param-key
   "Keyword an OpenAPI parameter name becomes in the args map."
   [name]

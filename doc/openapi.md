@@ -52,3 +52,13 @@ change to the service. Only the operations you name become tools.
 - **Refused when you derive the tools, not when they are called:** an
   unknown operationId, an empty `:expose`, and non-JSON bodies such as
   multipart.
+- **Strict input schemas by default.** A parameter or JSON body schema that
+  would read as malli `:any` where the spec means something else is refused
+  with `:openapi/unresolved-schema`, naming the `$ref` or `type`: a `$ref`
+  the resolver cannot follow (a typo, an `#anchor`, a `$id`, an absolute
+  URL, which is never fetched) and a `type` that is not a JSON Schema type
+  (`"file"`, `"int"`, `"float"`, `"any"`). Such a tool would accept any
+  argument. A recursive schema (a `$ref` cycle) is legal and stays `:any`.
+  A spec you cannot fix can opt out with `:lenient-schemas? true`, which
+  reads those constructs as `:any`, the derivation before this check. Tool
+  specs written as JSON (`autonomous.json-spec`) have no such opt-out.
