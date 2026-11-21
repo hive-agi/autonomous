@@ -25,6 +25,8 @@
   (is (= "agent-\\ud83d\\ude00" (naming/shown-actor "agent-😀")) "an astral character is its surrogate pair")
   (is (= "a\\u0022\\u005cb" (naming/shown-actor "a\"\\b")))
   (is (= 64 (count (naming/shown-actor (apply str (repeat 80 "x"))))))
+  (is (= "\"a\\u200bb\"" (naming/quoted-actor "a\u200bb")))
+  (is (= (str "\"" (apply str (repeat 64 "x")) " (+16 chars)\"") (naming/quoted-actor (apply str (repeat 80 "x")))))
   (is (naming/nameless-actor? " \t\u200b\u2028"))
   (is (not (naming/nameless-actor? "a"))))
 

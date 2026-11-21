@@ -265,3 +265,13 @@
         "the pair does not fit, so neither half is shown")
     (is (= (str (apply str (repeat 52 "x")) "\\ud83d\\ude00")
            (naming/shown-actor (str (apply str (repeat 52 "x")) emoji))))))
+
+(deftest a-lease-refusal-quotes-the-holder-as-shown
+  (let [msg #(get-in (plan-call* (assoc snapshot :lease {:actor % :until 1000})
+                                 "todo_add" {:text "x"} rw 10)
+                     [:refusal :error :message])]
+    (is (clojure.string/starts-with? (msg "b") "runtime is leased by \"b\";"))
+    (is (clojure.string/includes? (msg "b\u202e\nc") "\"b\\u202e\\u000ac\"")
+        "a bidi control and a newline in the holder are escaped")
+    (is (every? #(<= 0x20 (int %) 0x7E) (msg "b\u202e\nc")))
+    (is (not= (msg "bc") (msg "b\u200bc")) "distinct holders stay distinct")))

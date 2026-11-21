@@ -105,12 +105,11 @@
   naming/max-shown-actor)
 
 (defn shown-actor
-  "L1: the actor as a human is shown it: naming/shown-actor (the one rule
-   for showing an actor), quoted, with a visible note of how much was cut."
+  "L1: the actor as a human is shown it: naming/quoted-actor, that is
+   naming/shown-actor (the one rule for showing an actor), quoted, with a
+   visible note of how much was cut."
   [actor]
-  (let [shown (naming/shown-actor actor)
-        cut   (- (count (naming/actor-text actor)) (count shown))]
-    (str "\"" shown (when (pos? cut) (str " (+" cut " chars)")) "\"")))
+  (naming/quoted-actor actor))
 
 (defn- leaves
   "L1: [path leaf] for every leaf of wire value `x` under `path`; an empty

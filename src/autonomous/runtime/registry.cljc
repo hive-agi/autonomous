@@ -14,7 +14,8 @@
             [malli.core :as m]
             [malli.error :as me]
             [autonomous.surface :as surface]
-            [autonomous.runtime.chain :as chain]))
+            [autonomous.runtime.chain :as chain]
+            [autonomous.domain.naming :as naming]))
 
 (def pending-ttl-ms (* 10 60 1000))
 
@@ -299,7 +300,7 @@
     (let [[verdict l] @decided]
       (if (= :granted verdict)
         (answer/ok l)
-        (answer/refusal :leased (str "lease held by " (:actor l)) l)))))
+        (answer/refusal :leased (str "lease held by " (naming/quoted-actor (:actor l))) l)))))
 
 (defn release-lease!
   [actor]

@@ -95,6 +95,15 @@
   [actor]
   (> (count (actor-text actor)) max-shown-actor))
 
+(defn quoted-actor
+  "`actor` as a message or a prompt quotes it: shown-actor in double quotes,
+   with a visible note of how many characters the cut left out. shown-actor
+   holds no quote, so the quotes always delimit the whole actor."
+  [actor]
+  (let [shown (shown-actor actor)
+        cut   (- (count (actor-text actor)) (count shown))]
+    (str "\"" shown (when (pos? cut) (str " (+" cut " chars)")) "\"")))
+
 (def ^:private invisible-units
   "Code units that show nothing: whitespace, C0, DEL and C1 controls,
    zero-width characters, bidi controls, separators and the BOM."

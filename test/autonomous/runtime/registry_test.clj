@@ -89,3 +89,13 @@
         (registry/clear!)
         (is (= surface/empty-surface (registry/surface-value)))
         (is (= 0 (get-in (registry/snapshot) [:journal :seq])))))))
+
+(deftest a-held-lease-refusal-quotes-the-holder-as-shown
+  (let [rt (registry/make-runtime)
+        a  (registry/with-instance rt
+             #(do (registry/acquire-lease! "agent\u202e\n1" 60000)
+                  (registry/acquire-lease! "agent-2" 60000)))
+        msg (get-in a [:error :message])]
+    (is (= :leased (get-in a [:error :type])))
+    (is (= "lease held by \"agent\\u202e\\u000a1\"" msg) "the holder is escaped and quoted")
+    (is (= "agent\u202e\n1" (get-in a [:error :data :actor])) "the lease data keeps the real actor")))
