@@ -207,9 +207,10 @@
   "The fleet surface of `probes`, a vector of {:target :status :manifest
    :error} in fleet order: {:tools :resources :routes :apps}. Only :up
    targets contribute tools and resources. :routes maps each exposed tool
-   name to {:target :tool}. A name an earlier target or an earlier tool of
-   the same target already exposes is not listed again; the app reports
-   the later tool under :dropped."
+   name to {:target :tool}. A name an earlier target already exposes is not
+   listed again, and tools of one target that expose the same name are all
+   left out, whatever their order; the app reports each such tool under
+   :dropped."
   [probes]
   (reduce
    (fn [acc {:keys [target status manifest error]}]

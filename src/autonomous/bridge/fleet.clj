@@ -25,13 +25,15 @@
   (* 60 60 1000))
 
 (def default-max-views
-  "Most views kept per target: the MCP server's session cap."
+  "Views kept per target when :max-views is not given: the fleet keeps at
+   most this many times its number of targets, in total."
   1024)
 
 (defn make
   "A fleet over `members`, a vector of [target-id client-context] in fleet
    order. opts: :mode (:fleet, or :single for exactly one member),
-   :probe-ms, :clock (ms), :view-ttl-ms and :max-views (bounds of :last).
+   :probe-ms, :clock (ms), :view-ttl-ms and :max-views (bounds of :last;
+   :max-views is the total over all targets, default 1024 per target).
 
    :last is {view-key {:probe Probe :up Probe :touched ms}}, a view-key being
    [target-id actor scopes runtime]: :probe the latest look, :up the latest
@@ -48,7 +50,7 @@
      :view-ttl-ms (or view-ttl-ms default-view-ttl-ms)
      :max-views   (or max-views (* default-max-views (max 1 (count ids))))
      :inflight    (atom {})
-     :last        (atom {})})) ; {[target-id actor] Probe}
+     :last        (atom {})}))
 
 (defn from-context
   "The single-mode fleet of client context `ctx` (the bridge as it always
