@@ -158,6 +158,35 @@
   (is (= "<redacted>" (get-in (call "t_login" {:mode "throw"}) [:error :data]))
       "the empty path replaces the whole data"))
 
+(deftest a-refusal-path-through-a-string-or-a-set-masks-nothing-and-never-hangs
+  (a/reg-tool :t/cookie {:description "Cookie" :read-only? true
+                         :input [:map [:mode :string]]
+                         :handler (fn [{:keys [mode]} _]
+                                    (let [e (ex-info "denied" {:set-cookie "sid=s3cret" :tags #{"a"}})]
+                                      (if (= mode "later") (future (throw e)) (throw e))))})
+  (a/journal-calls! {:errors? true})
+  (a/decorate! (decorator/each-tool (decorator/redact-refusal [[:set-cookie 0] [:tags 0]])))
+  (is (= {:set-cookie "sid=s3cret" :tags #{"a"}}
+         (get-in (call "t_cookie" {:mode "now"}) [:error :data]))
+      "a step into a string or a set is an absent path, as the journal treats it")
+  (let [{:keys [pending]} (call "t_cookie" {:mode "later"})
+        settled (poll-until-settled pending)]
+    (is (= :tool-threw (get-in settled [:error :type])) "the async call settles, never stays Pending")
+    (is (some #(and (= :autonomous/settled (:kind %)) (= pending (:pending %)))
+              (:entries (:ok (a/rpc {:op :journal :since 0}))))
+        "and its settled entry is written")))
+
+(deftest a-refusal-projection-that-throws-drops-the-data-and-still-settles
+  (let [boom (fn [_ a] (if (answer/refused? a) (throw (ex-info "projection broke" {})) a))]
+    (is (= {:error {:type :t/x :message "m"}}
+           (invoke/settle (invoke/return-answer (answer/refusal :t/x "m" {:token "s3cret"}))
+                          answer/ok (partial boom nil)))
+        "direct: the refusal survives without the data its projection could not make safe")
+    (let [{:keys [pending]} (invoke/settle (future (throw (ex-info "late" {:token "s3cret"})))
+                                           answer/ok (partial boom nil))]
+      (is (= {:error {:type :tool-threw :message "late"}} (poll-until-settled pending))
+          "async: the same, and the call settles"))))
+
 (deftest require-scope-through-a-decorated-runtime
   (a/decorate! (decorator/each-tool (decorator/require-scope :audit)))
   (is (= :forbidden (get-in (call "t_echo" {:text "x"}) [:error :type])))

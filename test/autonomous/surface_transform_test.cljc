@@ -103,6 +103,12 @@
            (decorator/project-refusal (tool :d/acct {}) (answer/refusal :x "m" {:token "abc"})))
         "a tool without refusal redactions passes its data")))
 
+(deftest a-path-through-a-scalar-or-a-set-is-absent
+  (let [t ((decorator/redact-refusal [[:set-cookie 0] [:tags "a"] [:n :x] [:v 9]]) (tool :d/acct {}))
+        data {:set-cookie "sid=s3cret" :tags #{"a"} :n 1 :v [1]}]
+    (is (= data (get-in (decorator/project-refusal t (answer/refusal :x "m" data)) [:error :data]))
+        "never a throw, never a key added")))
+
 (def ^:private decorator-gen
   (gen/elements [(decorator/prefix-names "p_")
                  audited
