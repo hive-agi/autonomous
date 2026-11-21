@@ -81,15 +81,39 @@
   ([id message data]
    (answer/refusal :invalid-tool (str "tool " (or id "(no id)") " " message) data)))
 
+(defn- code-in
+  "L1 Promote: the first piece of `form` that is code rather than a schema:
+   a :fn schema ([:fn ...] or a bare :fn where a schema stands), or a list
+   (EDN's form for a call, which malli may evaluate); nil when there is
+   none. :fn as a value, e.g. inside [:enum ...], is data, not code."
+  [form]
+  (cond
+    (= :fn form)                                 :fn
+    (seq? form)                                  form
+    (and (vector? form) (= :fn (first form)))    form
+    (and (vector? form) (#{:enum :=} (first form))) nil
+    (map? form)                                  (some code-in (vals form))
+    (coll? form)                                 (some code-in form)
+    :else                                        nil))
+
 (defn- edn-schema
   "L1 Promote: Ok malli form read from EDN text `s`, or a refusal; blank
-   text is refused rather than read as no schema."
-  [id field s]
+   text is refused rather than read as no schema, and so is a form that
+   carries code unless opts :allow-fn? is true (the host's choice: a JSON
+   file cannot grant it to itself)."
+  [id field s opts]
   (if (str/blank? s)
     (invalid id (str field " is blank: write \"[:map]\" or leave " field " out"))
-    (let [form (try (wire/read-edn s) (catch #?(:clj Exception :cljs :default) e e))]
-      (if #?(:clj (instance? Exception form) :cljs (instance? js/Error form))
+    (let [form (try (wire/read-edn s) (catch #?(:clj Exception :cljs :default) e e))
+          code (when-not (or (:allow-fn? opts) #?(:clj (instance? Exception form) :cljs (instance? js/Error form)))
+                 (code-in form))]
+      (cond
+        #?(:clj (instance? Exception form) :cljs (instance? js/Error form))
         (invalid id (str field " is not readable EDN") {:cause (ex-message form)})
+        code
+        (invalid id (str field " carries code (" (pr-str code) "); a JSON spec may not compile functions")
+                 {:code (pr-str code)})
+        :else
         (answer/ok form)))))
 
 (defn- problem-text
@@ -119,7 +143,7 @@
   [bundle id field x opts]
   (cond
     (nil? x)    (answer/ok nil)
-    (string? x) (edn-schema id field x)
+    (string? x) (edn-schema id field x opts)
     :else       (json-schema bundle id field x opts)))
 
 (defn- checked
@@ -161,18 +185,21 @@
   "L2 Pipeline: Ok [id spec] of JSON tool `spec`, a ToolSpec without a
    :handler (the caller supplies how the tool runs), already checked to
    compile as a tool. `id` overrides the spec's own \"id\"; `bundle` is the
-   document $refs resolve against (default: the spec itself)."
+   document $refs resolve against (default: the spec itself). Host `opts`:
+   :allow-fn? true admits malli EDN that carries code ([:fn ...]); off by
+   default, since a JSON spec may come from an agent."
   ([spec] (->tool-spec nil spec))
   ([id spec] (->tool-spec id spec (doc/bundle spec)))
-  ([id spec bundle]
+  ([id spec bundle] (->tool-spec id spec bundle {}))
+  ([id spec bundle opts]
    (let [id (or id (when (map? spec) (get spec "id")))]
      (cond
        (not (map? spec)) (invalid id "JSON spec must be an object")
        (nil? id)         (invalid id "JSON spec needs an \"id\"")
        :else
        (answer/let-answer [spec   (checked id spec)
-                           input  (->malli-form bundle id "input" (get spec "input") {:input? true})
-                           output (->malli-form bundle id "output" (get spec "output") {})]
+                           input  (->malli-form bundle id "input" (get spec "input") (assoc opts :input? true))
+                           output (->malli-form bundle id "output" (get spec "output") (dissoc opts :input?))]
          (compiled (keyword id) (assemble spec input output)))))))
 
 (defn- tools-of
@@ -192,15 +219,17 @@
 
 (defn document->specs
   "L2 Pipeline: Ok [[id spec] ...] of JSON document `d`, in document order,
-   or the first refusal. Two tools with one id are refused."
-  [d]
-  (if-let [tools (tools-of d)]
-    (let [bundle (doc/bundle d)]
-      (answer/bind
-       (answer/reduce-answer (fn [acc t] (answer/bind (->tool-spec nil t bundle) #(answer/ok (conj acc %))))
-                             [] tools)
-       (fn [specs]
-         (if-let [dup (first-duplicate specs)]
-           (invalid (subs (str dup) 1) "is declared twice")
-           (answer/ok specs)))))
-    (answer/refusal :invalid-tool "a JSON spec document is a tool object, an array of them, or {\"tools\": [...]}")))
+   or the first refusal. Two tools with one id are refused. Host `opts` as
+   for ->tool-spec."
+  ([d] (document->specs d {}))
+  ([d opts]
+   (if-let [tools (tools-of d)]
+     (let [bundle (doc/bundle d)]
+       (answer/bind
+        (answer/reduce-answer (fn [acc t] (answer/bind (->tool-spec nil t bundle opts) #(answer/ok (conj acc %))))
+                              [] tools)
+        (fn [specs]
+          (if-let [dup (first-duplicate specs)]
+            (invalid (subs (str dup) 1) "is declared twice")
+            (answer/ok specs)))))
+     (answer/refusal :invalid-tool "a JSON spec document is a tool object, an array of them, or {\"tools\": [...]}"))))

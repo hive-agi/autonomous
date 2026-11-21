@@ -15,20 +15,23 @@
 
 (defn parse
   "L3 Boundary: Ok [[id spec] ...] of JSON document text `text`, or a
-   refusal naming why it is unreadable or invalid."
-  [text]
-  (let [d (try (json/read-data text) (catch Exception e e))]
-    (if (instance? Exception d)
-      (answer/refusal :invalid-tool (str "JSON spec is not readable JSON: " (ex-message d)))
-      (js/document->specs d))))
+   refusal naming why it is unreadable or invalid. `opts` as for
+   autonomous.json-spec/->tool-spec (:allow-fn?)."
+  ([text] (parse text {}))
+  ([text opts]
+   (let [d (try (json/read-data text) (catch Exception e e))]
+     (if (instance? Exception d)
+       (answer/refusal :invalid-tool (str "JSON spec is not readable JSON: " (ex-message d)))
+       (js/document->specs d opts)))))
 
 (defn read-file
   "L3 Boundary: Ok [[id spec] ...] of the JSON spec document at `path`."
-  [path]
-  (let [f (io/file path)]
-    (if (.isFile f)
-      (parse (slurp f))
-      (answer/refusal :invalid-tool (str "no JSON spec file " path)))))
+  ([path] (read-file path {}))
+  ([path opts]
+   (let [f (io/file path)]
+     (if (.isFile f)
+       (parse (slurp f) opts)
+       (answer/refusal :invalid-tool (str "no JSON spec file " path))))))
 
 (defn- missing-handlers
   "L1 Promote: the ids of `specs` that `handlers` has no fn for."
@@ -58,9 +61,11 @@
 
 (defn register-file!
   "L3 Boundary: read the JSON spec document at `path` and register its
-   tools with `handlers`; see register!."
-  [path handlers]
-  (answer/bind (read-file path) #(register! % handlers)))
+   tools with `handlers`; see register!. `opts` as for read-file: the host,
+   never the file, may pass {:allow-fn? true}."
+  ([path handlers] (register-file! path handlers {}))
+  ([path handlers opts]
+   (answer/bind (read-file path opts) #(register! % handlers))))
 
 (defn edn-text
   "L1 Promote: the EDN spec text of ToolSpec `spec`, as autonomous_reg_tool

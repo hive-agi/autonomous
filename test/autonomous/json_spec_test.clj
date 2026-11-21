@@ -151,6 +151,23 @@
                           \"input\":{\"type\":\"object\",\"properties\":{\"p\":{\"$ref\":\"#/$defs/N\"}}}}")
              :ok first second :input))))
 
+(deftest malli-edn-that-carries-code-needs-the-host's-opt-in
+  (let [spec {"id" "a" "description" "d"}]
+    (doseq [[why input] [["a :fn schema" "[:map [:x [:fn (fn [_] true)]]]"]
+                         ["a :fn deep in a map" "[:map [:x [:vector [:fn pos?]]]]"]
+                         ["a bare call" "[:map [:x (System/exit 0)]]"]
+                         ["a :fn inside properties" "[:map {:x [:fn odd?]} [:y :int]]"]]]
+      (testing why
+        (is (re-find #"^tool a input carries code"
+                     (str (get-in (js/->tool-spec (assoc spec "input" input)) [:error :message]))))))
+    (testing "the host may allow it; the file cannot"
+      (is (answer/ok? (js/->tool-spec nil (assoc spec "input" "[:map [:x [:fn pos?]]]")
+                                      (autonomous.openapi.doc/bundle {}) {:allow-fn? true})))
+      (is (= :invalid-tool (get-in (js/->tool-spec (assoc spec "allowFn" true "input" "[:map [:x [:fn pos?]]]"))
+                                   [:error :type]))))
+    (testing "keywords that merely look like code stay schemas"
+      (is (answer/ok? (js/->tool-spec (assoc spec "input" "[:map [:f :keyword] [:g [:enum :fn :x]]]")))))))
+
 (defn- temp-json
   "A temp file holding JSON text `s`."
   [s]
