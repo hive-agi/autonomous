@@ -30,50 +30,101 @@
             [reagent.ratom :as ratom]
             [autonomous.domain.answer :as answer]
             [autonomous.spi :as spi]
-            [autonomous.surface :as surface])
+            [autonomous.surface :as surface]
+            [goog.object :as gobj])
   (:require-macros [autonomous.domain.answer :as answer]))
 
 (defn- registered? [kind id]
   (some? (registrar/get-handler kind id)))
+
+(defn- refuse-unregistered [kind id]
+  (throw (ex-info (str "no re-frame " (name kind) " handler registered for " id)
+                  {:autonomous/error :unregistered-handler :kind kind :id id})))
+
+(def ^:private current-frame-path (model/js-path 're-frame.frame/*current-frame*))
+(def ^:private app-db-value-path (model/js-path 're-frame.core/app-db-value))
+
+(defn- refuse-without-frames [frame]
+  (throw (ex-info (str "the :frame option " (pr-str frame) " needs re-frame2 (re-frame.core/with-frame, app-db-value); it is not loaded")
+                  {:autonomous/error :re-frame/no-frames :frame frame})))
+
+(defn- with-frame
+  "Run `f` pinned to re-frame2 frame `frame`, as re-frame.core/with-frame
+   does (it binds re-frame.frame/*current-frame*). re-frame2 is resolved
+   at run time, so a re-frame 1 app compiles unchanged; a nil `frame` just
+   calls `f`."
+  [frame f]
+  (if (nil? frame)
+    (f)
+    (let [holder (gobj/getValueByKeys js/goog.global (into-array (pop current-frame-path)))
+          k      (peek current-frame-path)]
+      (when-not (and holder (js-in k holder)) (refuse-without-frames frame))
+      (let [prev (gobj/get holder k)]
+        (gobj/set holder k frame)
+        (try (f)
+             (finally (gobj/set holder k prev)))))))
+
+(defn- app-db-value
+  "The app-db value of re-frame2 frame `frame` (re-frame.core/app-db-value),
+   or of re-frame's one app-db when `frame` is nil."
+  [frame]
+  (if (nil? frame)
+    @rf-db/app-db
+    (let [f (gobj/getValueByKeys js/goog.global (into-array app-db-value-path))]
+      (when-not (fn? f) (refuse-without-frames frame))
+      (f frame))))
+
+(defn- checked-frame
+  "`frame`, after refusing one that is not a frame-id keyword."
+  [frame]
+  (when-let [problem (model/frame-problem frame)]
+    (throw (ex-info problem {:autonomous/error :invalid-tool :frame frame})))
+  frame)
 
 (defn- read-sub
   "Value of re-frame `query`, read with a component's lifecycle: pending
    reactions are flushed (no stale cache), the subscription is derefed
    inside an auto-run reaction (a reactive context, so re-frame does not
    warn), and that reaction is disposed at once, so the subscription leaves
-   re-frame's cache unless a mounted component still holds it."
-  [query]
-  (ratom/flush!)
-  (let [r (ratom/make-reaction #(deref (rf/subscribe query)) :auto-run true)]
-    (try @r
-         (finally (ratom/dispose! r)))))
-
-(defn- refuse-unregistered [kind id]
-  (throw (ex-info (str "no re-frame " (name kind) " handler registered for " id)
-                  {:autonomous/error :unregistered-handler :kind kind :id id})))
+   re-frame's cache unless a mounted component still holds it. With a
+   re-frame2 `frame` the subscribe and its deref are pinned to it."
+  ([query] (read-sub query nil))
+  ([query frame]
+   (ratom/flush!)
+   (with-frame frame
+     (fn []
+       (let [r (ratom/make-reaction #(deref (rf/subscribe query)) :auto-run true)]
+         (try @r
+              (finally (ratom/dispose! r))))))))
 
 (defn- result-of
-  "What an event tool answers after its dispatch."
+  "What an event tool answers after its dispatch, read from the tool's
+   :frame when it names one."
   [tool args event]
-  (cond
-    (:result tool)      ((:result tool) @rf-db/app-db args)
-    (:result-sub tool)  (let [q (:result-sub tool)] (read-sub (if (fn? q) (q args) q)))
-    (:result-path tool) (get-in @rf-db/app-db (:result-path tool))
-    :else               {:dispatched (wire/->wire event)}))
+  (let [frame (:frame tool)]
+    (cond
+      (:result tool)      ((:result tool) (app-db-value frame) args)
+      (:result-sub tool)  (let [q (:result-sub tool)] (read-sub (if (fn? q) (q args) q) frame))
+      (:result-path tool) (get-in (app-db-value frame) (:result-path tool))
+      :else               {:dispatched (wire/->wire event)})))
 
 (defn- event-call
-  "L3 Pipeline: dispatch an encoded event and produce its declared result."
+  "L3 Pipeline: dispatch an encoded event, pinned to the tool's :frame when
+   it names one, and produce its declared result."
   [tool args event grant]
   (when-not (registered? :event (first event)) (refuse-unregistered :event (first event)))
-  (if (:async? tool)
-    (do (rf/dispatch (model/tag-event event grant)) {:queued (wire/->wire event)})
-    (do (rf/dispatch-sync (model/tag-event event grant)) (result-of tool args event))))
+  (let [tagged (model/tag-event event grant)]
+    (if (:async? tool)
+      (do (with-frame (:frame tool) #(rf/dispatch tagged)) {:queued (wire/->wire event)})
+      (do (with-frame (:frame tool) #(rf/dispatch-sync tagged)) (result-of tool args event)))))
 
 (defn- subscription-call
-  "L3 Pipeline: read an encoded query through a component lifecycle."
-  [query]
-  (when-not (registered? :sub (first query)) (refuse-unregistered :sub (first query)))
-  (read-sub query))
+  "L3 Pipeline: read an encoded query through a component lifecycle, in
+   re-frame2 frame `frame` when one is given."
+  ([query] (subscription-call query nil))
+  ([query frame]
+   (when-not (registered? :sub (first query)) (refuse-unregistered :sub (first query)))
+   (read-sub query frame)))
 
 (def event-codec
   "L3 Codec for a re-frame event tool: encode {:event :args}; dispatch
@@ -100,8 +151,8 @@
 
 (defn- invoke-subscription
   "L3 Boundary: read an encoded query through re-frame."
-  [_tool query _grant]
-  (answer/ok (subscription-call query)))
+  [tool query _grant]
+  (answer/ok (subscription-call query (:frame tool))))
 
 (defn- exposed-specs
   "L3 Collect: only explicitly exposed event and subscription declarations."
@@ -147,8 +198,11 @@
      :result       (fn [db args] value) answered after the dispatch, or
      :result-sub   query vector (or (fn [args] query)) to deref after, or
      :result-path  app-db path to read after
+     :frame        re-frame2 frame id: the dispatch and the result read run
+                   in that frame (re-frame.core/with-frame, app-db-value)
    Answers the MCP tool name."
   [event-id spec]
+  (checked-frame (:frame spec))
   (core/reg-tool (or (:tool-id spec) event-id)
                  (merge (dissoc spec :tool-id)
                         {:kind :re-frame/event
@@ -156,9 +210,11 @@
 
 (defn reg-sub-tool
   "Expose re-frame subscription `query-id` as a read-only tool.
-   spec: as reg-tool minus :handler, plus :tool-id and
-   :args->query (fn [args] query-vector), default [id] / [id args]."
+   spec: as reg-tool minus :handler, plus :tool-id,
+   :args->query (fn [args] query-vector), default [id] / [id args], and
+   :frame, a re-frame2 frame id the subscription is read in."
   [query-id spec]
+  (checked-frame (:frame spec))
   (core/reg-tool (or (:tool-id spec) query-id)
                  (merge {:read-only? true}
                         (dissoc spec :tool-id)
@@ -168,13 +224,15 @@
 (defn expose-db!
   "Register app-db as a resource. opts: :uri (default re-frame://app-db),
    :paths (only these), :redact (paths shown as <redacted>), :scopes,
-   :description."
+   :description, :frame (a re-frame2 frame id: its app-db, read through
+   re-frame.core/app-db-value)."
   ([] (expose-db! {}))
-  ([{:keys [uri paths redact scopes description]}]
+  ([{:keys [uri paths redact scopes description frame]}]
+   (checked-frame frame)
    (core/reg-resource (or uri "re-frame://app-db")
                       (cond-> {:name "app-db"
                                :description (or description "The re-frame application state")
-                               :read (fn [_] (model/db-view @rf-db/app-db paths redact))}
+                               :read (fn [_] (model/db-view (app-db-value frame) paths redact))}
                         scopes (assoc :scopes scopes)))))
 
 (defonce ^:private !observing? (atom false))
