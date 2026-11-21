@@ -608,6 +608,18 @@
       (is (seq @seen))
       (is (not-any? #(get-in % [:headers "authorization"]) @seen)))))
 
+(deftest a-refused-actor-leaves-no-channel-state
+  (let [[c seen] (spied (assoc target :credentials (credential-policy)))]
+    (doseq [i (range 50)]
+      (doseq [req [{:op :manifest} {:op :call :tool "todo_list"} {:op :read :uri "app://db"}]]
+        (is (= :channel/credential-missing (get-in (as c (str "stranger-" i) #{:read} req) [:error :type])))))
+    (is (empty? @(:slots (:ch c))) "no cache slot per refused actor")
+    (is (empty? @(:locks (:ch c))) "no lock per refused actor")
+    (is (empty? @(:sessions (:ch c))))
+    (is (empty? @seen) "nothing was sent")
+    (manifest-as c "agent-a" #{:read})
+    (is (= #{"agent-a"} (set (keys @(:slots (:ch c))))) "a configured actor still gets its slot")))
+
 (deftest an-empty-credential-policy-never-goes-anonymous
   (let [[c seen] (spied (assoc target :credentials {}))
         a        (manifest-as c "agent-a" #{:read})]

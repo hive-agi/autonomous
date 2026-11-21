@@ -309,21 +309,27 @@
   [req]
   {:actor (:actor req) :scopes (:scopes req)})
 
+(defn- dispatch
+  "Answer of request `req` as grant `g` on the channel's remote: manifest,
+   call, read, or one of the remote's built-in tools."
+  [{:keys [target client credentials ch]} g req]
+  (let [op (:op req) remote (get rpc/remote-tools op)]
+    (cond
+      (= :manifest op) (manifest! ch client credentials target g)
+      (= :call op)     (call! ch client credentials target g (:tool req) (:args req))
+      (= :read op)     (read! ch client credentials target g (:uri req))
+      remote           (call! ch client credentials target g remote (rpc/remote-args op req))
+      :else            (answer/refusal :unknown-op
+                                       (str "a remote MCP app serves manifest, call, read and the "
+                                            "built-in tools; " op " is not one of them")
+                                       {:known (vec (keys rpc/remote-tools))}))))
+
 (defrecord HttpChannel [target client credentials ch]
   port/IRuntimeChannel
   (-send [this req _runtime-id]
-    (let [g      (grant-of req)
-          op     (:op req)
-          remote (get rpc/remote-tools op)]
-      (cond
-        (= :manifest op) (manifest! ch client credentials target g)
-        (= :call op)     (call! ch client credentials target g (:tool req) (:args req))
-        (= :read op)     (read! ch client credentials target g (:uri req))
-        remote           (call! ch client credentials target g remote (rpc/remote-args op req))
-        :else            (answer/refusal :unknown-op
-                                         (str "a remote MCP app serves manifest, call, read and the "
-                                              "built-in tools; " op " is not one of them")
-                                         {:known (vec (keys rpc/remote-tools))}))))
+    (let [g (grant-of req)]
+      (answer/bind (http/identity target credentials g)
+                   (fn [_ident] (dispatch this g req)))))
 
   port/IRuntimeDirectory
   (-runtimes [_]
