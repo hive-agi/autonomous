@@ -129,19 +129,39 @@
   "The type of a regex literal on this runtime."
   (type #""))
 
+(defn- regex-data
+  "L1: regex `re` as [source flags], the same on every runtime, so two
+   patterns that differ only in their flags never compare equal."
+  [re]
+  #?(:cljs    [(.-source re) (.-flags re)]
+     :cljw    [(str re) nil]
+     :default [(.pattern ^java.util.regex.Pattern re) (.flags ^java.util.regex.Pattern re)]))
+
+(defn- carries-options?
+  "L1: true when any schema in compiled `schema`'s tree was built with
+   options (a :registry or any other). Its form names a type its options
+   define, so two such schemas can share a form and still validate
+   differently."
+  [schema]
+  (let [found (volatile! false)]
+    (m/walk schema (fn [s _ _ _] (when (seq (m/options s)) (vreset! found true)) nil))
+    @found))
+
 (defn- schema-data
   "L1: `x` with every compiled malli schema replaced by its form and every
-   regex by its source text, recursively, so two compilations of one
-   schema compare equal. Anything else is kept."
+   regex by [source flags], recursively, so two compilations of one schema
+   compare equal. A compiled schema that carries options keeps its own
+   identity: its form does not say what its registry means. Anything else
+   is kept."
   [x]
   (cond
-    (m/schema? x)              (schema-data (m/form x))
-    (identical? regex-type (type x)) (str x)
-    (map? x)                   (into {} (map (fn [[k v]] [(schema-data k) (schema-data v)])) x)
-    (vector? x)                (mapv schema-data x)
-    (set? x)                   (into #{} (map schema-data) x)
-    (seq? x)                   (apply list (map schema-data x))
-    :else                      x))
+    (m/schema? x)                    (if (carries-options? x) x (schema-data (m/form x)))
+    (identical? regex-type (type x)) (regex-data x)
+    (map? x)                         (into {} (map (fn [[k v]] [(schema-data k) (schema-data v)])) x)
+    (vector? x)                      (mapv schema-data x)
+    (set? x)                         (into #{} (map schema-data) x)
+    (seq? x)                         (apply list (map schema-data x))
+    :else                            x))
 
 (defn- tool-data
   "L1: a tool's identity for merging: every field but the fn-valued ones
@@ -194,12 +214,16 @@
 
    Two tools under one name are one affordance when they agree on every
    field that is not a fn; malli schemas (:input, :output) are compared
-   by form, regexes by source. The fn-valued fields are first-writer-wins:
-   the merged tool keeps the leftmost surface's handler. A schema whose
-   form holds a fn, such as an inline [:fn #(...)], is equal only to
-   itself, because two evaluations of that fn are different values;
-   name the predicate (a var) to make two compilations agree. A
-   :name-clash refusal names the differing keys under :differs."
+   by form, regexes by source and flags. A compiled schema built with
+   options (its own :registry, say) is compared by identity, because its
+   form names types the options define: two such schemas of one form may
+   validate differently, so they clash unless they are the same value.
+   The fn-valued fields are first-writer-wins: the merged tool keeps the
+   leftmost surface's handler. A schema whose form holds a fn, such as an
+   inline [:fn #(...)], is equal only to itself, because two evaluations
+   of that fn are different values; name the predicate (a var) to make
+   two compilations agree. A :name-clash refusal names the differing keys
+   under :differs."
   [& surfaces]
   (answer/reduce-answer merge-two empty-surface surfaces))
 

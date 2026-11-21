@@ -104,6 +104,39 @@
                              [:error :type]))
       "different forms still clash"))
 
+(defn- amount-schema
+  "[:map [:amount :my/amount]] where :my/amount, from the options
+   :registry, is a leaf type validated by `pred`."
+  [pred]
+  (m/schema [:map [:amount :my/amount]]
+            {:registry (merge (m/default-schemas)
+                              {:my/amount (m/-simple-schema {:type :my/amount :pred pred})})}))
+
+(deftest schemas-built-with-a-registry-of-their-own-are-compared-by-identity
+  (let [strict  (amount-schema #(and (int? %) (< % 100)))
+        lenient (amount-schema int?)
+        input-tool #(:ok (affordance/->tool :a/x {:description "x" :handler (fn [_ _] 1) :input %}))]
+    (is (not= (m/validate strict {:amount 5000}) (m/validate lenient {:amount 5000}))
+        "the two schemas share a form but validate differently")
+    (is (= :name-clash (get-in (surface/merge-surfaces (s-of {"a_x" (input-tool strict)})
+                                                       (s-of {"a_x" (input-tool lenient)}))
+                               [:error :type]))
+        "never a silent merge that drops the strict limit")
+    (is (answer/ok? (surface/merge-surfaces (s-of {"a_x" (input-tool strict)})
+                                            (s-of {"a_x" (input-tool strict)})))
+        "the one schema value seen twice is one tool")))
+
+(deftest regexes-that-differ-only-in-flags-clash
+  (let [ci (java.util.regex.Pattern/compile "^a+$" java.util.regex.Pattern/CASE_INSENSITIVE)
+        cs (java.util.regex.Pattern/compile "^a+$")]
+    (is (= :name-clash (get-in (surface/merge-surfaces (s-of {"a_x" (schema-tool [:re ci])})
+                                                       (s-of {"a_x" (schema-tool [:re cs])}))
+                               [:error :type])))
+    (is (answer/ok? (surface/merge-surfaces
+                     (s-of {"a_x" (schema-tool [:re (java.util.regex.Pattern/compile "^a+$" java.util.regex.Pattern/CASE_INSENSITIVE)])})
+                     (s-of {"a_x" (schema-tool [:re ci])})))
+        "same source and same flags are one tool")))
+
 (deftest a-clash-names-the-keys-that-differ
   (let [t (tool :a/x)
         m (surface/merge-surfaces (s-of {"a_x" t})
