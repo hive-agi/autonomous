@@ -38,7 +38,9 @@ A tool is something an agent may do. Register one with `reg-tool`:
 
 The MCP name derives from the id: `:todo/add` becomes `todo_add`. Every
 character outside `[A-Za-z0-9_-]` becomes `_`, and the name is cut at 64
-characters. Registering a second tool under a name another tool uses throws.
+characters; hyphens stay (`:todos/clear-done` is `todos_clear-done`).
+Registering a second tool under a name another tool uses throws. The whole
+rule, with fleet names, is in [naming](naming.md).
 `reg-tool` answers the name; `unreg-tool` takes the id or the name.
 
 An invalid spec throws at registration, so an author error fails while the app
