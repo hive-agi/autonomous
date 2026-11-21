@@ -24,9 +24,9 @@
 #define AUTONOMOUS_VERSION_MAJOR 0
 #define AUTONOMOUS_VERSION_MINOR 3
 
-/* The most characters of an actor the library hands a host. The shown actor
- * is printable ASCII only, so this is also its most bytes (excluding the
- * terminating NUL). */
+/* The most characters of an actor the library hands a host, longer actors
+ * being refused. The decoded actor is printable ASCII only, so this is also
+ * its most bytes (excluding the NUL). It does NOT bound grant_json: parse it. */
 #define AUTONOMOUS_MAX_SHOWN_ACTOR 64
 
 #ifdef __cplusplus
@@ -92,20 +92,20 @@ typedef const char *(*autonomous_ws_reply_fn)(const char *frame);
  * every other UTF-16 code unit are escaped as the six characters \uxxxx in
  * lowercase hex (so a bidi, zero-width or control character is visible, and
  * an astral character arrives as its surrogate pair, e.g. \ud83d\ude00).
- * Distinct actors stay distinct. The
- * result is cut at AUTONOMOUS_MAX_SHOWN_ACTOR characters, never inside an
- * escape. Scopes are sorted names. Answer the result as JSON, or
+ * The actor arrives WHOLE: one whose shown form would be longer than
+ * AUTONOMOUS_MAX_SHOWN_ACTOR characters is refused (:host/actor-too-long)
+ * before the app runs, never cut, so two distinct actors never arrive as the
+ * same string. Scopes are sorted names. Answer the result as JSON, or
  * {"error": {"message": "..."}}. The library copies the result before the
  * next dispatch.
  *
  * tool_id, args_json and grant_json are valid only for the duration of the
- * call: copy what you keep. The decoded actor is at most
- * AUTONOMOUS_MAX_SHOWN_ACTOR characters of printable ASCII, so at most 64
- * bytes (plus the NUL). The 64 counts characters of the shown form, so a
- * \uxxxx escape counts 6 and is never split. The shown actor holds no quote
- * and no backslash except the one that starts an escape, so inside
- * grant_json its JSON string takes at most 64 + 10 bytes (an escape's
- * backslash is escaped once more); parse grant_json, never slice it.
+ * call: copy what you keep. PARSE grant_json with a JSON parser; never slice
+ * it, and never size a buffer from its length: a JSON writer may escape any
+ * character (`/` as `\/`, an escape's backslash as `\\`), so the encoded
+ * actor may take up to 6 bytes of grant_json per shown character. The
+ * DECODED actor is at most AUTONOMOUS_MAX_SHOWN_ACTOR characters of
+ * printable ASCII, so at most 64 bytes plus the NUL.
  *
  * Preferred since 0.3. The library looks the symbol up ONCE per process,
  * process-wide (dlsym over every loaded object, as RTLD_DEFAULT does), so a
@@ -114,14 +114,14 @@ typedef const char *(*autonomous_ws_reply_fn)(const char *frame);
  * calls it and never autonomous_host_dispatch. The Rust binding crate
  * (cabi/bindings/rust) exports BOTH, so do not link it into a process that
  * defines its own dispatcher. When the library calls _v2 it never calls it
- * without an actor:
- * a call whose actor is empty, whitespace-only or invisible-only is refused
- * (:host/grant-missing) before the app runs. */
+ * without an actor: a call whose actor is empty, whitespace-only or
+ * invisible-only is refused (:host/grant-missing) before the app runs. */
 const char *autonomous_host_dispatch_v2(const char *tool_id, const char *args_json,
                                         const char *grant_json);
 
-/* The grant-blind dispatcher of 0.2, still called when the executable does
- * not export autonomous_host_dispatch_v2. */
+/* The grant-blind dispatcher of 0.2. The library calls it only when no
+ * object loaded in the process exports autonomous_host_dispatch_v2 (the
+ * same once-per-process, process-wide lookup). */
 const char *autonomous_host_dispatch(const char *tool_id, const char *args_json);
 
 #ifdef __cplusplus

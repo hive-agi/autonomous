@@ -124,11 +124,23 @@ int main(int argc, char **argv) {
   expect("scopes", rpc(req), "\"read\" \"write\"");
   expect("by", rpc("{:op :call :tool \"calc_add\" :args {:a 1 :b 1} :scopes #{:write} :actor \"agent-2\"}"),
          ":by \"agent-2\"");
-  /* The actor arrives as printable ASCII: " \\ and everything else escaped \uxxxx
-   * (EDN shows the backslash doubled), then cut at 64, never mid-escape. */
-  snprintf(req, sizeof req, call_as,
-           "ag\\u001b[31ment-0123456789012345678901234567890123456789012345678901234567890123456789");
+  /* The actor arrives as printable ASCII: " \\ and everything else escaped
+   * \uxxxx (EDN shows the backslash doubled), whole: an actor whose shown
+   * form is longer than 64 is refused, never cut. */
+  snprintf(req, sizeof req, call_as, "ag\\u001b[31ment-012345678901234567890123456789012345678901234567");
   expect("shown", rpc(req), ":actor \"ag\\\\u001b[31ment-012345678901234567890123456789012345678901234567\"");
+  snprintf(req, sizeof req, call_as, "ag\\u001b[31ment-0123456789012345678901234567890123456789012345678");
+  expect("too-long", rpc(req), ":host/actor-too-long");
+  snprintf(req, sizeof req, call_as, "\\u202E\\u202E\\u202E\\u202E\\u202E\\u202E\\u202E\\u202E\\u202E\\u202Eabcd-1");
+  expect("too-long", rpc(req), ":host/actor-too-long");
+  /* JSON may escape / as \/ inside grant_json: a host must parse it, never
+   * slice it. 64 slashes arrive whole. */
+  snprintf(req, sizeof req, call_as,
+           "////////////////////////////////////////////////////////////////");
+  expect("slashes", rpc(req), ":actor \"////////////////////////////////////////////////////////////////\"");
+  snprintf(req, sizeof req, "{:op :call :tool \"calc_add\" :args {:a 1 :b 1} :scopes #{:write} :actor \"%s\"}",
+           "////////////////////////////////////////////////////////////////");
+  expect("slashes", rpc(req), ":by \"////////////////////////////////////////////////////////////////\"");
   snprintf(req, sizeof req, call_as, "agent:\\u202Enamuh");
   expect("bidi", rpc(req), ":actor \"agent:\\\\u202enamuh\"");
   snprintf(req, sizeof req, call_as, "agent\\u200B-1");
@@ -138,10 +150,10 @@ int main(int argc, char **argv) {
   snprintf(req, sizeof req, call_as, "a\\u0085b\\u009B");
   expect("c1", rpc(req), ":actor \"a\\\\u0085b\\\\u009b\"");
   /* A quote in the actor cannot add scopes: the grant is JSON-encoded. */
-  expect("inject", rpc("{:op :call :tool \"calc_whoami\" :actor \"a\\\",\\\"scopes\\\":[\\\"admin\\\"],\\\"x\\\":\\\"\"}"),
+  expect("inject", rpc("{:op :call :tool \"calc_whoami\" :actor \"a\\\",\\\"scopes\\\":[\\\"admin\\\"]\"}"),
          ":scopes [\"read\"]}}}");
-  expect("inject", rpc("{:op :call :tool \"calc_whoami\" :actor \"a\\\",\\\"scopes\\\":[\\\"admin\\\"],\\\"x\\\":\\\"\"}"),
-         ":actor \"a\\\\u0022,\\\\u0022scopes\\\\u0022:[\\\\u0022admin\\\\u0022],\\\\u0022x\\\\u0022:\""); /* cut at 64 */
+  expect("inject", rpc("{:op :call :tool \"calc_whoami\" :actor \"a\\\",\\\"scopes\\\":[\\\"admin\\\"]\"}"),
+         ":actor \"a\\\\u0022,\\\\u0022scopes\\\\u0022:[\\\\u0022admin\\\\u0022]\", :scopes [\"read\"]");
   int before = dispatched;
   expect("empty", rpc("{:op :call :tool \"calc_whoami\" :actor \"\"}"), ":host/grant-missing");
   snprintf(req, sizeof req, call_as, "\\u0007\\u0000");

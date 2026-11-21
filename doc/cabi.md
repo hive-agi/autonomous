@@ -82,9 +82,14 @@ ASCII only: a double quote, a backslash and every other UTF-16 code unit is
 escaped as `\uxxxx` (lowercase hex), so a bidi override (`\u202e`), a
 zero-width space (`\u200b`) or a control character is visible, and an emoji
 arrives as its surrogate pair (`\ud83d\ude00`). The require-approval prompt
-shows actors through the same function. Two different actors never show the same, unless both
-are cut. The result is cut at `AUTONOMOUS_MAX_SHOWN_ACTOR` (64) characters,
-which are also 64 bytes, and never inside an escape. Scopes are sorted names. The
+shows actors through the same function. The actor reaches the
+host whole: one whose shown form is longer than `AUTONOMOUS_MAX_SHOWN_ACTOR`
+(64) characters is refused with `:host/actor-too-long` before your code runs,
+so two different actors never reach the host as the same string. A decoded
+actor is at most 64 printable-ASCII bytes. Parse `grant_json` with a JSON
+parser, and never slice it or size a buffer from it: a JSON writer may
+escape any character (jolt writes `/` as `\/`), so the encoded actor can
+take up to 6 bytes per character. Scopes are sorted names. The
 library looks `_v2` up once per process and process-wide (dlsym over every
 loaded object), so a process must hold exactly one definition of each
 dispatcher. If any loaded object exports `_v2`, the library calls only
