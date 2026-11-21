@@ -182,6 +182,19 @@
     (is (= {:ok {:paid 3 :receipt "<redacted>"}} (poll-until-settled id)))
     (is (= "ana" (get-in (settled-entry id) [:approval :approver])))))
 
+(deftest redact-refusal-composes-with-approval
+  (a/reg-tool :pay {:description "Move money" :input [:map [:amount :int]]
+                    :handler (fn [_ _] (swap! runs inc) (throw (ex-info "bank down" {:token "s3cret"})))})
+  (a/decorate! (a/each-tool (comp (decorator/redact-refusal [[:token]])
+                                  (decorator/require-approval
+                                   {:asker (approval/queue-asker [{:decision :approve :approver "ana"}])
+                                    :timeout-ms 1000}))))
+  (let [id (:pending (call {:amount 3}))
+        r  (poll-until-settled id)]
+    (is (= "<redacted>" (get-in r [:error :data :token])) "the secret is masked")
+    (is (= 1 @runs))
+    (is (= "ana" (get-in (settled-entry id) [:approval :approver])) "the approval survives the projection")))
+
 (deftest an-ungated-tool-cannot-forge-an-approval-entry
   (let [forged (vary-meta (answer/complete (answer/ok {:paid 1}))
                           assoc :autonomous/approval {:decision :approve :approver "me" :ms 0})]
