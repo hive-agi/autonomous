@@ -176,7 +176,9 @@
         "an SSE-looking body sent as JSON is not sniffed into SSE")
     (is (true? (rpc/sse-type? sse-type)))
     (is (false? (rpc/sse-type? json-type)))
-    (is (false? (rpc/sse-type? nil)))))
+    (is (false? (rpc/sse-type? nil)))
+    (doseq [odd [";" "" " ; charset=x" ";;"]]
+      (is (false? (rpc/sse-type? odd)) (pr-str odd)))))
 
 (defn- pumped
   "What pump! hands a recording sink from `text` with line cap `cap`."

@@ -151,7 +151,7 @@
   "Pure: true when Content-Type `content-type` names an SSE stream
    (text/event-stream, any parameters and case)."
   [content-type]
-  (= sse-accept (str/trim (str/lower-case (first (str/split (str content-type) #";"))))))
+  (= sse-accept (str/trim (str/lower-case (str (first (str/split (str content-type) #";")))))))
 
 (defn- messages-of
   "Every JSON-RPC message in reply body `body`, read as SSE when `sse?`,
