@@ -95,6 +95,17 @@ pub fn lastRefusal() []const u8 {
     return refusal_buf[0..refusal_len];
 }
 
+/// 0 not started, 1 starting, 2 started: the first caller runs init, any
+/// other caller waits for it.
+var start_state = std.atomic.Value(u8).init(0);
+var started: ?(Error!Runtime) = null;
+var init_calls: usize = 0;
+
+/// How many times this process has called jolt_library_init (at most 1).
+pub fn initCalls() usize {
+    return init_calls;
+}
+
 /// The process's one libautonomous runtime, bound to the thread that started it.
 pub const Runtime = struct {
     tid: c_int,
@@ -107,8 +118,21 @@ pub const Runtime = struct {
     ws_kind: S1,
     ws_reply: S1,
 
-    /// Start the runtime, once per process, on the calling thread.
+    /// Start the runtime on the calling thread. jolt_library_init runs once
+    /// per process: a later call answers the same Runtime (still bound to
+    /// the first caller's thread) or the same error.
     pub fn start() Error!Runtime {
+        if (start_state.cmpxchgStrong(0, 1, .acquire, .acquire) == null) {
+            started = init();
+            start_state.store(2, .release);
+        } else {
+            while (start_state.load(.acquire) != 2) std.atomic.spinLoopHint();
+        }
+        return started.?;
+    }
+
+    fn init() Error!Runtime {
+        init_calls += 1;
         if (jolt_library_init(0, null) != 0) return error.InitFailed;
         return .{
             .tid = gettid(),

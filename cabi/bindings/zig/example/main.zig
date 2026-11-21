@@ -75,6 +75,15 @@ pub fn main() !u8 {
     try rt.unregister("calc/tmp");
     check(rt, "unreg", "{:op :call :tool \"calc_tmp\" :args {} :scopes #{:write}}", ":error");
 
+    // A second start answers the same runtime; jolt is initialised once.
+    const again = try autonomous.Runtime.start();
+    if (again.tid == rt.tid and autonomous.initCalls() == 1) {
+        _ = printf("ok   once     jolt_library_init ran once\n");
+    } else {
+        _ = printf("FAIL once     jolt_library_init ran %d times\n", @as(c_int, @intCast(autonomous.initCalls())));
+        failures += 1;
+    }
+
     // Off the runtime's thread a call is refused, not run.
     var refused = false;
     const t = try std.Thread.spawn(.{}, offThread, .{ rt, &refused });
