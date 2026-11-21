@@ -13,8 +13,7 @@
 (defn thenable?
   "L0 host: is `x` a value still being computed?"
   [x]
-  ;; Not `object?`: that is true only for plain {} objects, never for a
-  ;; Promise. The property is read by name so advanced compilation keeps it.
+  ;; Why "then" by name: memory 20261120025625-307f0e9a.
   #?(:cljs    (and (some? x) (fn? (unchecked-get x "then")))
      :cljw    (or (future? x) (instance? promise-type x))
      :bb      (or (future? x) (instance? promise-type x))
