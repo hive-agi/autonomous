@@ -70,6 +70,11 @@ pub fn main() !u8 {
         _ = printf("%s refuse   %.*s\n", if (ok) "ok  " else "FAIL", @as(c_int, @intCast(r.len)), r.ptr);
     }
 
+    // Unregistered, the tool is gone.
+    _ = try rt.tool("calc/tmp", "{:description \"Temporary\" :input [:map]}");
+    try rt.unregister("calc/tmp");
+    check(rt, "unreg", "{:op :call :tool \"calc_tmp\" :args {} :scopes #{:write}}", ":error");
+
     // Off the runtime's thread a call is refused, not run.
     var refused = false;
     const t = try std.Thread.spawn(.{}, offThread, .{ rt, &refused });

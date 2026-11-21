@@ -140,11 +140,16 @@ pub const Runtime = struct {
     pub fn tool(self: Runtime, id: [*:0]const u8, spec_edn: [*:0]const u8) Error![]const u8 {
         try self.here();
         const out = text(self.reg_tool(id, spec_edn));
-        if (std.mem.indexOf(u8, out, "\"ok\"") == null) {
+        return registeredName(out) orelse {
             keepRefusal(out);
             return error.ToolRefused;
-        }
-        return out;
+        };
+    }
+
+    /// Unregister tool `id` (or its MCP name).
+    pub fn unregister(self: Runtime, id: [*:0]const u8) Error!void {
+        try self.here();
+        _ = self.unreg_tool(id);
     }
 
     /// Record an app event agents can read: {"kind":"calc/cleared",...}.
