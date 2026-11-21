@@ -61,6 +61,27 @@
       (invalid id (str field " is not readable EDN") {:cause (ex-message form)})
       (answer/ok form))))
 
+(defn- problem-text
+  "L1 Promote: one schema problem (autonomous.openapi.schema/problems) as
+   words for the author."
+  [{:keys [problem ref type path]}]
+  (let [at (if (seq path) (str " at " (pr-str path)) "")]
+    (case problem
+      :unresolved-ref (str "$ref " ref " does not resolve within the document" at)
+      :cycle          (str "$ref " ref " refers to itself" at)
+      :unknown-type   (str "type " (pr-str (if (= 1 (count type)) (first type) type)) " is not a JSON Schema type" at))))
+
+(defn- json-schema
+  "L1 Promote: Ok malli form of JSON Schema `x` resolved against `bundle`,
+   or a refusal naming the first place ->malli would read as :any (a $ref
+   that does not resolve, a cycle, an unknown type)."
+  [bundle id field x opts]
+  (let [resolved (doc/resolved bundle x)
+        problems (schema/problems resolved)]
+    (if (seq problems)
+      (invalid id (str field " " (problem-text (first problems))) {:problems problems})
+      (answer/ok (schema/->malli resolved opts)))))
+
 (defn- ->malli-form
   "L1 Promote: Ok malli form of schema `x` of `field`, JSON Schema resolved
    against `bundle`; nil `x` stays nil."
@@ -68,7 +89,7 @@
   (cond
     (nil? x)    (answer/ok nil)
     (string? x) (edn-schema id field x)
-    :else       (answer/ok (schema/->malli (doc/resolved bundle x) opts))))
+    :else       (json-schema bundle id field x opts)))
 
 (defn- checked
   "L1 Promote: Ok `spec` when it is a JsonToolSpec, else a refusal with the

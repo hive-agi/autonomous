@@ -76,6 +76,37 @@
            (all-of {"allOf" [{"properties" {"a" {}} "required" ["a"]} {"type" "object" "properties" {"b" {}}}]} {})))
     (is (= [:and [:string] [:int]] (all-of {"allOf" [{"type" "string"} {"type" "integer"}]} {})))))
 
+(deftest problems-find-every-place-read-as-any
+  (is (= [] (schema/problems {"type" "object" "properties" {"a" {"type" ["string" "null"]}}})))
+  (is (= [{:problem :unknown-type :type ["integr"] :path ["properties" "a"]}
+          {:problem :unresolved-ref :ref "#/x" :path ["items" "oneOf" 0]}
+          {:problem :cycle :ref "#/n" :path ["additionalProperties"]}]
+         (schema/problems {"properties" {"a" {"type" "integr"}}
+                           "items" {"oneOf" [{"x-autonomous-unresolved" "#/x"}]}
+                           "additionalProperties" {"x-autonomous-cycle" "#/n"}})))
+  (is (= [] (schema/problems {"enum" [{"type" "nope"}] "default" {"type" "nope"}}))
+      "data keys are values, not subschemas"))
+
+(deftest derivation-refuses-an-input-schema-that-fails-open
+  (let [doc  (fn [schema] {"paths" {"/a" {"post" {"operationId" "op"
+                                                  "requestBody" {"content" {"application/json" {"schema" schema}}}
+                                                  "responses" {"200" {"description" "ok"}}}}}
+                           "components" {"schemas" {"N" {"type" "object" "properties" {"n" {"$ref" "#/components/schemas/N"}}}}}})
+        derive* (fn [schema] (openapi/derive-tools (doc schema) {:expose {"op" {}}}))]
+    (is (= "operation op input schema: $ref #/components/schemas/Typo does not resolve"
+           (get-in (derive* {"type" "object" "properties" {"x" {"$ref" "#/components/schemas/Typo"}}}) [:error :message])))
+    (is (= :openapi/unresolved-schema
+           (get-in (derive* {"type" "object" "properties" {"x" {"type" "integr"}}}) [:error :type])))
+    (is (= :openapi/unresolved-schema
+           (get-in (openapi/derive-tools {"paths" {"/a" {"get" {"operationId" "op"
+                                                                "parameters" [{"name" "q" "in" "query" "schema" {"$ref" "http://evil/x.json#/y"}}]
+                                                                "responses" {"200" {"description" "ok"}}}}}}
+                                         {:expose {"op" {}}})
+                   [:error :type]))
+        "a parameter's schema is checked too")
+    (testing "a recursive schema is legal OpenAPI and still derives"
+      (is (some? (:ok (derive* {"$ref" "#/components/schemas/N"})))))))
+
 ;; -----------------------------------------------------------------------------
 ;; codec
 

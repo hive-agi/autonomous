@@ -174,14 +174,39 @@
      :params params :body (body-field body mode) :responses responses
      :input (into [:map] (concat (map parameter-entry projections) (body-entries mode body)))}))
 
+(defn- input-schemas
+  "Pure: the resolved JSON Schemas an operation's arguments are checked
+   against: each parameter's and each JSON body media's."
+  [bundle op resolved-params]
+  (concat (keep #(get % "schema") resolved-params)
+          (let [content (get (some->> (get op "requestBody") (doc/resolved bundle)) "content")]
+            (keep (fn [[media c]] (when (json-media? media) (get c "schema"))) content))))
+
+(defn- fail-open-input
+  "Pure: the refusal of an operation whose input schema would read as :any
+   where the spec means something else (a $ref that resolves nowhere, a
+   type that is not a JSON Schema type), or nil. A cycle is a recursive
+   schema, legal in OpenAPI, so it stays :any."
+  [op-id schemas]
+  (when-let [ps (seq (remove #(= :cycle (:problem %)) (mapcat schema/problems schemas)))]
+    (let [{:keys [problem ref type]} (first ps)]
+      (answer/refusal :openapi/unresolved-schema
+                      (str "operation " op-id " input schema: "
+                           (if (= :unknown-type problem)
+                             (str "type " (pr-str type) " is not a JSON Schema type")
+                             (str "$ref " ref " does not resolve")))
+                      {:problems (vec ps)}))))
+
 (defn operation
-  "Pure: compile an Operation for the codec and its input schema, or refuse it."
+  "Pure: compile an Operation for the codec and its input schema, or refuse
+   it, also when its input schema would silently accept anything."
   [bundle {:keys [op] :as o}]
   (let [resolved (params bundle o)]
-    (answer/bind (body-of bundle op)
-                 (fn [body]
-                   (answer/ok (build-operation o (mapv spec-parameter resolved)
-                                               body (responses bundle op)))))))
+    (or (fail-open-input (get op "operationId") (input-schemas bundle op resolved))
+        (answer/bind (body-of bundle op)
+                     (fn [body]
+                       (answer/ok (build-operation o (mapv spec-parameter resolved)
+                                                   body (responses bundle op))))))))
 
 ;; -----------------------------------------------------------------------------
 ;; Promoting an Operation to a tool spec

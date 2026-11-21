@@ -86,3 +86,37 @@
   (is (= {:missing [:inventory/stock]}
          (get-in (load/register! (vec specs) {:inventory/receive (fn [_ _] nil)}) [:error :data])))
   (is (empty? (:tools (a/rpc {:op :manifest :scopes #{:admin}}))) "nothing registered on a refusal"))
+
+(defn- input-refusal
+  "The refusal of a one-tool document whose input has property p = `p`."
+  [p]
+  (js/document->specs {"$defs" {"Sku"  {"type" "string"}
+                                "Node" {"type" "object" "properties" {"next" {"$ref" "#/$defs/Node"}}}}
+                       "tools" [{"id" "a" "description" "d"
+                                 "input" {"type" "object" "properties" {"p" p}}}]}))
+
+(deftest a-schema-that-would-accept-anything-is-refused
+  (doseq [[why p msg] [["a typo in a local $ref" {"$ref" "#/$defs/Skuu"}
+                        "tool a input $ref #/$defs/Skuu does not resolve within the document at [\"properties\" \"p\"]"]
+                       ["a path out of the document" {"$ref" "../../etc/passwd#/x"}
+                        "tool a input $ref ../../etc/passwd#/x does not resolve within the document at [\"properties\" \"p\"]"]
+                       ["a remote document" {"$ref" "http://evil/x.json#/y"}
+                        "tool a input $ref http://evil/x.json#/y does not resolve within the document at [\"properties\" \"p\"]"]
+                       ["a cycle" {"$ref" "#/$defs/Node"}
+                        "tool a input $ref #/$defs/Node refers to itself at [\"properties\" \"p\" \"properties\" \"next\"]"]
+                       ["an unknown type" {"type" "integr"}
+                        "tool a input type \"integr\" is not a JSON Schema type at [\"properties\" \"p\"]"]
+                       ["an unknown type deep inside" {"type" "array" "items" {"anyOf" [{"type" "string"} {"type" "strin"}]}}
+                        "tool a input type \"strin\" is not a JSON Schema type at [\"properties\" \"p\" \"items\" \"anyOf\" 1]"]]]
+    (testing why
+      (let [a (input-refusal p)]
+        (is (= :invalid-tool (get-in a [:error :type])))
+        (is (= msg (get-in a [:error :message])))
+        (is (seq (get-in a [:error :data :problems])) "every problem is listed for the author")))))
+
+(deftest output-schemas-are-checked-the-same-way
+  (is (= "tool a output $ref #/nope does not resolve within the document"
+         (get-in (js/->tool-spec {"id" "a" "description" "d" "output" {"$ref" "#/nope"}}) [:error :message]))))
+
+(deftest a-ref-that-resolves-still-registers
+  (is (= [:map [:p {:optional true} [:string]]] (-> (input-refusal {"$ref" "#/$defs/Sku"}) :ok first second :input))))
