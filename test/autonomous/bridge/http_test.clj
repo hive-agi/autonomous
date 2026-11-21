@@ -755,6 +755,30 @@
     (is (= {:listen-at 9} (hc/listened {} (answer/refusal :x "y" {:status 503}) 9)))
     (is (:stream-none? (hc/listened {} (answer/refusal :x "y" {:status 405}) 9)))))
 
+(defn- held-initialize
+  "A client over stub `client` whose initialize waits for `release`."
+  [client release]
+  (reify port/IHttpClient
+    (-request! [_ req]
+      (when (= "initialize" (:method (json/read-json (str (:body req))))) (deref release 5000 nil))
+      (port/-request! client req))
+    (-open-stream! [_ req sink] (port/-open-stream! client req sink))))
+
+(deftest a-look-waits-for-the-session-lock-only-so-long
+  (let [[client _ _] (open-stub)
+        release (promise)
+        c       (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                                     :lock-wait-ms 100 :http/client (held-initialize client release)))
+        call    #(as c "agent-a" #{:read} {:op :call :tool "todo_list"})
+        first*  (future (call))]
+    (Thread/sleep 50)
+    (is (= :channel/busy (get-in (call) [:error :type])) "a second look is refused, not parked")
+    (deliver release true)
+    (is (answer/ok? (deref first* 5000 nil)) "the first look completes")
+    (is (answer/ok? (call)) "once the session exists the lock is not needed"))
+  (is (= 2000 (hc/lock-wait-ms target)) "the default wait is the target's timeout")
+  (is (m/validate bs/Target (assoc target :lock-wait-ms 100))))
+
 (deftest a-stored-listing-is-fresh-only-at-its-own-revision
   (let [sl (assoc hc/empty-slot :revision 3)]
     (is (false? (:stale? (hc/stored sl {:v 1} 10 3))))

@@ -84,7 +84,8 @@
     [:credentials {:optional true} CredentialPolicy]
     [:timeout-ms {:optional true} [:int {:min 100}]]
     [:ttl-ms {:optional true} [:int {:min 0}]]
-    [:stream-retry-ms {:optional true} [:int {:min 0}]]]
+    [:stream-retry-ms {:optional true} [:int {:min 0}]]
+    [:lock-wait-ms {:optional true} [:int {:min 1}]]]
    [:fn {:error/message "a bearer token rides https, or plain http to this host only"}
     bearer-transport-ok?]])
 

@@ -18,7 +18,9 @@
             [autonomous.bridge.http.session :as ses]
             [autonomous.bridge.port :as port]
             [autonomous.bridge.rpc :as rpc]
-            [autonomous.domain.answer :as answer]))
+            [autonomous.domain.answer :as answer])
+  (:import (java.util.concurrent TimeUnit)
+           (java.util.concurrent.locks ReentrantLock)))
 
 (def default-ttl-ms 5000)
 
@@ -29,10 +31,26 @@
   [] {:sessions (atom {}) :slots (atom {}) :locks (atom {})})
 
 (defn- actor-lock
-  "The lock object of `actor`, created once: one session open or renew of
-   an actor runs at a time."
-  [ch actor]
-  (get (swap! (:locks ch) #(if (contains? % actor) % (assoc % actor (Object.)))) actor))
+  "The lock of `actor`, created once: one session open or renew of an
+   actor runs at a time."
+  ^ReentrantLock [ch actor]
+  (get (swap! (:locks ch) #(if (contains? % actor) % (assoc % actor (ReentrantLock.)))) actor))
+
+(defn lock-wait-ms
+  "Pure: how long a look of `target` waits for its actor's session lock:
+   :lock-wait-ms, else the target's request timeout."
+  [target]
+  (or (:lock-wait-ms target) (:timeout-ms target http/default-timeout-ms)))
+
+(defn- with-actor-lock
+  "Boundary: the Answer of `f` run under `actor`'s lock, or a :channel/busy
+   refusal when the lock is not had within `wait-ms` (another look of the
+   actor holds it across a slow remote)."
+  [ch actor wait-ms f]
+  (let [lock (actor-lock ch actor)]
+    (if (.tryLock lock (long wait-ms) TimeUnit/MILLISECONDS)
+      (try (f) (finally (.unlock lock)))
+      (answer/refusal :channel/busy "another look of this agent is opening its remote session"))))
 
 (def empty-slot
   "A cache slot with no listing, stale, and no fetch in flight. :revision
@@ -145,28 +163,30 @@
   "Answer of `grant`'s live session, opened when there is none, its dead
    event stream reopened (rate-limited per actor). Both run under the
    actor's lock and re-check there, so concurrent looks by one actor open
-   one session and one stream."
+   one session and one stream; a look that cannot have the lock within the
+   target's timeout is refused :channel/busy."
   [ch client credentials target grant]
   (let [actor (:actor grant)
         ses   (get @(:sessions ch) actor)]
     (if (and ses (:close! ses))
       (answer/ok ses)
-      (locking (actor-lock ch actor)
-        (if-let [live (current-session ch actor)]
-          (do (revive-stream! ch client credentials target grant (:ok live)) live)
-          (open-session! ch client credentials target grant))))))
+      (with-actor-lock ch actor (lock-wait-ms target)
+        #(if-let [live (current-session ch actor)]
+           (do (revive-stream! ch client credentials target grant (:ok live)) live)
+           (open-session! ch client credentials target grant))))))
 
 (defn- renew!
   "Ok of a fresh session for `grant` in place of `gone`, the session the
-   remote forgot. Under the actor's lock: when another look already
-   renewed it, that session is reused, never renewed twice."
+   remote forgot. Under the actor's lock (bounded as session!'s): when
+   another look already renewed it, that session is reused, never renewed
+   twice."
   [ch client credentials target grant gone]
-  (locking (actor-lock ch (:actor grant))
-    (let [now-ses (get @(:sessions ch) (:actor grant))]
-      (if (and now-ses (not= (:id now-ses) (:id gone)))
-        (answer/ok now-ses)
-        (do (drop-session! ch client credentials target (:actor grant))
-            (open-session! ch client credentials target grant))))))
+  (with-actor-lock ch (:actor grant) (lock-wait-ms target)
+    #(let [now-ses (get @(:sessions ch) (:actor grant))]
+       (if (and now-ses (not= (:id now-ses) (:id gone)))
+         (answer/ok now-ses)
+         (do (drop-session! ch client credentials target (:actor grant))
+             (open-session! ch client credentials target grant))))))
 
 ;; =============================================================================
 ;; Listing
