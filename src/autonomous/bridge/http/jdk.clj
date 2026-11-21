@@ -56,9 +56,11 @@
    in the allowlisted text of autonomous.bridge.failure (an exception's own
    message may quote a header value or a url). :channel/transport-failed
    only when the failure precedes the request, so a retry is safe; any
-   other is :channel/outcome-unknown."
+   other is :channel/outcome-unknown. An IllegalArgumentException here
+   came after the request was built (request-of catches the building), so
+   it is not proof that nothing was sent."
   [^Exception e]
-  (if (failure/before-request? e)
+  (if (and (failure/before-request? e) (not (instance? IllegalArgumentException e)))
     (answer/refusal :channel/transport-failed (failure/message e))
     (outcome-unknown (str "failed (" (failure/message e) ")"))))
 
@@ -167,19 +169,32 @@
     (answer/let-answer [body (read-body (.body resp) req h ms)]
       (answer/ok {:status (.statusCode resp) :headers h :body body}))))
 
-(defn- send
-  "Answer of sending `req`, its body taken as text or JSON, the reply
-   bounded in size and in time by its :timeout-ms."
-  [req]
+(defn- request-of
+  "Answer of the built HttpRequest of `req` bounded by `ms`, or a
+   :channel/transport-failed refusal: nothing was sent yet, so a retry is
+   safe."
+  [req ms]
   (try
     (let [body (body-of req)
-          ms   (long (or (:timeout-ms req) default-timeout-ms))
           pub  (if body (HttpRequest$BodyPublishers/ofString ^String body)
-                   (HttpRequest$BodyPublishers/noBody))
-          b    (builder req (:method req) pub ms)]
-      (response-of (.send ^HttpClient @shared (.build b) (HttpResponse$BodyHandlers/ofInputStream)) req ms))
+                   (HttpRequest$BodyPublishers/noBody))]
+      (answer/ok (.build (builder req (:method req) pub ms))))
     (catch Exception e
-      (transport-failed e))))
+      (answer/refusal :channel/transport-failed (failure/message e)))))
+
+(defn- send
+  "Answer of sending `req`, its body taken as text or JSON, the reply
+   bounded in size and in time by its :timeout-ms. A failure building the
+   request is :channel/transport-failed; one once it is handed to the
+   client is classified by transport-failed (only a pre-request failure
+   stays retry-safe)."
+  [req]
+  (let [ms (long (or (:timeout-ms req) default-timeout-ms))]
+    (answer/let-answer [r (request-of req ms)]
+      (try
+        (response-of (.send ^HttpClient @shared ^HttpRequest r (HttpResponse$BodyHandlers/ofInputStream)) req ms)
+        (catch Exception e
+          (transport-failed e))))))
 
 ;; =============================================================================
 ;; The stream: a GET held open, its lines handed to a sink

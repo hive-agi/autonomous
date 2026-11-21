@@ -35,6 +35,18 @@
   (testing "a read timeout is not a connect timeout"
     (is (not (failure/before-request? (java.net.http.HttpTimeoutException. "request timed out"))))))
 
+(deftest a-request-that-cannot-be-built-is-safe-to-retry
+  (let [a (port/-request! (jdk/client) {:method :post :url "http://127.0.0.1:9/mcp" :timeout-ms 500
+                                        :headers {"x-bad" "line\nbreak aut_leaked"} :body "{}"})]
+    (is (= {:type :channel/transport-failed :message "the request could not be built"}
+           (select-keys (:error a) [:type :message]))
+        (pr-str a)))
+  (testing "an IllegalArgumentException once the request is handed over is not proof nothing was sent"
+    (is (= :channel/outcome-unknown
+           (get-in (#'jdk/transport-failed (IllegalArgumentException. "late")) [:error :type])))
+    (is (= :channel/transport-failed
+           (get-in (#'jdk/transport-failed (java.net.ConnectException. "x")) [:error :type])))))
+
 (deftest the-jdk-adapter-shows-only-allowlisted-text
   (let [a (port/-request! (jdk/client) {:method :post :url "http://127.0.0.1:9/mcp" :timeout-ms 500
                                         :headers {"x-probe" "aut_leaked"} :body "{}"})]
