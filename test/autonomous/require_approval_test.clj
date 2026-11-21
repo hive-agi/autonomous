@@ -147,11 +147,11 @@
     (is (= {:amount 10 :pin "<redacted>"} (:args seen)) "never the raw pin")
     (is (= actor (:actor seen)) "the asker gets the actor as data, unescaped")
     (let [head  (first (approval/prompt-lines "1" seen))
-          shown (second (re-find #"actor (\"[^\"]*\")" head))]
+          shown (second (re-find #"actor (\"[^\"]*\"(?: \(\+\d+ chars\))?) session" head))]
       (is (re-matches #"[\x20-\x7E]+" head) "printable ASCII only")
       (is (.startsWith ^String shown "\"evil\\u001b[2J\\u000a\\u0085\\u202e") "escaped exactly once")
       (is (not (re-find #"\\u005c" shown)) "no escape of an escape")
-      (is (re-find #" \(\+\d+ chars\)\"$" shown) "a cut actor says how much was cut"))))
+      (is (re-find #"\" \(\+\d+ chars\)$" shown) "a cut actor says how much was cut, after the closing quote"))))
 
 (deftest a-deny-is-journaled-with-its-approver
   (approving! [{:decision :deny :approver "bob"}] 1000)

@@ -28,7 +28,8 @@
             [autonomous.cli :as cli]
             [autonomous.config :as config]
             [malli.core :as m]
-            [org.httpkit.server :as hk]))
+            [org.httpkit.server :as hk]
+            [autonomous.domain.naming :as naming]))
 
 (def ^:private remote-url "https://remote.test/todo")
 
@@ -732,30 +733,74 @@
       (is (not-any? #(str/includes? (pr-str [stream close]) %) (vals tokens)))
       (is (empty? seen)))))
 
-(deftest a-hostile-actor-is-cut-and-cleaned-in-the-refusal
+(deftest a-hostile-actor-is-cut-and-escaped-in-the-refusal
   (let [hostile  (str "evil\n\u001b[31mFAKE LOG LINE\r" (apply str (repeat 200 "y")))
         [c seen] (spied (assoc target :credentials (credential-policy)))
         a        (manifest-as c hostile #{:read})
         msg      (get-in a [:error :message])
         shown    (get-in a [:error :data :actor])]
     (is (= :channel/credential-missing (get-in a [:error :type])) (pr-str a))
-    (is (not-any? #(Character/isISOControl (char %)) msg) "no control character reaches the message")
-    (is (= 64 (count shown)) "the actor is cut at 64 characters")
-    (is (str/starts-with? shown "evil[31mFAKE LOG LINE"))
-    (is (str/includes? msg shown))
+    (is (every? #(<= 0x20 (int %) 0x7E) msg) "the message is printable ASCII only")
+    (is (= (naming/shown-actor hostile) shown) "the data carries the actor as naming/shown-actor shows it")
+    (is (= 64 (count shown)) "the cut counts escaped characters: 64 of them")
+    (is (str/starts-with? shown "evil\\u000a\\u001b[31mFAKE LOG LINE\\u000dyyy")
+        "a newline, an ESC and a carriage return are escaped, not dropped")
+    (is (str/includes? msg (str "\"" shown "\" (+" (- (count (naming/actor-text hostile)) 64) " chars)"))
+        "the message quotes the shown actor and says how much was cut")
     (is (not (str/includes? msg (apply str (repeat 100 "y")))))
     (is (empty? @seen) "nothing was sent")))
 
-(deftest a-shown-actor-drops-separators-and-bidi-controls
+(defn- refused-actor
+  "The :error of a manifest asked as `actor` on a target whose credential
+   policy has no entry for it."
+  [actor]
+  (let [[c _] (spied (assoc target :credentials (credential-policy)))]
+    (:error (manifest-as c actor #{:read}))))
+
+(deftest a-refusal-escapes-separators-and-bidi-controls
   (doseq [c [\u2028 \u2029 \u200E \u200F \u202A \u202E \u2066 \u2069 \u061C \u200B \u200C \u200D \uFEFF]]
-    (is (= "ab" (http/shown-actor (str "a" c "b"))) (format "U+%04X" (int c))))
-  (is (= "agent-é" (http/shown-actor "agent-é")) "an ordinary letter stays")
-  (testing "the cut never splits a surrogate pair"
-    (let [emoji "\uD83D\uDE00"
-          shown (http/shown-actor (str (apply str (repeat 63 "a")) emoji emoji))]
-      (is (= (str (apply str (repeat 63 "a")) emoji) shown))
-      (is (= 64 (.codePointCount ^String shown 0 (count shown))))
-      (is (not (Character/isHighSurrogate (last shown))) "no lone high surrogate at the end"))))
+    (let [e   (refused-actor (str "a" c "b"))
+          esc (format "a\\u%04xb" (int c))]
+      (is (= esc (get-in e [:data :actor])) (format "U+%04X is escaped, lowercase hex" (int c)))
+      (is (str/includes? (:message e) (str "\"" esc "\"")) (format "U+%04X in the message" (int c)))
+      (is (every? #(<= 0x20 (int %) 0x7E) (:message e)))))
+  (is (= "agent-\\u00e9" (get-in (refused-actor "agent-é") [:data :actor]))
+      "a non-ASCII letter is escaped too")
+  (is (= "a\\u0022\\u005cb" (get-in (refused-actor "a\"\\b") [:data :actor]))
+      "a quote and a backslash are escaped, so the quoted actor has no quote inside")
+  (is (str/includes? (:message (refused-actor "ops (+9 chars)")) "agent \"ops (+9 chars)\" on ")
+      "an uncut actor named like a cut note has no note after its closing quote"))
+
+(deftest distinct-actors-stay-distinct-in-the-refusal
+  (let [actors ["ab" "a\u200bb" "a\u200cb" "a\u202eb" "a\uFEFFb" "a b" "a\u00a0b"
+                "agent-é" "agent-e\u0301" "agent-\uD83D\uDE00" "agent-\uD83D\uDE01"
+                "agent-\\u00e9" "a\nb" "a\\u000ab"]
+        shown  (map #(get-in (refused-actor %) [:data :actor]) actors)
+        msgs   (map #(:message (refused-actor %)) actors)]
+    (is (= (count actors) (count (set shown))) (pr-str (zipmap actors shown)))
+    (is (= (count actors) (count (set msgs))))
+    (is (not= (get-in (refused-actor "ab") [:data :actor])
+              (get-in (refused-actor "a\u200bb") [:data :actor]))
+        "a zero-width space no longer hides: \"a\u200bb\" and \"ab\" show apart")
+    (is (= shown (map naming/shown-actor actors)) "one rule: naming/shown-actor")))
+
+(deftest the-cut-keeps-a-surrogate-pair-whole
+  (let [emoji "\uD83D\uDE00"
+        pair  "\\ud83d\\ude00"]
+    (testing "an astral character is shown as its whole pair of escapes"
+      (is (= (str "agent-" pair) (get-in (refused-actor (str "agent-" emoji)) [:data :actor]))))
+    (testing "a pair that would cross the 64-character cut is left out whole"
+      (let [actor (str (apply str (repeat 52 "a")) emoji emoji)
+            e     (refused-actor actor)
+            shown (get-in e [:data :actor])]
+        (is (= (str (apply str (repeat 52 "a")) pair) shown) "52 + 12 = 64; the second pair does not fit")
+        (is (= 64 (count shown)))
+        (is (not (str/ends-with? shown "\\ud83d")) "no lone high-surrogate escape at the end")
+        (is (str/includes? (:message e) (str "\"" shown "\" (+12 chars)"))
+            "the message counts the escaped characters cut, after the closing quote")))
+    (testing "a pair that does not fit at all is not split either"
+      (is (= (apply str (repeat 58 "a"))
+             (get-in (refused-actor (str (apply str (repeat 58 "a")) emoji)) [:data :actor]))))))
 
 (deftest every-request-names-its-protocol-and-what-it-accepts
   (let [[c seen] (spied (assoc target :credentials (credential-policy)))]

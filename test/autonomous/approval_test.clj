@@ -85,6 +85,15 @@
     (is (re-find #"(?m)^    :to = \"mallory\"$" text))
     (is (re-find #"\\u02ba" text) "the look-alike is shown as an escape")))
 
+(deftest an-actor-named-like-a-cut-note-is-not-shown-as-cut
+  (let [named (prompt {:tool "pay" :actor "ops (+9 chars)" :args {}})
+        long  (prompt {:tool "pay" :actor (apply str (repeat 73 "o")) :args {}})]
+    (is (str/includes? named "actor \"ops (+9 chars)\" session")
+        "the uncut actor's own text sits inside the quotes, with no note after them")
+    (is (str/includes? long (str "actor \"" (apply str (repeat 64 "o")) "\" (+9 chars) session"))
+        "a real cut is noted after the closing quote")
+    (is (not= named long))))
+
 (deftest a-key-cannot-fake-an-argument-line
   (doseq [fake [(keyword "amount = 10   #") (symbol "amount = 10") (keyword "amount\u00a0= 10")]]
     (let [text (prompt {:tool "pay" :actor "agent" :args {:amount 1000000 fake "x"}})]
