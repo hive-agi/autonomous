@@ -129,7 +129,9 @@
                "http://[::1].evil.com" "http://[::1]evil.com:80" "http://127.0.0.1:8099.evil.com"
                "http://127.0.0.1:x" "http://127.0.0.1.evil.com:80" "http://localhost.:1"
                "http://127.0.0.1:1#f" "http://@127.0.0.1:1" "http://127.0.0.1:1:2"
-               "http://127.0.0.1\\@evil.com" "http://127.0.0.1%2f@evil.com"]]
+               "http://127.0.0.1\\@evil.com" "http://127.0.0.1%2f@evil.com"
+               "http://127.0.0.1:0" "http://127.0.0.1:65536" "http://127.0.0.1:99999999999"
+               "http://127.0.0.1:018099"]]
     (is (= :invalid-sim-config (try (control/tool-specs {:base-url bad}) nil
                                     (catch clojure.lang.ExceptionInfo e (:autonomous/error (ex-data e)))))
         (pr-str bad)))

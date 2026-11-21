@@ -130,14 +130,16 @@
 (defn- uri-view
   "L3 Boundary: {:scheme :host :port :path} of `s` as java.net.URI reads
    it, or nil when it does not parse, has no host, carries userinfo,
-   query or fragment, or has a non-numeric port."
+   query or fragment, or has a port that is not a number in 1..65535."
   [s]
   (try
-    (let [u (java.net.URI. s)]
+    (let [u    (java.net.URI. s)
+          port (.getPort u)]
       (when (and (.getHost u) (nil? (.getRawUserInfo u)) (nil? (.getRawQuery u)) (nil? (.getRawFragment u))
-                 (= (.getRawAuthority u) (str (.getHost u) (when (pos? (.getPort u)) (str ":" (.getPort u))))))
+                 (or (= -1 port) (<= 1 port 65535))
+                 (= (.getRawAuthority u) (str (.getHost u) (when (pos? port) (str ":" port)))))
         {:scheme (some-> (.getScheme u) str/lower-case) :host (str/lower-case (.getHost u))
-         :port (when (pos? (.getPort u)) (str (.getPort u))) :path (str (.getRawPath u))}))
+         :port (when (pos? port) (str port)) :path (str (.getRawPath u))}))
     (catch Exception _ nil)))
 
 (defn loopback-base-url?
