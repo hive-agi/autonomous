@@ -70,6 +70,13 @@ The refusal applies whether or not there is an approval gate, because
 the human would be shown one provider while the service read the other.
 Provider codes and names must be printable ASCII for the same reason.
 
+So a non-ASCII key anywhere along the provider path refuses the call
+outright, even when the key looks unrelated (`{:provider "sicoob-sim"
+:memö "x"}` with `:path [:provider]` is refused, and so is a non-ASCII
+key in any map the path passes through). The call never reaches the
+human or the service. This is deliberate: it is safe, and a caller fixes
+it by sending ASCII keys only.
+
 The match is narrower than the service's on purpose: a value read
 differently on the two sides can only fail to be allowed, never let the
 real bank through.
