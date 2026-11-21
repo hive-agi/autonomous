@@ -69,13 +69,21 @@ In a fleet, app tool `tool` of the app with prefix `pfx` is exposed as
 
 - The prefix is the app id made safe, with `_` and `.` turned into `-`, at
   most 24 characters, so the first `__` ends the prefix.
-- The tool part is made safe too: every character outside
-  `[A-Za-z0-9_-]` becomes `_`. A remote MCP app may list `admin.tools.list`;
-  the fleet exposes `pfx__admin_tools_list`.
-- A name over 64 characters keeps its first 59 characters, then `-` and a
-  4 character checksum of the whole name.
+- When `<pfx>__<tool>` is already a valid name it is exposed unchanged.
+- Otherwise (a remote MCP app may list `admin.tools.list`, or the name is
+  over 64 characters) every character outside `[A-Za-z0-9_-]` becomes `_`,
+  the name is cut to leave room, and it ends in `-` and a 12 character digest
+  of the ORIGINAL `<pfx>__<tool>`: `pfx__admin_tools_list-<digest>`. So
+  `pay.out` and `pay_out` get different names, and a name depends on the
+  tool's own name alone, never on the order the app lists its tools.
+- If two tools of one app still expose the same name, neither is listed;
+  both appear under `dropped` in that app's row of `autonomous_apps`.
 
-When a name was cut or had characters replaced, the bridge finds the tool it
-stands for among the tools that app listed the calling agent. If two tools of
-one app expose the same name, the first one listed keeps it, and the app's
-row in `autonomous_apps` lists the other under `dropped`.
+A call resolves the name against the last tool list that app gave the
+calling session (its actor, scopes and attached runtime). A slow or refused
+look does not erase that list. With no list yet the bridge asks the app
+first. A name no listed tool exposes is refused as `:unknown-tool`; it is
+never sent to the app as it is.
+
+In single-app mode names are the app's own. A listed tool whose name is not
+valid is left out and reported under `dropped`.

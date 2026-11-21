@@ -55,9 +55,9 @@ built-ins, no `target` argument.
 
 The prefix is the app id with `_` and `.` turned into `-`, at most 24
 characters, so the first `__` of a name always ends the prefix. Names stay
-valid MCP names (at most 64 of `[A-Za-z0-9_-]`): any other character of a
-remote tool's name becomes `_`, a longer one is cut and ends in `-` and a
-4 character checksum, and the bridge still finds the tool (see
+valid MCP names (at most 64 of `[A-Za-z0-9_-]`): a name that is not one is
+made safe, cut to fit, and ends in `-` and a 12 character digest of the
+original name, and the bridge still finds the tool (see
 [naming](naming.md)). Each fleet tool's title and description start with `[app]`.
 
 ## Built-in tools

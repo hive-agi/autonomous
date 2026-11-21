@@ -139,6 +139,13 @@
     (is (= {:ok {:app "todo" :tool "todo_add" :runtime nil}} (:answer (call srv rw "todo_add" {}))))
     (is (= [1 ["todo_add"]] (server/tools-fingerprint srv rw)))))
 
+(deftest single-mode-never-lists-an-invalid-name
+  (let [l   (ledger/open {:ledger/kind :memory})
+        f   (bf/from-context (second (member "todo" (app-responder "todo" ["todo_add" "admin.tools.list"]) l)))
+        s   (bf/surface f rw)]
+    (is (= ["todo_add"] (mapv :name (:tools s))))
+    (is (= ["admin.tools.list"] (get-in s [:apps 0 :dropped])))))
+
 (def ^:private long-stem
   "A tool-name stem long enough that <prefix>__<stem>... is cut at 64."
   (apply str (repeat 60 "x")))

@@ -279,11 +279,17 @@
   mode-of)
 
 (defmethod surface :single [_ [p]]
-  (let [m (when (= :up (:status p)) (:manifest p))]
+  (let [m      (when (= :up (:status p)) (:manifest p))
+        valid? #(naming/valid-tool-name? (:name %))
+        kept   (filterv valid? (:tools m))
+        bad    (vec (remove valid? (:tools m)))
+        apps   (:apps (merge-probes [p]))]
     {:app       (:app m)
-     :tools     (vec (:tools m))
+     :tools     kept
      :resources (vec (:resources m))
-     :apps      (:apps (merge-probes [p]))}))
+     :apps      (if (seq bad)
+                  (mapv #(assoc % :tools (count kept) :dropped (mapv :name bad)) apps)
+                  apps)}))
 
 (defmethod surface :fleet [_ probes]
   (assoc (dissoc (merge-probes probes) :routes) :app (app-info probes)))
