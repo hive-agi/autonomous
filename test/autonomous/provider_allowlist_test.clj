@@ -119,6 +119,18 @@
   (is (= (decorator/json-fold "provider") (decorator/json-fold "PROVIDER")))
   (is (not= (decorator/json-fold "provider") (decorator/json-fold "provider_"))))
 
+(deftest a-second-allowlist-cannot-widen-the-first
+  (a/decorate! (a/each-tool allowlist))
+  (let [wider (decorator/provider-allowlist {:path [:provider] :providers providers
+                                             :allowed ["756" "sicoob-sim"]})]
+    (is (thrown? clojure.lang.ExceptionInfo (a/decorate! (a/each-tool wider)))
+        "the runtime refuses the decoration and keeps the first")
+    (is (= :provider-not-allowed (get-in (call {:provider "756" :amount 1}) [:error :type])))
+    (is (empty? @runs) "756 never ran"))
+  (testing "the same allowlist again is harmless"
+    (a/decorate! (a/each-tool allowlist))
+    (is (= {:ok {:charged 1}} (call {:provider "sicoob-sim" :amount 1})))))
+
 (deftest scope-is-checked-first-in-either-order
   (doseq [[label d] [["allowlist outside" (comp allowlist (decorator/require-scope :payments))]
                      ["allowlist inside" (comp (decorator/require-scope :payments) allowlist)]]]

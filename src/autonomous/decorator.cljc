@@ -129,7 +129,9 @@
    both, so the order is scope, then allowlist or approval, whatever the
    order of the decorators. Throws ex-info :autonomous/error
    :invalid-allowlist on a bad option or an :allowed code with no
-   provider."
+   provider, and when applied to a tool that already carries a
+   different allowlist: a later decoration never widens (or silently
+   replaces) the first."
   [{:keys [path providers allowed] :as opts}]
   (let [colls?  (and (sequential? path) (sequential? providers) (coll? allowed) (not (map? allowed)))
         al      (when colls? {:path (vec path) :providers (vec providers) :allowed (set allowed)})
@@ -137,7 +139,14 @@
     (when problem
       (throw (ex-info (str "provider-allowlist: invalid options: " (pr-str problem))
                       {:autonomous/error :invalid-allowlist :problem problem :opts opts})))
-    (fn [tool] (assoc tool ::allowlist al))))
+    (fn [tool]
+      (when-let [held (::allowlist tool)]
+        (when (not= held al)
+          (throw (ex-info (str "provider-allowlist: tool " (:name tool) " already has a provider "
+                               "allowlist; a second one would replace it")
+                          {:autonomous/error :invalid-allowlist :tool (:name tool)
+                           :held (:allowed held) :offered (:allowed al)}))))
+      (assoc tool ::allowlist al))))
 
 (def ^:private ascii-lower
   "L1: each ASCII capital letter to its small letter, nothing else."
