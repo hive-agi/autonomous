@@ -56,6 +56,22 @@ func main() {
 	check("invalid", `{:op :call :tool "calc_add" :args {:a "x"} :scopes #{:write}}`, ":invalid-args")
 	check("scope", `{:op :call :tool "calc_add" :args {:a 1 :b 2}}`, ":forbidden")
 
+	// A refused spec for a known id leaves the working tool in place.
+	if _, err := rt.Tool("calc/add", `{:input [:map]}`, nil); err == nil {
+		fmt.Println("FAIL refuse   a spec without a description registered")
+		failures++
+	}
+	check("kept", `{:op :call :tool "calc_add" :args {:a 1 :b 2} :scopes #{:write}}`, ":sum 3")
+
+	// Unregistered, a tool is gone.
+	if _, err := rt.Tool("calc/tmp", `{:description "Temporary" :input [:map]}`,
+		func(map[string]any) (any, error) { return nil, nil }); err != nil {
+		fmt.Println("FAIL tmp     ", err)
+		failures++
+	}
+	rt.Unregister("calc/tmp")
+	check("unreg", `{:op :call :tool "calc_tmp" :args {} :scopes #{:write}}`, ":unknown-tool")
+
 	// Off the runtime's thread a call is refused, not run.
 	done := make(chan error)
 	go func() {

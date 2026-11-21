@@ -63,11 +63,47 @@ func TestACallDispatchesToTheHandler(t *testing.T) {
 	})
 }
 
+func TestARefusedReRegistrationKeepsTheWorkingHandler(t *testing.T) {
+	onRuntime(func() {
+		if _, err := rt.Tool("t/keep", addSpec, add("first")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rt.Tool("t/keep", `{:input [:map]}`, add("second")); err == nil {
+			t.Fatal("a spec without a description must be refused")
+		}
+		got, _ := rt.RPC(`{:op :call :tool "t_keep" :args {:a 1 :b 2} :scopes #{:write}}`)
+		if !strings.Contains(got, `:by "first"`) {
+			t.Fatal("the first handler should still answer, got", got)
+		}
+	})
+}
+
+func TestUnregisterRemovesTheTool(t *testing.T) {
+	onRuntime(func() {
+		if _, err := rt.Tool("t/gone", addSpec, add("go")); err != nil {
+			t.Fatal(err)
+		}
+		if err := rt.Unregister("t/gone"); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := rt.RPC(`{:op :call :tool "t_gone" :args {:a 1 :b 2} :scopes #{:write}}`)
+		if !strings.Contains(got, ":error") {
+			t.Fatal("an unregistered tool still answers:", got)
+		}
+		if _, ok := handlers["t/gone"]; ok {
+			t.Fatal("the handler is still held")
+		}
+	})
+}
+
 func TestEveryCallOffTheThreadIsRefused(t *testing.T) {
 	// This goroutine is not the runtime's; lock it so the refusal is not luck.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	checks := map[string]error{"Describe": rt.Describe("x", "y")}
+	checks := map[string]error{
+		"Describe":   rt.Describe("x", "y"),
+		"Unregister": rt.Unregister("t/add"),
+	}
 	_, checks["Tool"] = rt.Tool("t/off", addSpec, add("off"))
 	_, checks["RPC"] = rt.RPC(`{:op :ping}`)
 	_, checks["Journal"] = rt.Journal(map[string]any{"kind": "x"})
@@ -93,5 +129,18 @@ func TestAnUnlockedGoroutineNeverEntersTheLibrary(t *testing.T) {
 			t.Fatalf("call %d: %v", i, err)
 		}
 		runtime.Gosched()
+	}
+}
+
+func TestRegisteredReadsOnlyAnOkAnswer(t *testing.T) {
+	for out, want := range map[string]string{
+		`{"ok":"a_b"}`: "a_b",
+		`{"error":{"message":"has \"ok\" in it"}}`: "",
+		`not json`: "",
+		`{"ok":3}`: "",
+	} {
+		if got := registered(out); got != want {
+			t.Errorf("registered(%s) = %q, want %q", out, got, want)
+		}
 	}
 }

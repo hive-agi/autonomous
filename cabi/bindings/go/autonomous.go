@@ -169,28 +169,48 @@ func (rt *Runtime) Describe(name, description string) error {
 	return err
 }
 
+// registered reads the library's answer to a registration: the MCP name of
+// {"ok": "<name>"}, or "" for anything else.
+func registered(out string) string {
+	var a map[string]json.RawMessage
+	if json.Unmarshal([]byte(out), &a) != nil {
+		return ""
+	}
+	var name string
+	if json.Unmarshal(a["ok"], &name) != nil {
+		return ""
+	}
+	return name
+}
+
 // Tool declares tool id ("calc/add", MCP name calc_add) from an EDN spec
 // with a malli :input (bb tool-spec turns a JSON spec into one) and runs it
-// with h. Answers the MCP name.
+// with h. Answers the MCP name. A refused spec leaves an earlier
+// registration of id, and its handler, as they were.
 func (rt *Runtime) Tool(id, specEDN string, h Handler) (string, error) {
 	cid, cspec := cs(id), cs(specEDN)
 	defer free(cid)
 	defer free(cspec)
-	handlers[id] = h
 	var wrong C.int
 	out := text(C.call_s2(rt.tid, &wrong, rt.regTool, cid, cspec))
 	if wrong != 0 {
-		delete(handlers, id)
 		return "", ErrWrongThread
 	}
-	var a struct {
-		Ok string `json:"ok"`
-	}
-	if json.Unmarshal([]byte(out), &a) != nil || a.Ok == "" {
-		delete(handlers, id)
+	name := registered(out)
+	if name == "" {
 		return "", fmt.Errorf("autonomous: tool %s refused: %s", id, out)
 	}
-	return a.Ok, nil
+	handlers[id] = h
+	return name, nil
+}
+
+// Unregister removes tool id (or its MCP name) and its handler.
+func (rt *Runtime) Unregister(id string) error {
+	if _, err := rt.i1(rt.unregTool, id); err != nil {
+		return err
+	}
+	delete(handlers, id)
+	return nil
 }
 
 // Journal records an app event agents can read, e.g.
