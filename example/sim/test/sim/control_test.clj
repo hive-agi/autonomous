@@ -95,6 +95,11 @@
     (is (= :invalid-args (get-in (call "sim_pix_pay" {:txid bad}) [:error :type])) (pr-str bad)))
   (doseq [bad ["4/2" "../1" "1a" "" "%31"]]
     (is (= :invalid-args (get-in (call "sim_boleto_pay" {:nossoNumero bad}) [:error :type])) (pr-str bad)))
+  (testing "a trailing newline is refused everywhere ($ would match before it)"
+    (is (= :invalid-args (get-in (call "sim_pix_pay" {:txid "tx1\n"}) [:error :type])))
+    (is (= :invalid-args (get-in (call "sim_boleto_pay" {:nossoNumero "42\n"}) [:error :type])))
+    (is (= :invalid-args (get-in (call "sim_pix_pay" {:txid "tx1" :valor "1.27\n"}) [:error :type])))
+    (is (= :invalid-args (get-in (call "sim_pix_pay" {:txid "tx1" :payerCpf "12345678909\n"}) [:error :type]))))
   (is (empty? @seen) "nothing reached the simulator"))
 
 (deftest a-path-segment-is-checked-and-encoded-even-past-the-schema

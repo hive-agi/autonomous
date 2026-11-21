@@ -20,14 +20,14 @@
 
 (def path-safe-id
   "A txid: 1..64 of [A-Za-z0-9_-]. No '/', '.', '%' or anything to encode."
-  [:re {:description "1..64 of [A-Za-z0-9_-]"} #"^[A-Za-z0-9_-]{1,64}$"])
+  [:re {:description "1..64 of [A-Za-z0-9_-]"} #"\A[A-Za-z0-9_-]{1,64}\z"])
 
 (def nosso-numero
   "A nossoNumero: 1..20 digits."
-  [:re {:description "1..20 digits"} #"^[0-9]{1,20}$"])
+  [:re {:description "1..20 digits"} #"\A[0-9]{1,20}\z"])
 
 (def ^:private amount
-  [:re {:description "amount in reais, e.g. \"1.27\""} #"^[0-9]{1,9}(\.[0-9]{1,2})?$"])
+  [:re {:description "amount in reais, e.g. \"1.27\""} #"\A[0-9]{1,9}(\.[0-9]{1,2})?\z"])
 
 (def operations
   "The control-plane operations that are tools, by tool id. Nothing else
@@ -42,7 +42,7 @@
             [:txid path-safe-id]
             [:valor {:optional true} amount]
             [:payerName {:optional true} [:string {:min 1 :max 140}]]
-            [:payerCpf {:optional true} [:re {:description "11 digits"} #"^[0-9]{11}$"]]]}
+            [:payerCpf {:optional true} [:re {:description "11 digits"} #"\A[0-9]{11}\z"]]]}
 
    :sim.boleto/pay
    {:method :post :path ["__sim" "boleto" :nossoNumero "pay"] :body-keys [:valorPago]
