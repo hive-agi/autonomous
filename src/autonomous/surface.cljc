@@ -73,17 +73,31 @@
 ;; of the surface is a new defmethod; merge-surfaces never changes.
 ;; =============================================================================
 
+(defn- differing-keys
+  "L1: the keys whose values differ between maps `a` and `b` (a key one
+   lacks counts), sorted; nil unless both are maps."
+  [a b]
+  (when (and (map? a) (map? b))
+    (->> (distinct (concat (keys a) (keys b)))
+         (remove #(= (get a % ::absent) (get b % ::absent)))
+         (sort-by str)
+         vec)))
+
 (defn- clash
-  "L1: the refusal of one name two different values claim."
-  [what n left right]
+  "L1: the refusal of one name two different values claim. :differs names
+   the keys of the compared identities that differ, when they are maps:
+   the labels alone (a tool's :id) are often equal on both sides."
+  [what n left right differs]
   (answer/refusal :name-clash
                   (str what " " n " is declared by two different values")
-                  {:name n :left left :right right}))
+                  (cond-> {:name n :left left :right right}
+                    (seq differs) (assoc :differs differs))))
 
 (defn- keyed-merge
   "L1: THE keyed merge, one shape for every part: same key with the same
-   identity keeps the first; a different identity is a clash refusal.
-   `label` is a (fn [v] described-identity) for the refusal."
+   identity keeps the first (first-writer-wins on whatever `ident`
+   leaves out, such as a tool's handler); a different identity is a clash
+   refusal. `label` is a (fn [v] described-identity) for the refusal."
   [what ident label a b]
   (answer/reduce-answer
    (fn [acc [k v]]
@@ -91,7 +105,8 @@
        (cond
          (nil? other)                  (answer/ok (assoc acc k v))
          (= (ident other) (ident v))   (answer/ok acc)
-         :else (clash what k (label other) (label v)))))
+         :else (clash what k (label other) (label v)
+                      (differing-keys (ident other) (ident v))))))
    a
    b))
 
@@ -110,13 +125,32 @@
       :else (answer/refusal :app-clash "two surfaces name different apps"
                             {:left a :right b}))))
 
+(def ^:private regex-type
+  "The type of a regex literal on this runtime."
+  (type #""))
+
+(defn- schema-data
+  "L1: `x` with every compiled malli schema replaced by its form and every
+   regex by its source text, recursively, so two compilations of one
+   schema compare equal. Anything else is kept."
+  [x]
+  (cond
+    (m/schema? x)              (schema-data (m/form x))
+    (identical? regex-type (type x)) (str x)
+    (map? x)                   (into {} (map (fn [[k v]] [(schema-data k) (schema-data v)])) x)
+    (vector? x)                (mapv schema-data x)
+    (set? x)                   (into #{} (map schema-data) x)
+    (seq? x)                   (apply list (map schema-data x))
+    :else                      x))
+
 (defn- tool-data
   "L1: a tool's identity for merging: every field but the fn-valued ones
-   (handler, compiled decode/explain), which no two compilations share.
-   Two tools of one name and id that differ in scopes, schemas or any
-   other data are different affordances."
+   (handler, compiled decode/explain), which no two compilations share,
+   with schemas compared by form (`schema-data`). Two tools of one name
+   and id that differ in scopes, schemas or any other data are different
+   affordances."
   [tool]
-  (into {} (remove (comp fn? val)) tool))
+  (into {} (keep (fn [[k v]] (when-not (fn? v) [k (schema-data v)]))) tool))
 
 (defmethod merge-part :tools [_ a b]
   (keyed-merge "tool" tool-data :id (:tools a) (:tools b)))
@@ -137,7 +171,7 @@
     (not (contains? a k)) (answer/ok (get b k))
     (not (contains? b k)) (answer/ok (get a k))
     (= (get a k) (get b k)) (answer/ok (get a k))
-    :else (clash "surface part" k (get a k) (get b k))))
+    :else (clash "surface part" k (get a k) (get b k) (differing-keys (get a k) (get b k)))))
 
 (defn- merge-parts
   "L1 Promote: merge every part supplied by either surface."
@@ -156,7 +190,16 @@
 (defn merge-surfaces
   "L1: the monoid fold of surfaces, left to right: ALWAYS Ok of the
    composition, or the first refusal (:invalid-surface, :name-clash,
-   :app-clash). Identity: `empty-surface`. Associative on disjoint names."
+   :app-clash). Identity: `empty-surface`. Associative on disjoint names.
+
+   Two tools under one name are one affordance when they agree on every
+   field that is not a fn; malli schemas (:input, :output) are compared
+   by form, regexes by source. The fn-valued fields are first-writer-wins:
+   the merged tool keeps the leftmost surface's handler. A schema whose
+   form holds a fn, such as an inline [:fn #(...)], is equal only to
+   itself, because two evaluations of that fn are different values;
+   name the predicate (a var) to make two compilations agree. A
+   :name-clash refusal names the differing keys under :differs."
   [& surfaces]
   (answer/reduce-answer merge-two empty-surface surfaces))
 

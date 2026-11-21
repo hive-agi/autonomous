@@ -59,3 +59,14 @@
                                  [(assoc echo-codec :decode throws) host :codec/decode]
                                  [echo-codec (constantly 7) :adapter/host]]]
         (is (= type (get-in ((spi/codec->invoke codec port) tool {:n 1} nil) [:error :type])))))))
+
+(deftest guard-refusals-carry-the-marker
+  (let [tool {:kind :spi-test/echo}]
+    (doseq [[why a] [["a throwing encoder" (spi/encode-call {:encode (fn [& _] (throw (ex-info "x" {})))} tool {})]
+                     ["a non-Answer decoder" (spi/decode-result {:decode (constantly 7)} tool nil)]]]
+      (is (spi/guard-refusal? a) why)
+      (is (true? (get-in a [:error :data spi/guard-marker])) why))
+    (testing "a codec's own refusal of the same type is not the guard's"
+      (let [own (spi/encode-call {:encode (fn [& _] (answer/refusal :codec/encode "mine"))} tool {})]
+        (is (= :codec/encode (get-in own [:error :type])))
+        (is (not (spi/guard-refusal? own)))))))

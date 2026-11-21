@@ -73,15 +73,17 @@
   (if (answer/ok? a) (answer/ok (wire/->wire (:ok a))) a))
 
 (defn- settle-later!
-  "Park thenable `x`; its value, through `project` (raw -> Answer), becomes
-   the parked answer and a journal entry (:autonomous/settled), so the
-   ledger knows how an async call ended. The entry follows the app's
-   CallDetail as it is when the call settles."
-  [x project]
+  "Park thenable `x`; its value, through `project` (raw -> Answer), and
+   then `finish` (Answer -> Answer), becomes the parked answer and a
+   journal entry (:autonomous/settled), so the ledger knows how an async
+   call ended. A failure goes through `finish` too. The entry follows the
+   app's CallDetail as it is when the call settles."
+  [x project finish]
   (let [id      (registry/park!)
         settle! (fn [a]
-                  (registry/settle! id a)
-                  (registry/record! (journal/settled-entry id a (:call-detail (registry/snapshot)))))]
+                  (let [a (finish a)]
+                    (registry/settle! id a)
+                    (registry/record! (journal/settled-entry id a (:call-detail (registry/snapshot))))))]
     #?(:cljs    (-> ^js x
                     (.then (fn [v] (settle! (normalize (project v)))))
                     (.catch (fn [e] (settle! (answer/from-exception e)))))
@@ -97,21 +99,31 @@
    (invocation-answer?) keeps its variant. Tool values are opaque, so an
    :ok key in one is not unwrapped. `project` (raw -> Answer, default
    answer/ok) maps every Ok value, direct or settled later, before wire
-   normalization."
+   normalization. `finish` (Answer -> Answer, default identity) maps the
+   final Answer, direct or settled later, refusals included."
   ([x] (settle x answer/ok))
-  ([x project]
+  ([x project] (settle x project identity))
+  ([x project finish]
    (cond
-     (invocation-answer? x) (normalize (answer/bind x project))
-     (thenable? x)          (settle-later! x project)
-     :else                  (normalize (project x)))))
+     (invocation-answer? x) (finish (normalize (answer/bind x project)))
+     (thenable? x)          (settle-later! x project finish)
+     :else                  (finish (normalize (project x))))))
 
 (defn- terminal
   "L2 Pipeline: the chain's terminal over context {:tool :args :grant}:
    use! wrappers around invoke-kind, settled through the tool's output
-   projection (autonomous.decorator/project-output)."
+   projection (autonomous.decorator/project-output). What the invocation
+   throws becomes its refusal here, so the tool's refusal projection
+   (autonomous.decorator/project-refusal) sees it as it sees a refusal
+   answered or settled later."
   [{:keys [tool args grant] :as ctx}]
-  (settle ((chain/handler ctx invoke-kind) tool args grant)
-          (partial decorator/project-output tool)))
+  (let [finish (partial decorator/project-refusal tool)]
+    (try
+      (settle ((chain/handler ctx invoke-kind) tool args grant)
+              (partial decorator/project-output tool)
+              finish)
+      (catch #?(:clj Throwable :cljs :default) e
+        (finish (answer/from-exception e))))))
 
 (defn- run-invoke
   "L2 Pipeline: the Answer of `plan` run through call chain `links`.

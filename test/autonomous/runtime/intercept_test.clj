@@ -5,7 +5,9 @@
             [autonomous.decorator :as decorator]
             [autonomous.runtime.registry :as registry]
             [clojure.test :refer [deftest is testing use-fixtures]]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [autonomous.runtime.invoke :as invoke]
+            [autonomous.domain.answer :as answer]))
 
 (defn- fixture-app! []
   (a/set-app-info! {:name "intercept" :description "test app"})
@@ -105,6 +107,56 @@
 (deftest a-redaction-that-breaks-the-output-schema-is-refused
   (a/decorate! (decorator/each-tool (decorator/redact-output [[:token]] 0)))
   (is (= :output/invalid-redaction (get-in (call "t_account" {}) [:error :type]))))
+
+(deftest the-invalid-redaction-refusal-is-neutral-and-says-what-failed
+  (a/decorate! (decorator/each-tool (decorator/redact-output [[:token]] 0)))
+  (let [{:keys [message data]} (:error (call "t_account" {}))]
+    (is (str/includes? message "wire form"))
+    (is (= {:token ["should be a string"]} (:problems data)))))
+
+(def ^:private leaky-request
+  "The ex-data an HTTP client attaches to a failure: the request, with its token."
+  {:request {:headers {:authorization "Bearer s3cret"}} :status 401})
+
+(defn- reg-leaky! []
+  (a/reg-tool :t/login {:description "Login" :read-only? true
+                        :input [:map [:mode :string]]
+                        :handler (fn [{:keys [mode]} _]
+                                   (case mode
+                                     "throw"  (throw (ex-info "http 401" leaky-request))
+                                     "later"  (future (throw (ex-info "http 401" leaky-request)))
+                                     "refuse" (invoke/return-answer
+                                               (answer/refusal :t/denied "no" leaky-request))
+                                     {:user "ana"}))}))
+
+(deftest redact-refusal-masks-the-data-of-every-refusal-the-tool-makes
+  (reg-leaky!)
+  (a/journal-calls! {:errors? true})
+  (a/decorate! (decorator/each-tool (decorator/redact-refusal [[:request :headers :authorization]])))
+  (let [masked {:request {:headers {:authorization "<redacted>"}} :status 401}]
+    (is (= masked (get-in (call "t_login" {:mode "throw"}) [:error :data])) "a throw")
+    (is (= masked (get-in (call "t_login" {:mode "refuse"}) [:error :data])) "a returned refusal")
+    (let [{:keys [pending]} (call "t_login" {:mode "later"})]
+      (is (= masked (get-in (poll-until-settled pending) [:error :data])) "an async failure"))
+    (is (= {:ok {:user "ana"}} (call "t_login" {:mode "ok"})) "Ok passes untouched")
+    (testing "the journal keeps only the masked data"
+      (let [errors (keep :error (:entries (:ok (a/rpc {:op :journal :since 0}))))]
+        (is (= 3 (count errors)))
+        (is (not (str/includes? (pr-str errors) "s3cret")))))))
+
+(deftest without-redact-refusal-the-data-is-kept
+  (reg-leaky!)
+  (is (= leaky-request (get-in (call "t_login" {:mode "throw"}) [:error :data]))
+      "refusal redaction is opt in"))
+
+(deftest redact-refusal-leaves-runtime-refusals-alone
+  (reg-leaky!)
+  (a/decorate! (decorator/each-tool (decorator/redact-refusal [[]])))
+  (is (= :invalid-args (get-in (call "t_login" {}) [:error :type])))
+  (is (map? (get-in (call "t_login" {}) [:error :data]))
+      "the runtime's own argument diagnosis is not the tool's data")
+  (is (= "<redacted>" (get-in (call "t_login" {:mode "throw"}) [:error :data]))
+      "the empty path replaces the whole data"))
 
 (deftest require-scope-through-a-decorated-runtime
   (a/decorate! (decorator/each-tool (decorator/require-scope :audit)))

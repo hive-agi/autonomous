@@ -225,18 +225,14 @@
                          (when-let [sample (sample-args fixture tool)] [sample])
                          malformed-args))))
 
-(def ^:private guard-refusals
-  "Refusal types autonomous.spi's guard emits when a codec port throws,
-   is missing or answers a non-Answer. The guard keeps the runtime safe,
-   but the codec itself failed to be total, so the contract fails it."
-  #{:codec/encode :codec/decode})
-
 (defn- answer-receipt
   "L3 Contract: require one codec crossing to answer Ok or the codec's own
-   refusal, never one the SPI guard had to make for it."
+   refusal, never one the SPI guard had to make for it (spi/guard-refusal?,
+   which reads the guard's marker, so a codec may refuse with the type
+   :codec/encode itself)."
   [stage tool-name args a]
   (result :codecs/total (and (m/validate [:or s/Ok s/Refusal] a)
-                             (not (guard-refusals (get-in a [:error :type]))))
+                             (not (spi/guard-refusal? a)))
           {:stage stage :tool tool-name :args args :answer a}))
 
 (defn- encode-receipt

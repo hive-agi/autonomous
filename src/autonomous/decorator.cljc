@@ -4,7 +4,8 @@
   (:require [autonomous.domain.answer :as answer]
             [autonomous.domain.journal :as journal]
             [autonomous.domain.wire :as wire]
-            [malli.core :as m]))
+            [malli.core :as m]
+            [malli.error :as me]))
 
 (defn require-scope
   "L1 Tool -> Tool: require one additional scope for listing and calling.
@@ -49,6 +50,19 @@
   [prefix]
   (fn [surface] (update surface :tools (partial prefix-tools prefix))))
 
+(defn- redaction
+  "L1: one redaction as data, {:paths :replacement}. The closure that
+   applies it is built where it runs (`apply-redactions`), so two equal
+   decorations leave equal tools and merge without a clash."
+  [paths replacement]
+  {:paths (vec paths) :replacement replacement})
+
+(defn- apply-redactions
+  "L1: wire-form `value` with every redaction of `redactions` applied in order."
+  [value redactions]
+  (reduce (fn [v {:keys [paths replacement]}] (journal/redact-paths v paths replacement))
+          value redactions))
+
 (defn redact-output
   "L1 Tool -> Tool: mask existing output paths (vectors of keys/indices)
    the way the journal masks args (autonomous.domain.journal/redact-paths).
@@ -57,26 +71,65 @@
 
    Paths address the output in WIRE form (autonomous.domain.wire/->wire):
    a lazy seq or list is a vector there, so [:accounts 0 :token] reaches
-   into {:accounts (map ...)}. They apply to Ok outputs only, never to a
-   refusal's :data: that is a different value (a throw's ex-data, a
-   codec's diagnosis) with its own shape, where output paths would mask
-   unrelated keys or miss the ones that matter. A tool that can refuse
-   with a secret in its data must keep the secret out of the refusal."
+   into {:accounts (map ...)}. The declared :output schema is then checked
+   against that wire form, not the raw value: a schema that needs map keys
+   other than keywords or strings, or values the wire carries as strings
+   (a LocalDate, a URI), fails the check even where no path matched, and
+   the call is refused :output/invalid-redaction. Declare such an output
+   in wire terms.
+
+   They apply to Ok outputs only, never to a refusal's :data: that is a
+   different value (a throw's ex-data, a codec's diagnosis) with its own
+   shape, where output paths would mask unrelated keys or miss the ones
+   that matter. Mask refusal data with `redact-refusal`.
+
+   The redaction is stored on the tool as data, so applying one decorator
+   to two copies of a surface leaves tools that compare equal."
   ([paths] (redact-output paths journal/redacted))
   ([paths replacement]
    (fn [tool]
-     (update tool ::output-filters (fnil conj [])
-             #(journal/redact-paths % paths replacement)))))
+     (update tool ::output-redactions (fnil conj []) (redaction paths replacement)))))
 
 (defn project-output
   "L1 Pipeline: apply redactions to the wire form of `raw`, so a path
    through a seq or list reaches what the bridge would carry. Refuse
-   rather than returning a masked output that violates its declared
-   schema. Without redactions `raw` passes unchanged."
+   (:output/invalid-redaction) rather than returning a masked output
+   whose wire form does not match the declared :output schema; see
+   `redact-output` for why the check sees the wire form. Without
+   redactions `raw` passes unchanged."
   [tool raw]
-  (if-let [filters (seq (::output-filters tool))]
-    (let [value (reduce (fn [v f] (f v)) (wire/->wire raw) filters)]
-      (if (and (:output tool) (not (m/validate (:output tool) value)))
-        (answer/refusal :output/invalid-redaction "redaction violates the output schema")
+  (if-let [redactions (seq (::output-redactions tool))]
+    (let [value (apply-redactions (wire/->wire raw) redactions)]
+      (if-let [e (some-> (:output tool) (m/explain value))]
+        (answer/refusal :output/invalid-redaction
+                        "the output, in wire form after redaction, does not match the declared output schema"
+                        {:problems (me/humanize e)})
         (answer/ok value)))
     (answer/ok raw)))
+
+(defn redact-refusal
+  "L1 Tool -> Tool, opt in: mask paths (vectors of keys/indices) in the
+   :data of every refusal the tool's own invocation answers: what its
+   handler or codec refuses with, what it throws (the ex-data minus
+   :autonomous/error, autonomous.domain.answer/from-exception), and how an
+   async result fails. The path [] replaces the whole :data. The default
+   replacement is \"<redacted>\".
+
+   The data is already in wire form when the paths apply. Refusals the
+   runtime itself makes before the tool runs (scopes, arguments, leases)
+   are not touched. The refusal's :message is never masked: a tool whose
+   exceptions can name a secret in their message must catch them."
+  ([paths] (redact-refusal paths journal/redacted))
+  ([paths replacement]
+   (fn [tool]
+     (update tool ::refusal-redactions (fnil conj []) (redaction paths replacement)))))
+
+(defn project-refusal
+  "L1 Pipeline: Answer `a` with the tool's refusal redactions applied to
+   a refusal's :data. Ok, Pending, a refusal without :data and a tool
+   without refusal redactions pass unchanged."
+  [tool a]
+  (let [redactions (seq (::refusal-redactions tool))]
+    (if (and redactions (answer/refused? a) (contains? (:error a) :data))
+      (update-in a [:error :data] apply-redactions redactions)
+      a)))

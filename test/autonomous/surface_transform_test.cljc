@@ -87,6 +87,22 @@
     (is (= {:user "ana" :card {:pan 0}} (mask (decorator/redact-output [[:card :pan]] 0)))
         "the replacement argument is kept")))
 
+(deftest redactions-are-data-so-equal-decorations-are-equal-tools
+  (let [d (comp (decorator/redact-output [[:card :pan]]) (decorator/redact-refusal [[:token]]))]
+    (is (= (dissoc (d (tool :d/acct {})) :handler :decode :explain)
+           (dissoc (d (tool :d/acct {})) :handler :decode :explain)))))
+
+(deftest project-refusal-masks-only-a-refusal's-data
+  (let [t ((decorator/redact-refusal [[:token]]) (tool :d/acct {}))]
+    (is (= {:error {:type :x :message "m" :data {:token "<redacted>" :n 1}}}
+           (decorator/project-refusal t (answer/refusal :x "m" {:token "abc" :n 1}))))
+    (is (= {:ok {:token "abc"}} (decorator/project-refusal t {:ok {:token "abc"}})) "Ok untouched")
+    (is (= {:pending "p"} (decorator/project-refusal t {:pending "p"})) "Pending untouched")
+    (is (= (answer/refusal :x "m") (decorator/project-refusal t (answer/refusal :x "m"))) "no data, nothing added")
+    (is (= (answer/refusal :x "m" {:token "abc"})
+           (decorator/project-refusal (tool :d/acct {}) (answer/refusal :x "m" {:token "abc"})))
+        "a tool without refusal redactions passes its data")))
+
 (def ^:private decorator-gen
   (gen/elements [(decorator/prefix-names "p_")
                  audited
