@@ -66,6 +66,16 @@
   ([m paths replacement]
    (reduce (partial mask-path replacement) m paths)))
 
+(defn- with-approval
+  "L0 Promote: `entry` with the human Decision Answer `ans` carries as
+   :autonomous/approval metadata, as :approval {:decision :approver :ms},
+   whenever there is one. CallDetail :redact paths that start with
+   :approval mask inside it, as the other paths mask inside the args."
+  [entry ans detail]
+  (if-let [d (:autonomous/approval (meta ans))]
+    (assoc entry :approval (:approval (redact-paths {:approval d} (:redact detail))))
+    entry))
+
 (defn call-entry
   "The CallEntry of a call of `tool-name` with `args` by `grant` that ended in
    Answer `ans` after `ms`. A Pending answer's id is always kept as :pending,
@@ -89,15 +99,22 @@
     (assoc :args (redact-paths (wire/->wire (or args {})) (:redact detail)))
 
     (and (:errors? detail) (answer/refused? ans))
-    (assoc :error (:error ans))))
+    (assoc :error (:error ans))
+
+    :always
+    (with-approval ans detail)))
 
 (defn settled-entry
   "The entry saying how the async call parked as `id` ended: Answer `ans`.
    With the app's CallDetail :errors? on, a refusal's :error is kept, as
-   call-entry keeps it for a call refused at once."
+   call-entry keeps it for a call refused at once. A human approval
+   Decision the answer carries is kept as :approval (see call-entry)."
   [id ans detail]
   (cond-> {:kind    :autonomous/settled
            :pending id
            :outcome (answer/outcome ans)}
     (and (:errors? detail) (answer/refused? ans))
-    (assoc :error (:error ans))))
+    (assoc :error (:error ans))
+
+    :always
+    (with-approval ans detail)))

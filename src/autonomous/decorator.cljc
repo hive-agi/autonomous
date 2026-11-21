@@ -1,9 +1,11 @@
 (ns autonomous.decorator
   "L1 endomorphisms: decorate a compiled Tool or Surface without changing
    its input or output schema. Compose configured decorators with `comp`."
-  (:require [autonomous.domain.answer :as answer]
+  (:require [autonomous.approval :as approval]
+            [autonomous.domain.answer :as answer]
             [autonomous.domain.journal :as journal]
             [autonomous.domain.wire :as wire]
+            [autonomous.thenable :as thenable]
             [malli.core :as m]
             [malli.error :as me]))
 
@@ -18,6 +20,94 @@
     (throw (ex-info (str "require-scope needs a keyword scope, got " (pr-str scope))
                     {:autonomous/error :invalid-scope :scope scope})))
   (fn [tool] (update tool :scopes conj scope)))
+
+(def approval-ttl-margin-ms
+  "L1: how long before the pending TTL an approval wait must end."
+  (* 60 1000))
+
+(def max-approval-ms
+  "L1: require-approval's :timeout-ms must stay below this: the runtime's
+   pending TTL (autonomous.runtime.registry/pending-ttl-ms, 10 minutes)
+   less approval-ttl-margin-ms, so an approved call's result is collectable."
+  (- (* 10 60 1000) approval-ttl-margin-ms))
+
+(defn require-approval
+  "L1 Tool -> Tool: every call waits for a human's Verdict from `asker`
+   (autonomous.approval/Asker) and is Pending meanwhile. Approve runs the
+   tool once; deny refuses :approval-denied, no Verdict within
+   `timeout-ms` refuses :approval-timeout, and neither runs it. Throws
+   ex-info :autonomous/error :invalid-approval on a bad option."
+  [{:keys [asker timeout-ms] :as opts}]
+  (when-not (and (approval/asker? asker) (pos-int? timeout-ms) (< timeout-ms max-approval-ms))
+    (throw (ex-info (str "require-approval needs an Asker :asker and a :timeout-ms in 1.."
+                         (dec max-approval-ms))
+                    {:autonomous/error :invalid-approval :opts (dissoc opts :asker)})))
+  (fn [tool] (assoc tool ::approval {:asker asker :timeout-ms timeout-ms})))
+
+(def ^:private refusals
+  "L1: the refusal of each Decision that does not run the tool."
+  {:deny    (answer/refusal :approval-denied "a human denied this call")
+   :timeout (answer/refusal :approval-timeout "no human answered in time")
+   :error   (answer/refusal :approval-error "the approval asker failed")})
+
+(defn- as-answer
+  "L1 Promote: a tool's value `v` as an Answer: a complete Answer as is,
+   any other value as its Ok."
+  [v]
+  (if (answer/complete? v) v (answer/ok v)))
+
+(defn- stamped
+  "L1 Promote: Answer `a` marked complete, carrying Decision `d` as
+   :autonomous/approval metadata."
+  [d a]
+  (vary-meta (answer/complete a) assoc :autonomous/approval d))
+
+(defn- approved
+  "L1 Pipeline: a thenable of the Answer of thunk `run` (the refusal of
+   what it throws or fails with), stamped with Decision `d`."
+  [run d]
+  (thenable/attempt #(thenable/chain (run) (comp (partial stamped d) as-answer))
+                    (comp (partial stamped d) answer/from-exception)))
+
+(defn- decided
+  "L1 Pipeline: run thunk `run` when Decision `d` approves; else its refusal."
+  [run d]
+  (if (= :approve (:decision d))
+    (approved run d)
+    (stamped d (refusals (:decision d) (:deny refusals)))))
+
+(defn- approval-request
+  "L1 Promote: what the asker is asked about one call: the tool name, the
+   args in wire form with the journal's `redact` paths masked, the actor
+   and the session, as data. Rendering them for a human (escaping,
+   capping) is the asker's (autonomous.approval/prompt-lines)."
+  [tool args grant redact]
+  {:tool    (:name tool)
+   :args    (journal/redact-paths (wire/->wire (or args {})) redact)
+   :actor   (:actor grant)
+   :session (:session grant)})
+
+(defn- strip-approval
+  "L1 Promote: `v` without :autonomous/approval metadata."
+  [v]
+  (if (contains? (meta v) :autonomous/approval) (vary-meta v dissoc :autonomous/approval) v))
+
+(defn- unstamped
+  "L1 Pipeline: an ungated tool's value `x`, now or once computed, with no
+   :autonomous/approval metadata, so only the gate can journal an approval."
+  [x]
+  (if (thenable/thenable? x) (thenable/chain x strip-approval) (strip-approval x)))
+
+(defn gate
+  "L1 Pipeline: (run) for a tool without require-approval; else a thenable
+   of the complete Answer the human's Decision leads to (see
+   require-approval), carrying that Decision as :autonomous/approval. The
+   human sees the args with CallDetail `redact` paths masked."
+  [tool args grant redact run]
+  (if-let [{:keys [asker timeout-ms]} (::approval tool)]
+    (thenable/chain (approval/ask! asker (approval-request tool args grant redact) timeout-ms)
+                    (partial decided run))
+    (unstamped (run))))
 
 (defn each-tool
   "L1 lift: Tool -> Tool fn `f` as a Surface -> Surface fn applying it to
