@@ -44,11 +44,13 @@
    :out [:string {:min 1 :max 64}]
    :rel (fn [[pfx tool] out]
           (let [full (str pfx "__" tool)]
-            (if (<= (count full) 64)
+            (if (naming/valid-tool-name? full)
               (= full out)
-              (and (= 64 (count out))
-                   (= (subs full 0 59) (subs out 0 59))
-                   (= (fleet/checksum full) (subs out 60))))))
+              (and (naming/valid-tool-name? out)
+                   (clojure.string/ends-with? out (str "-" (fleet/digest full)))
+                   (clojure.string/starts-with?
+                    (str pfx "__" (naming/sanitize tool))
+                    (subs out 0 (- (count out) 13)))))))
    :golden-path "test/golden/fleet/exposed-name.edn"
    :num-tests 200
    :seed 7

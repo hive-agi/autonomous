@@ -9,6 +9,7 @@
             [autonomous.bridge.ledger :as ledger]
             [autonomous.bridge.port :as port]
             [autonomous.bridge.session :as s]
+            [autonomous.domain.fleet]
             [autonomous.mcp.server :as server]
             [clojure.test :refer [deftest is testing]]
             [autonomous.mcp.stdio :as stdio]))
@@ -122,7 +123,8 @@
     (is (= [:up :down :slow]
            (map :status (get-in (call srv rw "autonomous_apps" {}) [:answer :ok :apps]))))
     (is (= {:ok {:app "todo" :tool "todo_add" :runtime nil}} (:answer (call srv rw "todo__todo_add" {}))))
-    (is (= :channel/connect-failed (get-in (call srv rw "api__refund" {}) [:answer :error :type])))
+    (is (= :channel/connect-failed (get-in (call srv rw "api__refund" {}) [:answer :error :type]))
+        "an app that never listed its tools answers its own error, and nothing is sent")
     (testing "it comes back on reconnect, and the fingerprint moves"
       (reset! state :up)
       (is (contains? (set (map :name (server/list-tools srv rw))) "api__refund"))
@@ -136,6 +138,13 @@
     (is (not (contains? names "autonomous_apps")))
     (is (= {:ok {:app "todo" :tool "todo_add" :runtime nil}} (:answer (call srv rw "todo_add" {}))))
     (is (= [1 ["todo_add"]] (server/tools-fingerprint srv rw)))))
+
+(deftest single-mode-never-lists-an-invalid-name
+  (let [l   (ledger/open {:ledger/kind :memory})
+        f   (bf/from-context (second (member "todo" (app-responder "todo" ["todo_add" "admin.tools.list"]) l)))
+        s   (bf/surface f rw)]
+    (is (= ["todo_add"] (mapv :name (:tools s))))
+    (is (= ["admin.tools.list"] (get-in s [:apps 0 :dropped])))))
 
 (def ^:private long-stem
   "A tool-name stem long enough that <prefix>__<stem>... is cut at 64."
@@ -223,3 +232,139 @@
     (is (wait-for changed?) "the app coming back moves the fleet fingerprint")
     (deliver done true)
     (deref runner 3000 nil)))
+
+(defn- fleet-name [tid tool]
+  (autonomous.domain.fleet/exposed-name (autonomous.domain.fleet/prefix tid) tool))
+
+(defn- listing-responder
+  "A runtime whose manifest lists (@listing actor scopes) and answers a call
+   with the tool it was given; @mode :slow sleeps past the probe deadline,
+   :down refuses."
+  [listing mode]
+  (fn [{:keys [op tool actor scopes]} _]
+    (case op
+      :manifest (case @mode
+                  :slow (do (Thread/sleep 400) (apply manifest "r" (@listing actor scopes)))
+                  :down {:error {:type :channel/connect-failed :message "down"}}
+                  (apply manifest "r" (@listing actor scopes)))
+      :call     {:ok {:tool tool}}
+      {:ok nil})))
+
+(defn- routing-fleet [listing mode]
+  (let [l (ledger/open {:ledger/kind :memory})]
+    (bf/make [(member "r" (listing-responder listing mode) l)
+              (member "o" (app-responder "o" ["x"]) l)]
+             {:probe-ms 150})))
+
+(defn- tool-names [f ses]
+  (set (map :name (:tools (bf/surface f ses)))))
+
+(deftest sanitized-and-colliding-names-route-by-the-original-name
+  (let [listing (atom (constantly ["pay.out" "pay_out"]))
+        mode    (atom :up)
+        f       (routing-fleet listing mode)
+        dotted  (fleet-name "r" "pay.out")
+        names   (tool-names f rw)]
+    (is (contains? names "r__pay_out"))
+    (is (contains? names dotted) "the dotted tool gets its own digested name")
+    (is (= {:ok {:tool "pay_out"}} (bf/call! f rw "r__pay_out" {})))
+    (is (= {:ok {:tool "pay.out"}} (bf/call! f rw dotted {})))
+    (testing "a reorder of the listing rebinds nothing"
+      (reset! listing (constantly ["pay_out" "pay.out"]))
+      (tool-names f rw)
+      (is (= {:ok {:tool "pay_out"}} (bf/call! f rw "r__pay_out" {})))
+      (is (= {:ok {:tool "pay.out"}} (bf/call! f rw dotted {}))))
+    (testing "a literal name in the digest shape never takes over a held digested name"
+      (let [squatter (subs dotted 3)]
+        (reset! listing (constantly ["pay_out" squatter]))
+        (tool-names f rw)
+        (is (= :unknown-tool (get-in (bf/call! f rw dotted {}) [:error :type]))
+            "the held name of the delisted pay.out reaches nothing")
+        (is (not= dotted (fleet-name "r" squatter)))
+        (is (= {:ok {:tool squatter}} (bf/call! f rw (fleet-name "r" squatter) {}))
+            "the literal tool is reachable under its own digested name")))
+    (testing "a tool the target stops listing is refused, not sent as it is"
+      (reset! listing (constantly ["pay_out"]))
+      (tool-names f rw)
+      (is (= :unknown-tool (get-in (bf/call! f rw dotted {}) [:error :type]))))))
+
+(deftest a-slow-or-down-look-never-erases-the-listing-a-name-routes-by
+  (let [listing (atom (constantly ["pay.out"]))
+        mode    (atom :up)
+        f       (routing-fleet listing mode)
+        dotted  (fleet-name "r" "pay.out")]
+    (tool-names f rw)
+    (doseq [m [:slow :down]]
+      (reset! mode m)
+      (tool-names f rw)
+      (is (= {:ok {:tool "pay.out"}} (bf/call! f rw dotted {}))
+          (str "after a " (name m) " look the name still reaches its tool")))
+    (testing "a session with no listing of a down target gets the target's own error, never a call"
+      (let [fresh (s/open-session "s9" {:actor "agent-9" :scopes #{:read :write}})]
+        (reset! mode :down)
+        (is (= :channel/connect-failed (get-in (bf/call! f fresh dotted {}) [:error :type])))
+        (is (= :channel/connect-failed (get-in (bf/call! f fresh "r__pay_out" {}) [:error :type])))))
+    (testing "a slow target with no listing answers :target/slow"
+      (let [fresh (s/open-session "s7" {:actor "agent-7" :scopes #{:read :write}})]
+        (reset! mode :slow)
+        (is (= :target/slow (get-in (bf/call! f fresh dotted {}) [:error :type])))))
+    (testing "with no listing yet, the call probes the target first"
+      (let [fresh (s/open-session "s8" {:actor "agent-8" :scopes #{:read :write}})]
+        (reset! mode :up)
+        (is (= {:ok {:tool "pay.out"}} (bf/call! f fresh dotted {})))))))
+
+(deftest two-sessions-of-one-actor-keep-their-own-listing
+  (let [listing (atom (fn [_actor scopes]
+                        (if (contains? (set scopes) :write) ["pay.out"] ["pay_out" "pay.out"])))
+        mode    (atom :up)
+        f       (routing-fleet listing mode)
+        ro      (s/open-session "s-ro" {:actor "agent-1" :scopes #{:read}})
+        dotted  (fleet-name "r" "pay.out")]
+    (tool-names f rw)
+    (tool-names f ro)
+    (is (= {:ok {:tool "pay.out"}} (bf/call! f rw dotted {}))
+        "the read-only session's later look does not change where rw's call goes")
+    (is (= {:ok {:tool "pay_out"}} (bf/call! f ro "r__pay_out" {})))
+    (is (= :unknown-tool (get-in (bf/call! f rw "r__pay_out" {}) [:error :type]))
+        "rw was never listed pay_out")))
+
+(deftest views-and-in-flight-looks-are-bounded
+  (let [now     (atom 0)
+        l       (ledger/open {:ledger/kind :memory})
+        f       (bf/make [(member "r" (app-responder "r" ["pay.out"]) l)
+                          (member "o" (app-responder "o" ["x"]) l)]
+                         {:probe-ms 150 :clock #(deref now) :view-ttl-ms 1000 :max-views 6})
+        ses     #(s/open-session % {:actor % :scopes #{:read :write}})
+        dotted  (fleet-name "r" "pay.out")
+        keeper  (ses "keeper")]
+    (bf/probe f keeper)
+    (testing "a settled look leaves :inflight"
+      (is (wait-for #(empty? @(:inflight f)))))
+    (testing "the cap keeps the most recently touched views"
+      (doseq [i (range 10)] (swap! now inc) (bf/probe f (ses (str "a" i))))
+      (is (<= (count @(:last f)) 6))
+      (is (= #{"a7" "a8" "a9"} (set (map second (keys @(:last f)))))))
+    (testing "a view a live session keeps routing by is not evicted"
+      (bf/probe f keeper)
+      (doseq [i (range 3)]
+        (swap! now + 400)
+        (is (= {:app "r" :tool "pay.out" :runtime nil} (:ok (bf/call! f keeper dotted {}))))
+        (bf/probe f (ses (str "b" i))))
+      (is (contains? (set (map second (keys @(:last f)))) "keeper")))
+    (testing "an untouched view expires after its TTL"
+      (swap! now + 1001)
+      (bf/probe f (ses "late"))
+      (is (= #{"late"} (set (map second (keys @(:last f)))))))))
+
+(deftest the-view-just-written-is-never-the-one-evicted
+  (let [l  (ledger/open {:ledger/kind :memory})
+        f  (bf/make [(member "r" (app-responder "r" ["pay.out"]) l)
+                     (member "o" (app-responder "o" ["x"]) l)]
+                    {:probe-ms 150 :clock (constantly 5) :max-views 2})
+        ses #(s/open-session % {:actor % :scopes #{:read :write}})]
+    (doseq [a ["a1" "a2" "a3"]]
+      (bf/probe f (ses a))
+      (is (= #{a} (set (map second (keys @(:last f)))))
+          (str "with every view touched in the same millisecond, " a "'s two views stay")))
+    (is (= {:app "r" :tool "pay.out" :runtime nil}
+           (:ok (bf/call! f (ses "a3") (fleet-name "r" "pay.out") {}))))))
