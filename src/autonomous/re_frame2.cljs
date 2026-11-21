@@ -24,14 +24,15 @@
             [re-frame.core :as rf]))
 
 (defn- check-frame!
-  "Throw :re-frame/unknown-frame unless `frame` is a registered frame now."
+  "Throw :re-frame/unknown-frame unless `frame` is a registered frame now.
+   Its shape was checked when the tool was registered."
   [frame]
-  (kernel/checked-frame! {:frames? true} frame)
-  (when-not (contains? (set (rf/frame-ids)) frame)
-    (throw (ex-info (str "no re-frame2 frame " (pr-str frame) " is registered")
-                    {:autonomous/error :re-frame/unknown-frame
-                     :frame frame
-                     :frames (vec (sort-by str (rf/frame-ids)))}))))
+  (let [frames (rf/frame-ids)]
+    (when-not (contains? frames frame)
+      (throw (ex-info (str "no re-frame2 frame " (pr-str frame) " is registered")
+                      {:autonomous/error :re-frame/unknown-frame
+                       :frame frame
+                       :frames (vec (sort-by str frames))})))))
 
 (defn- registered?
   "Is a `kind` handler `id` visible to `frame` (the frame's sealed image),
