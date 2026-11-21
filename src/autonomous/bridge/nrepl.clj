@@ -11,6 +11,7 @@
    Security: an nREPL is remote code execution by design. Keep it bound to
    localhost; let only the scoped MCP endpoint cross a network."
   (:require [autonomous.bridge.eval-source :as src]
+            [autonomous.bridge.failure :as failure]
             [autonomous.bridge.port :as port]
             [autonomous.domain.answer :as answer]
             [clojure.string :as str]
@@ -29,7 +30,7 @@
       (answer/ok {:transport transport :session (nrepl/client-session client)}))
     (catch Exception e
       (answer/refusal :channel/connect-failed
-                      (str "cannot reach nREPL on port " port) {:cause (ex-message e)}))))
+                      (str "cannot reach nREPL on port " port) {:cause (failure/message e)}))))
 
 (defn- open!
   "L3 Boundary: Ok of a connection to `target`'s nREPL, or a refusal."
@@ -98,7 +99,7 @@
          (catch clojure.lang.ExceptionInfo e (answer/from-exception e))
          (catch Exception e
            (forget! conn)
-           (answer/refusal :channel/transport-failed (or (ex-message e) (str e)))))))
+           (answer/refusal :channel/transport-failed (failure/message e))))))
 
 (defrecord NreplChannel [target conn]
   port/IRuntimeChannel

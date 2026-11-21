@@ -5,7 +5,8 @@
 
    Redirect-free (a token is not resent to a stranger) and bounded: a
    request times out, a stream timeout of 0 is the stream's own lifetime."
-  (:require [autonomous.bridge.port :as port]
+  (:require [autonomous.bridge.failure :as failure]
+            [autonomous.bridge.port :as port]
             [autonomous.bridge.rpc :as rpc]
             [autonomous.domain.answer :as answer]
             [clojure.string :as str])
@@ -43,15 +44,11 @@
   (let [b (:body req)] (if (map? b) (rpc/json-text b) b)))
 
 (defn- transport-failed
-  "The refusal of exception `e` thrown while building or sending a request.
-   An IllegalArgumentException comes from building it (a header or url the
-   JDK refuses) and its message quotes the offending value, which may be a
-   credential: only its class is reported."
+  "The refusal of exception `e` thrown while building or sending a request,
+   in the allowlisted text of autonomous.bridge.failure: an exception's
+   own message may quote a header value or a url, so it is never carried."
   [^Exception e]
-  (answer/refusal :channel/transport-failed
-                  (if (instance? IllegalArgumentException e)
-                    (str "the request could not be built (" (.getName (class e)) ")")
-                    (or (ex-message e) (str e)))))
+  (answer/refusal :channel/transport-failed (failure/message e)))
 
 (def max-body-chars
   "The most characters a remote reply body may hold: 4 MiB."
