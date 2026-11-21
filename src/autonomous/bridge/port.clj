@@ -37,8 +37,11 @@
      :channel/transport-failed refusal only when the failure precedes the
      request reaching the remote (connect, resolve, route, TLS handshake,
      building it), so a retry is safe, else :channel/outcome-unknown (the
-     remote may have acted). An SSE reply is read up to the message whose
-     id is :rpc-id. Never throws.")
+     remote may have acted). An answered request is no proof either way: a
+     5xx to tools/call (the channel's :channel/remote-refused with its
+     :status) may have run, so only :channel/transport-failed is safe to
+     retry. An SSE reply is read up to the message whose id is :rpc-id.
+     Never throws.")
   (-open-stream! [client req sink]
     "Answer of a held GET to `req` whose event text arrives at `sink`
      ({:text! (fn [s]) :close! (fn [])}), or a refusal. Ok of
