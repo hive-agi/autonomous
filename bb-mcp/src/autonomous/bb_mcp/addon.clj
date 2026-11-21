@@ -78,13 +78,13 @@
   (server/tools-fingerprint (:srv @st) (session-of st (:actor @st))))
 
 (defn- latest-by-target
-  "{target-id status} of the fleet's last probes, which are kept per
-   [target actor]: a target's status is that of its most recent probe by
-   any actor, an :up one winning a tie. One agent refused by a remote thus
-   degrades nobody once another agent reaches it later."
+  "{target-id status} of the fleet's last probes, which are kept per view
+   (target, actor, scopes, runtime): a target's status is that of its most
+   recent probe by any view, an :up one winning a tie. One agent refused by
+   a remote thus degrades nobody once another agent reaches it later."
   [last-probes]
   (let [rank   (fn [pr] [(:at pr 0) (if (= :up (:status pr)) 1 0)])
-        newest (reduce (fn [acc [[tid _actor] pr]]
+        newest (reduce (fn [acc [tid pr]]
                          (if (and (acc tid) (neg? (compare (rank pr) (rank (acc tid))))) acc (assoc acc tid pr)))
                        {} last-probes)]
     (into (sorted-map) (map (fn [[tid pr]] [tid (:status pr)])) newest)))
@@ -94,7 +94,7 @@
    all up (or none looked at yet), :degraded some down or slow. :details
    :status is keyed by target id."
   [srv]
-  (let [status (latest-by-target @(get-in srv [:fleet :last]))]
+  (let [status (latest-by-target (fleet/last-probes (:fleet srv)))]
     {:status  (if (every? #{:up} (vals status)) :ok :degraded)
      :details {:apps (get-in srv [:fleet :order]) :status status}}))
 
