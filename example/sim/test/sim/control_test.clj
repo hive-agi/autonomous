@@ -120,11 +120,29 @@
 (deftest only-a-loopback-base-url-is-accepted
   (doseq [bad ["https://staging.example.com" "http://10.0.0.5:8099" "http://staging-sicoob-sim:8099"
                "http://user:pw@127.0.0.1:1" "http://127.0.0.1:1/?x=1" "http://127.0.0.1:1/__sim"
-               "ftp://127.0.0.1:1" nil "" "127.0.0.1:18099"]]
+               "ftp://127.0.0.1:1" nil "" "127.0.0.1:18099"
+               "http://[::1].evil.com" "http://[::1]evil.com:80" "http://127.0.0.1:8099.evil.com"
+               "http://127.0.0.1:x" "http://127.0.0.1.evil.com:80" "http://localhost.:1"
+               "http://127.0.0.1:1#f" "http://@127.0.0.1:1" "http://127.0.0.1:1:2"
+               "http://127.0.0.1\\@evil.com" "http://127.0.0.1%2f@evil.com"]]
     (is (= :invalid-sim-config (try (control/tool-specs {:base-url bad}) nil
                                     (catch clojure.lang.ExceptionInfo e (:autonomous/error (ex-data e)))))
         (pr-str bad)))
-  (is (= 3 (count (control/tool-specs {:base-url "http://localhost:18099/"})))))
+  (doseq [good ["http://localhost:18099/" "http://127.0.0.1:18099" "http://[::1]:18099" "https://127.0.0.2"]]
+    (is (= 3 (count (control/tool-specs {:base-url good}))) good)))
+
+(deftest a-redirect-is-never-followed
+  (is (= :never ((requiring-resolve 'autonomous.openapi.http/redirect-policy))))
+  (let [srv (hk/run-server (fn [_] {:status 302 :headers {"Location" (str *base* "/__sim/state")} :body ""})
+                           {:ip "127.0.0.1" :port 0 :legacy-return-value? false})]
+    (try
+      (a/reset-registry!)
+      (control/install! {:base-url (str "http://127.0.0.1:" (hk/server-port srv)) :timeout-ms 2000})
+      (let [r (call "sim_state" {})]
+        (is (= :sim/refused (get-in r [:error :type])))
+        (is (= 302 (get-in r [:error :data :status]))))
+      (is (empty? @seen) "the redirect target was never asked")
+      (finally @(hk/server-stop! srv {:timeout 1000})))))
 
 (deftest the-persona-guard-allows-only-the-sim-provider
   (a/reg-tool :payment/createPixCharge

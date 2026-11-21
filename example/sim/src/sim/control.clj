@@ -127,22 +127,49 @@
 (defn- default-http [req]
   ((requiring-resolve 'autonomous.openapi.http/request!) req))
 
+(defn- uri-view
+  "L3 Boundary: {:scheme :host :port :path} of `s` as java.net.URI reads
+   it, or nil when it does not parse, has no host, carries userinfo,
+   query or fragment, or has a non-numeric port."
+  [s]
+  (try
+    (let [u (java.net.URI. s)]
+      (when (and (.getHost u) (nil? (.getRawUserInfo u)) (nil? (.getRawQuery u)) (nil? (.getRawFragment u))
+                 (= (.getRawAuthority u) (str (.getHost u) (when (pos? (.getPort u)) (str ":" (.getPort u))))))
+        {:scheme (some-> (.getScheme u) str/lower-case) :host (str/lower-case (.getHost u))
+         :port (when (pos? (.getPort u)) (str (.getPort u))) :path (str (.getRawPath u))}))
+    (catch Exception _ nil)))
+
+(defn loopback-base-url?
+  "L1: is `s` an http(s) URL of this host with no path, userinfo, query or
+   fragment, read the same by autonomous.bridge.url and java.net.URI? Both
+   must say loopback and agree on scheme, host and port; any disagreement
+   refuses."
+  [s]
+  (boolean
+   (when (string? s)
+     (let [{:keys [scheme host port path]} (url/parts s)
+           theirs (uri-view s)]
+       (and theirs host
+            (url/clean? s) (url/loopback? s) (url/loopback? (str "http://" (:host theirs)))
+            (#{"http" "https"} scheme)
+            (= [scheme host port] [(:scheme theirs) (:host theirs) (:port theirs)])
+            (str/blank? (str/replace (str path) "/" ""))
+            (str/blank? (str/replace (:path theirs) "/" "")))))))
+
 (defn- checked-config
   "L1: `opts` with defaults, or throws :invalid-sim-config: the base URL
-   must be http on this host (a port-forward), with no userinfo, query or
-   fragment."
+   must pass loopback-base-url? (a port-forward on this host)."
   [{:keys [base-url http timeout-ms pay-scopes] :as opts}]
-  (let [{:keys [scheme path]} (when (string? base-url) (url/parts base-url))]
-    (when-not (and (string? base-url) (url/clean? base-url) (url/loopback? base-url)
-                   (#{"http" "https"} scheme) (str/blank? (str/replace (str path) "/" "")))
-      (throw (ex-info (str "sim.control: :base-url must be a loopback http URL with no path, "
-                           "the local end of a kubectl port-forward; got " (pr-str base-url))
-                      {:autonomous/error :invalid-sim-config :base-url base-url})))
-    {:base-url base-url
-     :http (or http default-http)
-     :timeout-ms (or timeout-ms 10000)
-     :pay-scopes (set (or pay-scopes [:write :sim/pay]))
-     :opts opts}))
+  (when-not (loopback-base-url? base-url)
+    (throw (ex-info (str "sim.control: :base-url must be a loopback http URL with no path, "
+                         "the local end of a kubectl port-forward; got " (pr-str base-url))
+                    {:autonomous/error :invalid-sim-config :base-url base-url})))
+  {:base-url base-url
+   :http (or http default-http)
+   :timeout-ms (or timeout-ms 10000)
+   :pay-scopes (set (or pay-scopes [:write :sim/pay]))
+   :opts opts})
 
 (defn tool-specs
   "L1: [[id spec] ...] of the control-plane tools for opts:
