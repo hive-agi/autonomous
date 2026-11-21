@@ -307,3 +307,31 @@
     (is (= {:ok {:tool "pay_out"}} (bf/call! f ro "r__pay_out" {})))
     (is (= :unknown-tool (get-in (bf/call! f rw "r__pay_out" {}) [:error :type]))
         "rw was never listed pay_out")))
+
+(deftest views-and-in-flight-looks-are-bounded
+  (let [now     (atom 0)
+        l       (ledger/open {:ledger/kind :memory})
+        f       (bf/make [(member "r" (app-responder "r" ["pay.out"]) l)
+                          (member "o" (app-responder "o" ["x"]) l)]
+                         {:probe-ms 150 :clock #(deref now) :view-ttl-ms 1000 :max-views 6})
+        ses     #(s/open-session % {:actor % :scopes #{:read :write}})
+        dotted  (fleet-name "r" "pay.out")
+        keeper  (ses "keeper")]
+    (bf/probe f keeper)
+    (testing "a settled look leaves :inflight"
+      (is (wait-for #(empty? @(:inflight f)))))
+    (testing "the cap keeps the most recently touched views"
+      (doseq [i (range 10)] (swap! now inc) (bf/probe f (ses (str "a" i))))
+      (is (<= (count @(:last f)) 6))
+      (is (= #{"a7" "a8" "a9"} (set (map second (keys @(:last f)))))))
+    (testing "a view a live session keeps routing by is not evicted"
+      (bf/probe f keeper)
+      (doseq [i (range 3)]
+        (swap! now + 400)
+        (is (= {:app "r" :tool "pay.out" :runtime nil} (:ok (bf/call! f keeper dotted {}))))
+        (bf/probe f (ses (str "b" i))))
+      (is (contains? (set (map second (keys @(:last f)))) "keeper")))
+    (testing "an untouched view expires after its TTL"
+      (swap! now + 1001)
+      (bf/probe f (ses "late"))
+      (is (= #{"late"} (set (map second (keys @(:last f)))))))))

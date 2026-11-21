@@ -80,9 +80,14 @@
         inflight (:inflight f)
         ctx      (member f tid)]
     (or (let [fut (get @inflight k)] (when (and fut (not (realized? fut))) fut))
-        (let [fut (future (try (client/manifest ctx ses)
-                               (catch Exception e (answer/from-exception e))))]
+        (let [self (promise)
+              fut  (future
+                     (try (client/manifest ctx ses)
+                          (catch Exception e (answer/from-exception e))
+                          (finally
+                            (swap! inflight (fn [m] (if (identical? (get m k) @self) (dissoc m k) m))))))]
           (swap! inflight assoc k fut)
+          (deliver self fut)
           fut))))
 
 (defn classify
@@ -140,7 +145,8 @@
         t        ((:clock f))]
     (swap! (:last f)
            (fn [views]
-             (reduce (fn [vs p] (remember vs (view-key f session (:target p)) p t)) views probes)))
+             (prune-views (reduce (fn [vs p] (remember vs (view-key f session (:target p)) p t)) views probes)
+                          t (:view-ttl-ms f) (:max-views f))))
     probes))
 
 (defn probe
