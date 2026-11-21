@@ -1,5 +1,6 @@
 //! zig build        the example, linked against libautonomous
 //! zig build run    build and run it (exits 1 on a wrong answer)
+//! zig build test   the binding's unit tests
 //!
 //! -Dlib-dir=<dir> points at libautonomous.so (default ../../build).
 
@@ -36,4 +37,7 @@ pub fn build(b: *std.Build) void {
 
     const run = b.addRunArtifact(exe);
     b.step("run", "Run the example").dependOn(&run.step);
+
+    const tests = b.addTest(.{ .root_module = autonomous });
+    b.step("test", "Run the binding's unit tests").dependOn(&b.addRunArtifact(tests).step);
 }

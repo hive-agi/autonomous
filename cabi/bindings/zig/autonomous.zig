@@ -102,7 +102,7 @@ pub const Runtime = struct {
         try self.here();
         const out = text(self.reg_tool(id, spec_edn));
         if (std.mem.indexOf(u8, out, "\"ok\"") == null) {
-            last_refusal = out;
+            keepRefusal(out);
             return error.ToolRefused;
         }
         return out;
@@ -140,9 +140,23 @@ pub const Runtime = struct {
     }
 };
 
-var last_refusal: []const u8 = "";
+var refusal_buf: [4096]u8 = undefined;
+var refusal_len: usize = 0;
 
-/// The library's answer to the last refused registration.
+fn keepRefusal(out: []const u8) void {
+    refusal_len = @min(out.len, refusal_buf.len);
+    @memcpy(refusal_buf[0..refusal_len], out[0..refusal_len]);
+}
+
+/// A copy of the library's answer to the last refused registration (cut at
+/// 4 KiB); valid until the next refusal.
 pub fn lastRefusal() []const u8 {
-    return last_refusal;
+    return refusal_buf[0..refusal_len];
+}
+
+test "lastRefusal owns its bytes" {
+    var lib = "{\"error\":{\"message\":\"no\"}}".*;
+    keepRefusal(&lib);
+    @memset(&lib, 'x');
+    try std.testing.expectEqualStrings("{\"error\":{\"message\":\"no\"}}", lastRefusal());
 }
