@@ -274,6 +274,15 @@
       (tool-names f rw)
       (is (= {:ok {:tool "pay_out"}} (bf/call! f rw "r__pay_out" {})))
       (is (= {:ok {:tool "pay.out"}} (bf/call! f rw dotted {}))))
+    (testing "a literal name in the digest shape never takes over a held digested name"
+      (let [squatter (subs dotted 3)]
+        (reset! listing (constantly ["pay_out" squatter]))
+        (tool-names f rw)
+        (is (= :unknown-tool (get-in (bf/call! f rw dotted {}) [:error :type]))
+            "the held name of the delisted pay.out reaches nothing")
+        (is (not= dotted (fleet-name "r" squatter)))
+        (is (= {:ok {:tool squatter}} (bf/call! f rw (fleet-name "r" squatter) {}))
+            "the literal tool is reachable under its own digested name")))
     (testing "a tool the target stops listing is refused, not sent as it is"
       (reset! listing (constantly ["pay_out"]))
       (tool-names f rw)

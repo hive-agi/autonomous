@@ -62,15 +62,23 @@
   (str (base36-of (poly-hash 31 2147483647 s) 6)
        (base36-of (poly-hash 131 2147483629 s) 6)))
 
+(defn- digest-shaped?
+  "True when `s` ends in `-` and 12 of [0-9a-z]: the shape `exposed-name`
+   gives a digested name."
+  [s]
+  (boolean (and (string? s) (re-find #"-[0-9a-z]{12}$" s))))
+
 (defn exposed-name
   "MCP name of app tool `tool` of the target with prefix `pfx`, a function
-   of `pfx` and `tool` alone. <pfx>__<tool> when that is a valid MCP name;
+   of `pfx` and `tool` alone. <pfx>__<tool> when that is a valid MCP name
+   that does not end in the digest shape (`-` and 12 of [0-9a-z]);
    otherwise <pfx>__<tool> with every character outside [A-Za-z0-9_-] made
    `_`, cut so that `-` and the 12 character digest of the unchanged
-   <pfx>__<tool> fit in 64 characters. Always a valid MCP tool name."
+   <pfx>__<tool> fit in 64 characters. Always a valid MCP tool name, and a
+   name in the digest shape is always a digested one."
   [pfx tool]
   (let [full (str pfx separator tool)]
-    (if (naming/valid-tool-name? full)
+    (if (and (naming/valid-tool-name? full) (not (digest-shaped? full)))
       full
       (let [base (str pfx separator (naming/sanitize tool))
             room (- naming/max-length 1 digest-length)]
@@ -90,8 +98,7 @@
   "True when exposed name `exposed` may stand for a tool listed under
    another name (it ends in `-` and a digest)."
   [exposed]
-  (boolean (and (string? exposed)
-                (re-find #"-[0-9a-z]{12}$" exposed))))
+  (digest-shaped? exposed))
 
 (defn resolve-local
   "The one name among app `tool-names` that prefix `pfx` exposes as
