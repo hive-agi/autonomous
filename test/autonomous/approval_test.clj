@@ -276,7 +276,10 @@
   (let [a (binding [*in* (BufferedReader. (StringReader. ""))] (approval/stdin-asker {:out *err*}))
         b (binding [*in* (BufferedReader. (StringReader. ""))] (approval/stdin-asker {:out *err*}))]
     (is (identical? (:terminal a) (:terminal b)) "one System/in, one terminal")
-    (is (identical? System/in (:stream a)))))
+    (is (identical? System/in (:stream a)))
+    (testing "an explicit :in that is the root *in* is keyed on System/in too"
+      (let [c (approval/stdin-asker {:in approval/root-in :out *err*})]
+        (is (identical? (:terminal a) (:terminal c)))))))
 
 (deftest a-second-asker-with-other-ports-is-refused
   (let [t (typist)]

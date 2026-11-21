@@ -439,6 +439,21 @@
 
 #?(:cljs nil
    :default
+   (defonce ^{:doc "L1 host: *in* as this namespace first loaded, outside any binding."}
+     root-in
+     *in*))
+
+#?(:cljs nil
+   :default
+   (defn- stream-key
+     "L1: the Terminal key of an asker: an explicit `stream`, else its
+      `read-line` function, else System/in for no `in` or an `in` that is
+      the process's own *in* (root-in, which reads System/in), else `in`."
+     [stream read-line in]
+     (or stream read-line (if (or (nil? in) (identical? in root-in)) System/in in))))
+
+#?(:cljs nil
+   :default
    (defn stdin-asker
      "L1 adapter (clj): asks on a terminal. Every stdin asker on one input
       stream (default System/in) shares one process-wide queue, counter and
@@ -451,11 +466,14 @@
       dropped unprompted. Refuses (ex-info :invalid-approval) a :read-line
       or :out other than the stream's first asker's, and a request with
       more than max-shown-args argument values is denied unshown.
-      Options :in (a BufferedReader on System/in) or :read-line (a
-      zero-argument function) with :stream (its identity, default the
-      function), :out (default *err*), :approver (default \"stdin\")."
+      Options :in (a BufferedReader that does NOT read System/in: one over
+      System/in, or the root *in*, is keyed on System/in like the default),
+      or :read-line (a zero-argument function) with :stream (its identity,
+      default the function), :out (default *err*), :approver (default
+      \"stdin\"). The reader reads for the life of the process.
+      Pass :stream System/in with a custom :read-line over System/in."
      ([] (stdin-asker {}))
      ([{:keys [in read-line stream out approver wait-ms] :or {approver "stdin" wait-ms 60000}}]
-      (let [stream (or stream read-line in System/in)]
+      (let [stream (stream-key stream read-line in)]
         (->StdinAsker (terminal-for stream read-line (line-reader (or in *in*)) out)
                       stream approver wait-ms)))))
