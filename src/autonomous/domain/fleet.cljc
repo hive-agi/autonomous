@@ -7,9 +7,11 @@
    A target's PREFIX is its id made MCP-safe with every `_` and `.` turned
    into `-`, at most 24 characters. An app tool is exposed as
    <prefix>__<tool>. A prefix never holds `_`, so the first `__` of an
-   exposed name ends the prefix and routing needs no manifest. A name over
-   64 characters is cut to 59, then `-` and a 4 character checksum of the
-   full name; `resolve-local` finds the tool such a name stands for.
+   exposed name ends the prefix and routing needs no manifest. A name that
+   is not a valid MCP name (too long, or a character outside
+   [A-Za-z0-9_-]) is made safe and ends in `-` and a 12 character digest of
+   the original; `resolve-local` finds the tool such a name stands for.
+   Tools of one target that expose the same name are all dropped.
 
    An app resource uri is exposed as autonomous://<prefix>/<uri>."
   (:require [autonomous.domain.answer :as answer]
@@ -39,26 +41,42 @@
 (defn- char-code [c]
   #?(:cljs (.charCodeAt c 0) :default (int c)))
 
-(defn checksum
-  "Four base-36 characters that depend on every character of `s`."
+(defn- poly-hash
+  "Polynomial hash of `s` with multiplier `m` modulo prime `p` (< 2^31), so
+   every step stays exact in a JS double."
+  [m p s]
+  (reduce (fn [h c] (mod (+ (* h m) (char-code c)) p)) 7 (seq (str s))))
+
+(defn- base36-of
+  "`n` as exactly `width` base-36 characters."
+  [n width]
+  (loop [n n acc ()]
+    (if (= width (count acc))
+      (apply str acc)
+      (recur (quot n 36) (cons (nth base36 (mod n 36)) acc)))))
+
+(def digest-length 12)
+
+(defn digest
+  "Twelve base-36 characters (two independent 31-bit hashes) that depend on
+   every character of `s`. The same on the JVM, babashka and JavaScript."
   [s]
-  (let [n (reduce (fn [h c] (mod (+ (* h 31) (char-code c)) 1679616)) 7 (seq (str s)))]
-    (loop [n n acc ()]
-      (if (= 4 (count acc))
-        (apply str acc)
-        (recur (quot n 36) (cons (nth base36 (mod n 36)) acc))))))
+  (str (base36-of (poly-hash 31 2147483647 s) 6)
+       (base36-of (poly-hash 131 2147483629 s) 6)))
 
 (defn exposed-name
-  "MCP name of app tool `tool` of the target with prefix `pfx`:
-   <pfx>__<tool>, every character of `tool` outside [A-Za-z0-9_-] made `_`
-   (a remote app may list `admin.tools.list`), or past 64 characters its
-   first 59, `-` and the checksum of the full name. Always a valid MCP tool
-   name; `resolve-local` finds the tool a changed name stands for."
+  "MCP name of app tool `tool` of the target with prefix `pfx`, a function
+   of `pfx` and `tool` alone. <pfx>__<tool> when that is a valid MCP name;
+   otherwise <pfx>__<tool> with every character outside [A-Za-z0-9_-] made
+   `_`, cut so that `-` and the 12 character digest of the unchanged
+   <pfx>__<tool> fit in 64 characters. Always a valid MCP tool name."
   [pfx tool]
-  (let [full (str pfx separator (naming/sanitize tool))]
-    (if (<= (count full) naming/max-length)
+  (let [full (str pfx separator tool)]
+    (if (naming/valid-tool-name? full)
       full
-      (str (subs full 0 (- naming/max-length 5)) "-" (checksum full)))))
+      (let [base (str pfx separator (naming/sanitize tool))
+            room (- naming/max-length 1 digest-length)]
+        (str (subs base 0 (min (count base) room)) "-" (digest full))))))
 
 (defn parse-name
   "{:target id :local tool} for exposed name `exposed` when its prefix names
@@ -71,15 +89,19 @@
         {:target tid :local (subs exposed (+ i (count separator)))}))))
 
 (defn cut?
-  "True when exposed name `exposed` may stand for a longer tool name."
+  "True when exposed name `exposed` may stand for a tool listed under
+   another name (it ends in `-` and a digest)."
   [exposed]
-  (= naming/max-length (count exposed)))
+  (boolean (and (string? exposed)
+                (re-find #"-[0-9a-z]{12}$" exposed))))
 
 (defn resolve-local
-  "The name among app `tool-names` that prefix `pfx` exposes as `exposed`,
-   or nil."
+  "The one name among app `tool-names` that prefix `pfx` exposes as
+   `exposed`, or nil when none does or several do (a collision exposes
+   neither)."
   [pfx exposed tool-names]
-  (some #(when (= exposed (exposed-name pfx %)) %) tool-names))
+  (let [ms (filter #(= exposed (exposed-name pfx %)) (distinct tool-names))]
+    (when (= 1 (count ms)) (first ms))))
 
 (defn exposed-uri
   "Uri app resource `uri` of the target with prefix `pfx` is listed under."
@@ -156,19 +178,25 @@
     (seq dropped)  (assoc :dropped (mapv :name dropped))
     error          (assoc :error error)))
 
+(defn- distinct-by-name
+  "`tools` with only the first tool of each listed :name."
+  [tools]
+  (second (reduce (fn [[seen acc] t]
+                    (if (contains? seen (:name t)) [seen acc] [(conj seen (:name t)) (conj acc t)]))
+                  [#{} []] tools)))
+
 (defn- split-taken
-  "[kept dropped] of `tools` under prefix `pfx`: a tool whose exposed name
-   is in `routes` or belongs to an earlier tool of `tools` is dropped."
+  "[kept dropped] of `tools` under prefix `pfx`, independent of their
+   order: a tool is dropped when its exposed name is in `routes` (an
+   earlier target holds it) or when another tool of `tools` exposes the
+   same name, in which case every one of them is dropped."
   [routes pfx tools]
-  (let [[kept dropped _]
-        (reduce (fn [[kept dropped seen] t]
-                  (let [n (exposed-name pfx (:name t))]
-                    (if (or (contains? routes n) (contains? seen n))
-                      [kept (conj dropped t) seen]
-                      [(conj kept t) dropped (conj seen n)])))
-                [[] [] #{}]
-                tools)]
-    [kept dropped]))
+  (let [name-of #(exposed-name pfx (:name %))
+        counts  (frequencies (map name-of (distinct-by-name tools)))
+        taken?  (fn [t] (let [n (name-of t)]
+                          (or (contains? routes n) (< 1 (get counts n 0)))))]
+    [(vec (remove taken? (distinct-by-name tools)))
+     (vec (filter taken? (distinct-by-name tools)))]))
 
 (defn merge-probes
   "The fleet surface of `probes`, a vector of {:target :status :manifest

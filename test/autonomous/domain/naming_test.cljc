@@ -78,34 +78,58 @@
   (doseq [good ["clear-done" "-" (apply str (repeat 64 "a"))]]
     (is (= good (get-in (affordance/->tool :t/x (spec {:name good})) [:ok :name])))))
 
+(defn- tools-of [& names]
+  (mapv (fn [n] {:name n :description "" :input-schema {}}) names))
+
 (deftest fleet-names-are-valid-for-any-remote-name
-  (testing "a remote app may list names MCP 2025-11-25 allows and this bridge does not"
-    (is (= "remote__admin_tools_list" (fleet/exposed-name "remote" "admin.tools.list")))
-    (is (= "remote__a_b" (fleet/exposed-name "remote" "a/b")))
-    (is (= "remote__a__o" (fleet/exposed-name "remote" "ação"))))
+  (testing "a remote name that is already valid is exposed as it is"
+    (is (= "remote__clear-done" (fleet/exposed-name "remote" "clear-done")))
+    (is (= "remote__pay_out" (fleet/exposed-name "remote" "pay_out"))))
+  (testing "a remote name MCP 2025-11-25 allows and this bridge does not is made safe and digested"
+    (let [n (fleet/exposed-name "remote" "admin.tools.list")]
+      (is (mcp-name? n))
+      (is (= (str "remote__admin_tools_list-" (fleet/digest "remote__admin.tools.list")) n))
+      (is (fleet/cut? n)))
+    (is (not= (fleet/exposed-name "remote" "pay.out") (fleet/exposed-name "remote" "pay_out"))
+        "names differing only by . and _ never collide")
+    (is (mcp-name? (fleet/exposed-name "remote" "a/b")))
+    (is (mcp-name? (fleet/exposed-name "remote" "ação"))))
   (testing "the bridge finds the tool a changed name stands for"
-    (is (= "admin.tools.list"
-           (fleet/resolve-local "remote" "remote__admin_tools_list" ["x" "admin.tools.list"]))))
-  (testing "a long remote name is cut to 64 with a checksum of the sanitized name"
+    (let [n (fleet/exposed-name "remote" "admin.tools.list")]
+      (is (= "admin.tools.list" (fleet/resolve-local "remote" n ["x" "admin.tools.list" "admin_tools_list"])))))
+  (testing "a long remote name is cut to 64 with a digest of the original name"
     (let [tool (str "v1." (apply str (repeat 80 "q")))
           n    (fleet/exposed-name "remote" tool)]
       (is (= 64 (count n)))
       (is (mcp-name? n))
       (is (fleet/cut? n))
       (is (= tool (fleet/resolve-local "remote" n [tool])))))
+  (testing "names differing past the cut, or by one character, get different digests"
+    (let [names (map #(str (apply str (repeat 70 "z")) %) (range 2000))]
+      (is (= 2000 (count (set (map #(fleet/exposed-name "r" %) names)))))))
   (let [r (tc/quick-check 300
                           (prop/for-all [pfx (gen/fmap fleet/prefix gen/string)
                                          tool (gen/fmap #(apply str %) (gen/vector gen/char 1 120))]
                             (mcp-name? (fleet/exposed-name pfx tool)))
                           :seed 13)]
     (is (:pass? r) (pr-str (:shrunk r))))
-  (testing "two remote names that sanitize alike: the first listed keeps the name"
-    (let [s (fleet/merge-probes [{:target "r" :status :up
-                                  :manifest {:tools [{:name "a.b" :description "" :input-schema {}}
-                                                     {:name "a_b" :description "" :input-schema {}}]}}])]
-      (is (= ["r__a_b"] (mapv :name (:tools s))))
-      (is (= {:target "r" :tool "a.b"} (get-in s [:routes "r__a_b"])))
-      (is (= ["a_b"] (get-in s [:apps 0 :dropped]))))))
+  (testing "the exposed name does not depend on list order"
+    (let [s1 (fleet/merge-probes [{:target "r" :status :up :manifest {:tools (tools-of "pay_out" "pay.out")}}])
+          s2 (fleet/merge-probes [{:target "r" :status :up :manifest {:tools (tools-of "pay.out" "pay_out")}}])]
+      (is (= (:routes s1) (:routes s2)))
+      (is (= {:target "r" :tool "pay_out"} (get-in s1 [:routes "r__pay_out"])))
+      (is (= 2 (count (:routes s1))))))
+  (testing "a real collision of exposed names exposes neither and reports both as dropped"
+    (let [long-a (str (apply str (repeat 70 "q")) ".x")
+          clash  (first (for [i (range 5000) :let [b (str long-a i)]
+                              :when (= (fleet/exposed-name "r" long-a) (fleet/exposed-name "r" b))]
+                          b))]
+      (is (nil? clash) "no collision among the digested names searched")
+      (with-redefs [fleet/exposed-name (fn [_ t] (if (#{"a" "b"} t) "r__ab" (str "r__" t)))]
+        (let [s (fleet/merge-probes [{:target "r" :status :up :manifest {:tools (tools-of "a" "b" "c")}}])]
+          (is (= ["r__c"] (mapv :name (:tools s))))
+          (is (= #{"a" "b"} (set (get-in s [:apps 0 :dropped]))))
+          (is (nil? (fleet/resolve-local "r" "r__ab" ["a" "b"]))))))))
 
 (deftest every-name-doc-naming-shows
   (doseq [[id expected] [[:todo/add "todo_add"]
