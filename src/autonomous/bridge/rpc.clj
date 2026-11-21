@@ -112,20 +112,27 @@
   [result]
   (when-let [parts (seq (keep :text (:content result)))] (str/join "\n" parts)))
 
+(defn- error-code
+  "The JSON-RPC error code of `err` when it is an integer, else nil: a
+   remote's free-form value is never carried."
+  [err]
+  (let [c (:code err)] (when (int? c) c)))
+
 (defn answer-of
   "Answer of the tools/call response `msg`: the remote's value, a Pending id
    it reported, or a refusal. A call the remote marks failed is a refusal,
-   so the bridge never reports an app error as a value."
+   so the bridge never reports an app error as a value. A refusal carries a
+   fixed message and at most the integer error code: the remote's text may
+   echo a credential, so it never enters a refusal."
   [msg]
   (let [err  (:error msg)
         res  (:result msg)
         body (when (map? res) (:structuredContent res))]
     (cond
-      err                            (answer/refusal :channel/rpc-error
-                                                     (str "the remote refused the call: " (:message err))
-                                                     {:code (:code err)})
+      err                            (answer/refusal :channel/rpc-error "the remote refused the call"
+                                                     {:code (error-code err)})
       (not (map? res))               (answer/refusal :channel/bad-answer "the remote sent neither result nor error")
-      (:isError res)                 (answer/refusal :channel/tool-failed (or (content-text res) "the remote tool failed"))
+      (:isError res)                 (answer/refusal :channel/tool-failed "the remote tool failed")
       (contains? body :pending)      (answer/pending (get body :pending))
       (contains? res :structuredContent) (answer/ok body)
       :else                          (answer/ok (or (content-text res) {})))))

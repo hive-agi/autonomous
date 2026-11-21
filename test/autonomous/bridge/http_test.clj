@@ -127,6 +127,17 @@
   (testing "a text-only success is still a value"
     (is (= {:ok "done"} (rpc/answer-of {:result {:content [{:type "text" :text "done"}]}})))))
 
+(deftest a-remote-error-text-never-enters-a-refusal
+  (let [secret "Bearer aut_a leaked"
+        rpc    (rpc/answer-of {:error {:code -32602 :message secret :data {:echo secret}}})
+        tool   (rpc/answer-of {:result {:isError true :content [{:type "text" :text secret}]}})
+        odd    (rpc/answer-of {:error {:code secret :message "x"}})]
+    (is (= {:type :channel/rpc-error :data {:code -32602}} (select-keys (:error rpc) [:type :data])))
+    (is (= :channel/tool-failed (get-in tool [:error :type])))
+    (is (= {:code nil} (get-in odd [:error :data])) "a non-integer code is not carried")
+    (doseq [a [rpc tool odd]]
+      (is (not (str/includes? (pr-str a) "aut_a")) (pr-str a)))))
+
 (deftest sse-framing-is-per-message
   (is (= [{:jsonrpc "2.0" :method "notifications/tools/list_changed"}]
          (rpc/read-messages (str ": stream open\n\ndata: {\"jsonrpc\":\"2.0\","
