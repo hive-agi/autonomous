@@ -16,10 +16,16 @@
 //! make every call from one thread (a Runtime remembers which and refuses
 //! the others with error.WrongThread).
 //!
-//! The app's dispatcher becomes `autonomous_host_dispatch` through
-//! `exportDispatch`; the executable links with -rdynamic so the library
-//! finds it. Strings returned by the library stay valid until the next call
-//! into it: copy what you keep.
+//! Export ONE dispatcher. `exportDispatchAs(f)` (libautonomous 0.3) exports
+//! `autonomous_host_dispatch_v2`: `f(tool, args_json, who)` is told who
+//! called, a `Grant` valid for that call, and a call without a readable
+//! grant fails closed before `f` runs. `exportDispatch(f)` exports the
+//! grant-blind `autonomous_host_dispatch` of 0.2. The executable links with
+//! -rdynamic so the library finds it. Strings returned by the library stay
+//! valid until the next call into it: copy what you keep.
+//!
+//!     fn dispatchAs(tool: []const u8, args_json: []const u8, who: autonomous.Grant) anyerror![*:0]const u8 { ... }
+//!     comptime { autonomous.exportDispatchAs(dispatchAs); }
 
 const std = @import("std");
 
@@ -87,29 +93,38 @@ pub const DispatchAs = *const fn (tool: []const u8, args_json: []const u8, who: 
 /// Why a grant-aware dispatcher refused a call before running.
 pub const GrantError = error{ GrantNotPassed, GrantUnreadable };
 
-var grant_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-
-/// The Grant in `grant_json`, in memory valid until the next parse; an
-/// unparseable grant or one naming no actor is error.GrantUnreadable.
-pub fn parseGrant(grant_json: []const u8) GrantError!Grant {
-    _ = grant_arena.reset(.retain_capacity);
-    const parsed = std.json.parseFromSliceLeaky(Grant, grant_arena.allocator(), grant_json, .{
+/// The Grant in `grant_json`, allocated in `gpa` (pass an arena and free it
+/// when done); an unparseable grant or one naming no actor is
+/// error.GrantUnreadable.
+pub fn parseGrant(gpa: std.mem.Allocator, grant_json: []const u8) GrantError!Grant {
+    const parsed = std.json.parseFromSliceLeaky(Grant, gpa, grant_json, .{
         .ignore_unknown_fields = true,
     }) catch return error.GrantUnreadable;
     if (parsed.actor.len == 0) return error.GrantUnreadable;
     return parsed;
 }
 
+/// Run grant-aware `f` for one call. The Grant lives in an arena owned by
+/// this call and freed when `f` returns, so a handler that re-enters the
+/// library (rt.rpc to another tool) keeps its own `who`: the nested call
+/// parses its grant into its own arena.
+pub fn runAs(comptime f: DispatchAs, tool: []const u8, args: []const u8, grant_json: []const u8) [*:0]const u8 {
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const who = parseGrant(arena.allocator(), grant_json) catch |e| return errorJson(e);
+    return f(tool, args, who) catch |e| errorJson(e);
+}
+
 /// Export `f` as both dispatchers. libautonomous 0.3 calls
-/// autonomous_host_dispatch_v2, and `f` is handed the parsed Grant. A 0.2
-/// library calls autonomous_host_dispatch, and the call fails closed
+/// autonomous_host_dispatch_v2, and `f` is handed the parsed Grant, valid
+/// for that call only (copy what you keep). A 0.2 library calls
+/// autonomous_host_dispatch, and the call fails closed
 /// (error.GrantNotPassed) without running `f`, as does an unreadable grant
 /// (error.GrantUnreadable). A process must hold only one definition of each.
 pub fn exportDispatchAs(comptime f: DispatchAs) void {
     const Shim = struct {
         fn v2(tool: [*:0]const u8, args: [*:0]const u8, grant: [*:0]const u8) callconv(.c) [*:0]const u8 {
-            const who = parseGrant(std.mem.span(grant)) catch |e| return errorJson(e);
-            return f(std.mem.span(tool), std.mem.span(args), who) catch |e| errorJson(e);
+            return runAs(f, std.mem.span(tool), std.mem.span(args), std.mem.span(grant));
         }
         fn v1(tool: [*:0]const u8, args: [*:0]const u8) callconv(.c) [*:0]const u8 {
             _ = tool;
@@ -285,14 +300,53 @@ test "lastRefusal owns its bytes" {
 }
 
 test "parseGrant reads a grant and refuses one naming no actor" {
-    const g = try parseGrant("{\"actor\":\"agent-1\",\"scopes\":[\"read\",\"write\"]}");
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const g = try parseGrant(a, "{\"actor\":\"agent-1\",\"scopes\":[\"read\",\"write\"]}");
     try std.testing.expectEqualStrings("agent-1", g.actor);
     try std.testing.expectEqual(@as(usize, 2), g.scopes.len);
     try std.testing.expect(g.has("write") and !g.has("admin"));
-    try std.testing.expect((try parseGrant("{\"actor\":\"r\",\"scopes\":[\"admin\"]}")).has("billing"));
-    try std.testing.expectError(error.GrantUnreadable, parseGrant("{\"actor\":\"\",\"scopes\":[]}"));
-    try std.testing.expectError(error.GrantUnreadable, parseGrant("{\"scopes\":[]}"));
-    try std.testing.expectError(error.GrantUnreadable, parseGrant("{oops"));
+    try std.testing.expect((try parseGrant(a, "{\"actor\":\"r\",\"scopes\":[\"admin\"]}")).has("billing"));
+    try std.testing.expectError(error.GrantUnreadable, parseGrant(a, "{\"actor\":\"\",\"scopes\":[]}"));
+    try std.testing.expectError(error.GrantUnreadable, parseGrant(a, "{\"scopes\":[]}"));
+    try std.testing.expectError(error.GrantUnreadable, parseGrant(a, "{oops"));
+}
+
+/// A re-entrant handler: "outer" dispatches "inner" for another caller (as a
+/// handler calling rt.rpc would), then reports its own `who`.
+const Reentrant = struct {
+    var outer_buf: [128]u8 = undefined;
+    var inner_seen: [64]u8 = undefined;
+    var inner_len: usize = 0;
+
+    fn handle(tool: []const u8, args: []const u8, who: Grant) anyerror![*:0]const u8 {
+        _ = args;
+        if (std.mem.eql(u8, tool, "inner")) {
+            inner_len = who.actor.len;
+            @memcpy(inner_seen[0..inner_len], who.actor);
+            return "{}";
+        }
+        _ = runAs(handle, "inner", "{}", "{\"actor\":\"agent-inner-with-a-longer-name\",\"scopes\":[\"admin\"]}");
+        const out = try std.fmt.bufPrintZ(&outer_buf, "{s}|{d}", .{ who.actor, who.scopes.len });
+        return out.ptr;
+    }
+};
+
+test "a nested dispatch leaves the outer handler's grant intact" {
+    const out = std.mem.span(runAs(Reentrant.handle, "outer", "{}", "{\"actor\":\"agent-outer\",\"scopes\":[\"read\",\"write\"]}"));
+    try std.testing.expectEqualStrings("agent-outer|2", out);
+    try std.testing.expectEqualStrings("agent-inner-with-a-longer-name", Reentrant.inner_seen[0..Reentrant.inner_len]);
+}
+
+test "runAs fails closed on an unreadable grant without running the handler" {
+    const Never = struct {
+        fn handle(_: []const u8, _: []const u8, _: Grant) anyerror![*:0]const u8 {
+            return error.ShouldNotRun;
+        }
+    };
+    const out = std.mem.span(runAs(Never.handle, "t", "{}", "{oops"));
+    try std.testing.expectEqualStrings("{\"error\":{\"message\":\"GrantUnreadable\"}}", out);
 }
 
 test "a dispatch error becomes error JSON" {
