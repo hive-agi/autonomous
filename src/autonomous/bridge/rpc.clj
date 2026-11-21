@@ -118,6 +118,16 @@
   [err]
   (let [c (:code err)] (when (int? c) c)))
 
+(defn result-of
+  "Pure: Ok of the map :result of JSON-RPC reply `msg`, or a refusal: an
+   :error reply, or one with no map :result, is :channel/rpc-error carrying
+   at most the integer error code, never the remote's text."
+  [msg]
+  (if (and (nil? (:error msg)) (map? (:result msg)))
+    (answer/ok (:result msg))
+    (answer/refusal :channel/rpc-error "the remote refused the request"
+                    {:code (error-code (:error msg))})))
+
 (defn answer-of
   "Answer of the tools/call response `msg`: the remote's value, a Pending id
    it reported, or a refusal. A call the remote marks failed is a refusal,

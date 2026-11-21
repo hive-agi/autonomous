@@ -719,6 +719,32 @@
            (as c "agent-a" #{:write} {:op :call :tool "todo_add" :args {}})))
     (is (= 1 (count (:calls @state))) "the tool ran once")))
 
+(defn- erring-on
+  "A client over stub `client` that answers JSON-RPC `method` with an
+   id-matched error reply naming `secret`."
+  [client method secret]
+  (reify port/IHttpClient
+    (-request! [_ req]
+      (let [msg (json/read-json (str (:body req)))]
+        (if (= method (:method msg))
+          (json-response 200 {:jsonrpc "2.0" :id (:id msg) :error {:code -32603 :message secret}})
+          (port/-request! client req))))
+    (-open-stream! [_ req sink] (port/-open-stream! client req sink))))
+
+(deftest an-error-reply-is-refused-not-taken-as-empty
+  (let [[client _ _] (open-stub)
+        mk     #(channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                                     :ttl-ms 60000 :http/client (erring-on client % "SECRET-REMOTE-TEXT")))
+        listed (manifest-as (mk "tools/list") "agent-a" #{:read})
+        read   (as (mk "resources/read") "agent-a" #{:read} {:op :read :uri "app://db"})]
+    (is (= {:type :channel/rpc-error :data {:code -32603}} (select-keys (:error listed) [:type :data]))
+        "tools/list: an error reply is not a fresh empty listing")
+    (is (= :channel/rpc-error (get-in read [:error :type])) "resources/read: an error reply is not Ok nil")
+    (is (not-any? #(str/includes? (pr-str %) "SECRET") [listed read])))
+  (testing "a reply with no map result"
+    (is (= :channel/rpc-error (get-in (rpc/result-of {:id 1 :result "x"}) [:error :type])))
+    (is (= {:ok {:tools []}} (rpc/result-of {:id 1 :result {:tools []}})))))
+
 (deftest a-dead-stream-is-reopened-on-the-next-look-rate-limited
   (is (= 2 (stream-opens-after-a-drop 0)) "the next look reopens the ended stream")
   (is (= 1 (stream-opens-after-a-drop 60000)) "not again within the retry interval"))

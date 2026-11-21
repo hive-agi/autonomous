@@ -193,14 +193,14 @@
 ;; =============================================================================
 
 (defn- list-on
-  "Ok of {:tools :resources} the remote lists for `ses`."
+  "Ok of {:tools :resources} the remote lists for `ses`; an error reply is
+   refused :channel/rpc-error, so it is never stored as an empty listing."
   [client credentials target grant ses]
-  (answer/bind
-   (ses/round client credentials target grant ses (rpc/list-msg (rpc/next-id))
-              (:timeout-ms target http/default-timeout-ms))
-   (fn [reply]
-     (answer/ok {:tools (vec (get-in reply [:result :tools]))
-                 :resources (vec (get-in reply [:result :resources]))}))))
+  (answer/let-answer
+   [reply  (ses/round client credentials target grant ses (rpc/list-msg (rpc/next-id))
+                      (:timeout-ms target http/default-timeout-ms))
+    result (rpc/result-of reply)]
+   (answer/ok {:tools (vec (:tools result)) :resources (vec (:resources result))})))
 
 (defn stored
   "Pure: slot `sl` holding `manifest`, fetched at `at` from revision `rev`.
@@ -250,10 +250,13 @@
                rpc/answer-of))
 
 (defn read!
-  "Answer of the remote resource `uri` as `grant`: its first content entry."
+  "Answer of the remote resource `uri` as `grant`: its first content entry;
+   an error reply is refused :channel/rpc-error, never Ok nil."
   [ch client credentials target grant uri]
-  (answer/bind (ask ch client credentials target grant #(rpc/read-msg (rpc/next-id) uri))
-               #(answer/ok (first (get-in % [:result :contents])))))
+  (answer/let-answer
+   [reply  (ask ch client credentials target grant #(rpc/read-msg (rpc/next-id) uri))
+    result (rpc/result-of reply)]
+   (answer/ok (first (:contents result)))))
 
 ;; =============================================================================
 ;; The agent-facing look
