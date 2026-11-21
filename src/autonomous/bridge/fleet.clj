@@ -198,21 +198,24 @@
   "Ok {:target :local} of exposed tool name `exposed` for `session`. In a
    fleet the local name is always resolved against the last manifest the
    target answered `session`'s view (actor, scopes, runtime); a slow or
-   refused look does not erase it. With none, the target is probed first.
-   A name no listed tool exposes, or several do, is refused :unknown-tool,
+   refused look does not erase it. With none, the target is probed first,
+   and a target that still lists nothing answers its own probe error. A
+   name no listed tool exposes, or several do, is refused :unknown-tool,
    never sent as it is."
   [f session exposed]
   (let [r (fleet/route-tool (:view f) exposed)]
     (if (and (answer/ok? r) (= :fleet (:mode f)))
-      (let [tid   (get-in r [:ok :target])
-            tools (or (listed-tools f session tid)
-                      (do (probe-targets f session [tid]) (listed-tools f session tid)))]
-        (if-let [local (and tools (resolve-in f tid exposed tools))]
-          (answer/ok {:target tid :local local})
-          (answer/refusal :unknown-tool
-                          (str "no tool named " exposed " in app " tid
-                               (when-not tools " (its tools could not be listed)"))
-                          {:apps (vec (sort (keys (get-in f [:view :prefixes]))))})))
+      (let [tid    (get-in r [:ok :target])
+            known  (listed-tools f session tid)
+            looked (when-not known (first (probe-targets f session [tid])))
+            tools  (or known (listed-tools f session tid))]
+        (if (nil? tools)
+          {:error (or (:error looked)
+                      {:type :target/unlisted :message (str "app " tid " listed no tools")})}
+          (if-let [local (resolve-in f tid exposed tools)]
+            (answer/ok {:target tid :local local})
+            (answer/refusal :unknown-tool (str "no tool named " exposed " in app " tid)
+                            {:apps (vec (sort (keys (get-in f [:view :prefixes]))))}))))
       r)))
 
 (defn call!

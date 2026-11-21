@@ -123,8 +123,8 @@
     (is (= [:up :down :slow]
            (map :status (get-in (call srv rw "autonomous_apps" {}) [:answer :ok :apps]))))
     (is (= {:ok {:app "todo" :tool "todo_add" :runtime nil}} (:answer (call srv rw "todo__todo_add" {}))))
-    (is (= :unknown-tool (get-in (call srv rw "api__refund" {}) [:answer :error :type]))
-        "a tool the app never listed is refused, not sent as it is")
+    (is (= :channel/connect-failed (get-in (call srv rw "api__refund" {}) [:answer :error :type]))
+        "an app that never listed its tools answers its own error, and nothing is sent")
     (testing "it comes back on reconnect, and the fingerprint moves"
       (reset! state :up)
       (is (contains? (set (map :name (server/list-tools srv rw))) "api__refund"))
@@ -299,11 +299,15 @@
       (tool-names f rw)
       (is (= {:ok {:tool "pay.out"}} (bf/call! f rw dotted {}))
           (str "after a " (name m) " look the name still reaches its tool")))
-    (testing "a name the agent never saw listed is refused, even unprobed"
+    (testing "a session with no listing of a down target gets the target's own error, never a call"
       (let [fresh (s/open-session "s9" {:actor "agent-9" :scopes #{:read :write}})]
         (reset! mode :down)
-        (is (= :unknown-tool (get-in (bf/call! f fresh dotted {}) [:error :type])))
-        (is (= :unknown-tool (get-in (bf/call! f fresh "r__pay_out" {}) [:error :type])))))
+        (is (= :channel/connect-failed (get-in (bf/call! f fresh dotted {}) [:error :type])))
+        (is (= :channel/connect-failed (get-in (bf/call! f fresh "r__pay_out" {}) [:error :type])))))
+    (testing "a slow target with no listing answers :target/slow"
+      (let [fresh (s/open-session "s7" {:actor "agent-7" :scopes #{:read :write}})]
+        (reset! mode :slow)
+        (is (= :target/slow (get-in (bf/call! f fresh dotted {}) [:error :type])))))
     (testing "with no listing yet, the call probes the target first"
       (let [fresh (s/open-session "s8" {:actor "agent-8" :scopes #{:read :write}})]
         (reset! mode :up)
