@@ -159,21 +159,30 @@
   [ch actor]
   (some-> (get @(:sessions ch) actor) answer/ok))
 
-(defn- session!
-  "Answer of `grant`'s live session, opened when there is none, its dead
-   event stream reopened (rate-limited per actor). Both run under the
-   actor's lock and re-check there, so concurrent looks by one actor open
-   one session and one stream; a look that cannot have the lock within the
-   target's timeout is refused :channel/busy."
+(defn- revive-if-free!
+  "Boundary: reopen `grant`'s dead event stream on its live session when the
+   actor's lock is free right now; a contended lock (another look opening
+   or renewing) skips it, never waits."
   [ch client credentials target grant]
-  (let [actor (:actor grant)
-        ses   (get @(:sessions ch) actor)]
-    (if (and ses (:close! ses))
-      (answer/ok ses)
+  (with-actor-lock ch (:actor grant) 0
+    #(when-let [live (current-session ch (:actor grant))]
+       (revive-stream! ch client credentials target grant (:ok live)))))
+
+(defn- session!
+  "Answer of `grant`'s live session. A live session is used at once, its
+   dead event stream reopened only when the actor's lock is free (rate-
+   limited per actor). With no session, one is opened under the actor's
+   lock, re-checked there, so concurrent looks by one actor open one
+   session; a look that cannot have the lock within lock-wait-ms is
+   refused :channel/busy."
+  [ch client credentials target grant]
+  (let [actor (:actor grant)]
+    (if-let [live (current-session ch actor)]
+      (do (when-not (:close! (:ok live)) (revive-if-free! ch client credentials target grant))
+          (or (current-session ch actor) live))
       (with-actor-lock ch actor (lock-wait-ms target)
-        #(if-let [live (current-session ch actor)]
-           (do (revive-stream! ch client credentials target grant (:ok live)) live)
-           (open-session! ch client credentials target grant))))))
+        #(or (current-session ch actor)
+             (open-session! ch client credentials target grant))))))
 
 (defn- renew!
   "Ok of a fresh session for `grant` in place of `gone`, the session the

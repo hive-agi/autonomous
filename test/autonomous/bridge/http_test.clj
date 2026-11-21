@@ -871,6 +871,27 @@
       (port/-request! client req))
     (-open-stream! [_ req sink] (port/-open-stream! client req sink))))
 
+(deftest a-live-session-is-used-while-its-lock-is-busy
+  (let [[client _ streams] (open-stub)
+        opens   (atom 0)
+        entered (promise)
+        release (promise)
+        spy     (reify port/IHttpClient
+                  (-request! [_ req] (port/-request! client req))
+                  (-open-stream! [_ req sink]
+                    (when (< 1 (swap! opens inc)) (deliver entered true) (deref release 5000 nil))
+                    (port/-open-stream! client req sink)))
+        c       (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                                     :stream-retry-ms 0 :lock-wait-ms 100 :http/client spy))
+        call    #(as c "agent-a" #{:read} {:op :call :tool "todo_list"})]
+    (call)
+    ((get-in @streams ["agent-a" :close!]))
+    (let [reviving (future (call))]
+      (is (deref entered 2000 false) "the first look is reopening the stream under the lock")
+      (is (answer/ok? (call)) "a look meanwhile uses the live session, never :channel/busy")
+      (deliver release true)
+      (is (answer/ok? (deref reviving 5000 nil))))))
+
 (deftest a-look-waits-for-the-session-lock-only-so-long
   (let [[client _ _] (open-stub)
         release (promise)
