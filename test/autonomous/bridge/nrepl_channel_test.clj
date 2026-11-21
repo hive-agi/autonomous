@@ -57,7 +57,10 @@
 (deftest a-generic-failure-drops-the-connection
   (let [counts (atom {:messages 0 :closed 0})
         ch     (channel-with (live-target) (stub-conn counts #(throw (RuntimeException. "boom"))))]
-    (is (= {:error {:type :channel/transport-failed :message "boom"}} (eval! ch "(+ 1 2)")))
+    (is (= {:error {:type :channel/transport-failed
+                    :message "the transport failed (java.lang.RuntimeException)"}}
+           (eval! ch "(+ 1 2)"))
+        "the exception's own message is never carried")
     (is (= {:messages 1 :closed 1} @counts))
     (is (nil? @(:conn ch)))))
 

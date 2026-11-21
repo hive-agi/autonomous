@@ -103,6 +103,58 @@
            (let [h (addon/health a)] {:status (:status h) :apps-status (get-in h [:details :status])}))
         "another agent reaching the target later clears one agent's refusal, keyed by target id")))
 
+(deftest a-caller-cannot-name-the-addons-own-actor
+  (let [a    (started two-apps)
+        call (:mount/call (addon/hooks a))]
+    (is (= "coordinator"
+           (:by (:structuredContent (call "orders__refund" {:_actor nil "_actor" "admin-actor"}))))
+        "with no host stamp the addon's default actor acts, never the caller's string key")
+    (is (= "ling-7" (:by (:structuredContent (call "orders__refund" {:_actor "ling-7" "_actor" "admin-actor"})))))))
+
+(deftest a-refused-agent-probing-last-does-not-flap-health
+  (let [srv (fleet-server [["todo" (refusing "todo" ["todo_add"])]])
+        a   (fa/make-addon {:server srv :actor "coordinator"})]
+    (addon/initialize! a {})
+    (addon/tools a)
+    (Thread/sleep 5)
+    (bf/probe (:fleet srv) (s/open-session refused-actor {:actor refused-actor :scopes #{:read}}))
+    (is (= :ok (:status (addon/health a))) "the addon's own look decides, not the newest refused one")))
+
+(deftest status-by-target-prefers-own-then-fresh-up
+  (let [now 100000
+        own {:status :down :at 10}
+        up  {:status :up :at (- now 1000)}
+        old {:status :up :at 1}
+        dn  {:status :down :at (- now 10)}]
+    (is (= {"t" :up} (fa/status-by-target {["t" "me"] {:status :up :at 1} ["t" "b"] dn} "me" now))
+        "the addon's own :up wins, however old")
+    (is (= {"t" :up} (fa/status-by-target {["t" "me"] own ["t" "b"] up} "me" now))
+        "a fresh :up by anyone outranks the addon's own :down")
+    (is (= {"t" :down} (fa/status-by-target {["t" "me"] own ["t" "b"] old} "me" now))
+        "the addon's own look outranks a stale :up")
+    (is (= {"t" :up} (fa/status-by-target {["t" "a"] up ["t" "b"] dn} "me" now)) "a fresh :up beats a newer :down")
+    (is (= {"t" :down} (fa/status-by-target {["t" "a"] old ["t" "b"] dn} "me" now)) "a stale :up does not")))
+
+(deftest views-fold-to-the-newest-probe-per-target-and-actor
+  (is (= {["t" "a"] {:status :up :at 9} ["t" "b"] {:status :down :at 3}}
+         (fa/probes-by-actor [[["t" "a" #{:read} nil]        {:status :down :at 4}]
+                              [["t" "a" #{:read :write} nil] {:status :up :at 9}]
+                              [["t" "b" #{:read} nil]        {:status :down :at 3}]])))
+  (testing "it reads the fleet through its accessor"
+    (let [srv (fleet-server [["todo" (app "todo" ["todo_add"])]])]
+      (bf/probe (:fleet srv) (s/open-session "x" {:actor "a" :scopes #{:read}}))
+      (is (= [["todo" "a"]] (keys (fa/probes-by-actor (bf/last-probes-by-view (:fleet srv))))))
+      (is (= #{"todo"} (set (map first (bf/last-probes (:fleet srv)))))
+          "the per-target accessor still answers what it did"))))
+
+(deftest an-addon-without-its-own-credential-is-not-down-forever
+  (let [now     100000
+        refused {:status :down :at (- now 5) :error {:type :channel/credential-missing}}]
+    (is (= {"t" :up} (fa/status-by-target {["t" "me"] refused ["t" "b"] {:status :up :at (- now 500)}} "me" now))
+        "a fresh :up by another agent outranks the addon's own credential refusal")
+    (is (= {"t" :up} (fa/status-by-target {["t" "me"] refused ["t" "b"] {:status :up :at 1}} "me" now))
+        "even a stale :up: a credential refusal says nothing about the target")))
+
 (deftest addon-tools-become-bb-mcp-tools
   (let [m     [(started two-apps)]
         tools (mount/tools m (constantly "ling-1"))

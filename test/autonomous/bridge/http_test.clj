@@ -22,10 +22,13 @@
             [autonomous.mcp.server :as server]
             [autonomous.bridge.schema :as bs]
             [autonomous.bridge.url :as url]
-            [autonomous.bridge.http.jdk]
+            [autonomous.bridge.http.jdk :as jdk]
+            [autonomous.bridge.http.session :as ses]
+            [autonomous.bridge.http.channel :as hc]
             [autonomous.cli :as cli]
             [autonomous.config :as config]
-            [malli.core :as m]))
+            [malli.core :as m]
+            [org.httpkit.server :as hk]))
 
 (def ^:private remote-url "https://remote.test/todo")
 
@@ -88,9 +91,10 @@
 (deftype StubClient [state streams]
   port/IHttpClient
   (-request! [_ req]
-    (if-let [actor (actor-of req)]
-      (on-post state actor req)
-      (json-response 401 {:error "no token"})))
+    (cond
+      (nil? (actor-of req))      (json-response 401 {:error "no token"})
+      (= :delete (:method req))  {:ok {:status 200 :headers {} :body ""}}
+      :else                      (on-post state (actor-of req) req)))
   (-open-stream! [_ req sink]
     (let [actor (actor-of req)]
       (swap! streams assoc actor sink)
@@ -124,12 +128,263 @@
   (testing "a text-only success is still a value"
     (is (= {:ok "done"} (rpc/answer-of {:result {:content [{:type "text" :text "done"}]}})))))
 
+(deftest a-remote-error-text-never-enters-a-refusal
+  (let [secret "Bearer aut_a leaked"
+        rpc    (rpc/answer-of {:error {:code -32602 :message secret :data {:echo secret}}})
+        tool   (rpc/answer-of {:result {:isError true :content [{:type "text" :text secret}]}})
+        odd    (rpc/answer-of {:error {:code secret :message "x"}})]
+    (is (= {:type :channel/rpc-error :data {:code -32602}} (select-keys (:error rpc) [:type :data])))
+    (is (= :channel/tool-failed (get-in tool [:error :type])))
+    (is (= {:code nil} (get-in odd [:error :data])) "a non-integer code is not carried")
+    (doseq [a [rpc tool odd]]
+      (is (not (str/includes? (pr-str a) "aut_a")) (pr-str a)))))
+
 (deftest sse-framing-is-per-message
   (is (= [{:jsonrpc "2.0" :method "notifications/tools/list_changed"}]
          (rpc/read-messages (str ": stream open\n\ndata: {\"jsonrpc\":\"2.0\","
                                  "\"method\":\"notifications/tools/list_changed\"}\n\n"))))
   (is (empty? (rpc/read-messages ": keepalive\n\n")))
-  (is (= 1 (count (rpc/read-messages "data: {\"a\":1}\ndata: not json\n\n")))))
+  (is (= 1 (count (rpc/read-messages "data: {\"a\":1}\ndata: not json\n\n"))))
+  (testing "a POST reply framed as SSE reads as its first message"
+    (is (= {:ok {:jsonrpc "2.0" :id 1 :result {}}}
+           (rpc/reply-of ": hi\n\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n"
+                         "text/event-stream" 1)))))
+
+(def ^:private sse-type "text/event-stream; charset=utf-8")
+
+(def ^:private json-type "application/json")
+
+(deftest a-reply-is-the-message-that-carries-the-request-id
+  (let [note  (json/write {:jsonrpc "2.0" :method rpc/list-changed})
+        reply (json/write {:jsonrpc "2.0" :id 7 :result {:tools [{:name "t"}]}})
+        other (json/write {:jsonrpc "2.0" :id 6 :result {}})]
+    (is (= {:ok (json/read-json reply)}
+           (rpc/reply-of (str "data: " note "\n\ndata: " other "\n\ndata: " reply "\n\n") sse-type 7))
+        "a notification, then another reply, then this one: this one answers")
+    (is (= {:ok (json/read-json reply)} (rpc/reply-of (str "[" note "," reply "]") json-type 7)) "a batch too")
+    (is (= :channel/bad-answer
+           (get-in (rpc/reply-of (str "data: " note "\n\n") sse-type 7) [:error :type]))
+        "a body with no reply to this id is refused")
+    (is (= :channel/bad-answer (get-in (rpc/reply-of "not json" json-type 7) [:error :type])))))
+
+(deftest the-content-type-decides-the-framing
+  (let [reply (json/write {:jsonrpc "2.0" :id 3 :result {}})]
+    (is (= {:ok (json/read-json reply)} (rpc/reply-of (str "\n\ndata: " reply "\n\n") "TEXT/Event-Stream" 3))
+        "an SSE body that does not start with data: is still SSE")
+    (is (= :channel/bad-answer
+           (get-in (rpc/reply-of (str "data: " reply "\n\n") json-type 3) [:error :type]))
+        "an SSE-looking body sent as JSON is not sniffed into SSE")
+    (is (true? (rpc/sse-type? sse-type)))
+    (is (false? (rpc/sse-type? json-type)))
+    (is (false? (rpc/sse-type? nil)))
+    (doseq [odd [";" "" " ; charset=x" ";;"]]
+      (is (false? (rpc/sse-type? odd)) (pr-str odd)))))
+
+(defn- pumped
+  "What pump! hands a recording sink from `text` with line cap `cap`."
+  [text cap]
+  (let [seen (atom {:text [] :failed [] :closed 0})
+        sink {:text!   #(swap! seen update :text conj %)
+              :failed! #(swap! seen update :failed conj %)
+              :close!  #(swap! seen update :closed inc)}]
+    (jdk/pump! (java.io.StringReader. text) sink cap)
+    @seen))
+
+(defn- recording-sink
+  "A session sink recording the messages and refusals it is handed."
+  []
+  (let [seen (atom {:messages [] :failed []})]
+    [(ses/sink #(swap! seen update :messages conj %) (fn [])
+               #(swap! seen update :failed conj (get-in % [:error :type])))
+     seen]))
+
+(def ^:private list-changed-event
+  (str "data: " (json/write {:jsonrpc "2.0" :method rpc/list-changed}) "\n\n"))
+
+(deftest an-event-without-a-blank-line-is-capped-not-buffered
+  (let [[sink seen] (recording-sink)]
+    (dotimes [_ (inc ses/max-event-lines)] ((:text! sink) ": keepalive\n"))
+    (is (= [:channel/event-overflow] (:failed @seen)) "the overflow is reported once")
+    (dotimes [_ 10] ((:text! sink) "data: {}\n"))
+    (is (= [] (:messages @seen)) "a dropped event dispatches nothing")
+    ((:text! sink) "\n")
+    ((:text! sink) list-changed-event)
+    (is (= [rpc/list-changed] (map :method (:messages @seen))) "the next event is read whole"))
+  (testing "a big event is capped by size"
+    (let [[sink seen] (recording-sink)
+          line        (str "data: " (apply str (repeat 1000 "x")) "\n")]
+      (dotimes [_ (inc (quot ses/max-event-chars 1000))] ((:text! sink) line))
+      (is (= [:channel/event-overflow] (:failed @seen)))))
+  (testing "the gathered event is held in O(1) appends"
+    (is (= {:lines ["a" "b"] :chars 2 :dropped? false}
+           (-> ses/empty-event (ses/add-line "a") (ses/add-line "b"))))))
+
+(defn- dispatched-through-pump
+  "The methods a session sink dispatches when pump! reads `text`."
+  [text]
+  (let [[sink seen] (recording-sink)]
+    (jdk/pump! (java.io.BufferedReader. (java.io.StringReader. text)) sink)
+    (map :method (:messages @seen))))
+
+(def ^:private list-changed-line
+  (str "data: " (json/write {:jsonrpc "2.0" :method rpc/list-changed})))
+
+(deftest every-sse-line-end-completes-an-event
+  (doseq [[why eol] [["LF" "\n"] ["CRLF" "\r\n"] ["lone CR" "\r"]]]
+    (testing why
+      (is (= [rpc/list-changed]
+             (dispatched-through-pump (str ": open" eol eol list-changed-line eol eol)))))))
+
+(deftest a-reply-body-is-bounded-in-size-and-time
+  (is (= {:ok "abc"} (jdk/read-capped (java.io.StringReader. "abc") 10)))
+  (let [a (jdk/read-capped (java.io.StringReader. (str "SECRET-BODY" (apply str (repeat 100 "x")))) 10)]
+    (is (= :channel/outcome-unknown (get-in a [:error :type])) "an oversized reply came after its headers")
+    (is (not (str/includes? (pr-str a) "SECRET")) "no remote text in the refusal"))
+  (let [closed (promise)
+        a      (jdk/within 100 #(do (Thread/sleep 5000) (answer/ok "late")) #(deliver closed true))]
+    (is (= :channel/outcome-unknown (get-in a [:error :type])) "a reply late after its headers")
+    (is (true? (deref closed 1000 false)) "a late reply is closed"))
+  (is (= {:ok 1} (jdk/within 1000 #(answer/ok 1) (fn [])))))
+
+(deftest a-lone-cr-dispatches-without-waiting-for-the-next-character
+  (let [text   (str list-changed-line "\r\r")
+        pos    (atom 0)
+        hold   (promise)
+        open   (proxy [java.io.Reader] []
+                 (read ([] (let [i @pos]
+                             (if (< i (count text))
+                               (do (swap! pos inc) (int (.charAt ^String text i)))
+                               (do @hold -1))))
+                       ([_cbuf _off _len] -1))
+                 (close [] (deliver hold true)))
+        [sink seen] (recording-sink)
+        pumper (future (jdk/pump! open sink))
+        got    (loop [n 0] (let [m (map :method (:messages @seen))]
+                             (if (or (seq m) (< 40 n)) m (do (Thread/sleep 25) (recur (inc n))))))]
+    (deliver hold true)
+    (deref pumper 2000 nil)
+    (is (= [rpc/list-changed] got)
+        "the event completes at a blank lone-CR line while the stream is still open")))
+
+(defn- held-sse-server
+  "An http-kit server on loopback whose POST reply is SSE headers, then
+   (when `reply?`) a notification and the reply to the request's id, and
+   then nothing: the connection is held open. Answers {:url :stop!}."
+  [reply?]
+  (let [srv (hk/run-server
+             (fn [req]
+               (let [id (:id (json/read-json (slurp (:body req))))]
+                 (hk/as-channel req
+                   {:on-open (fn [chan]
+                               (hk/send! chan {:status 200 :headers {"content-type" "text/event-stream"}} false)
+                               (when reply?
+                                 (hk/send! chan (str list-changed-event "data: "
+                                                     (json/write {:jsonrpc "2.0" :id id :result {:ok 1}})
+                                                     "\n\n") false)))})))
+             {:ip "127.0.0.1" :port 0 :legacy-return-value? false})]
+    {:url   (str "http://127.0.0.1:" (hk/server-port srv) "/mcp")
+     :stop! #(deref (hk/server-stop! srv {:timeout 100}))}))
+
+(defn- post-to
+  "The JDK client's answer to a JSON-RPC POST of id 41 to `url`, and the ms it took."
+  [url timeout-ms]
+  (let [t0 (System/currentTimeMillis)
+        a  (port/-request! (jdk/client) {:method :post :url url :rpc-id 41 :timeout-ms timeout-ms
+                                         :headers {"content-type" "application/json"}
+                                         :body (json/write {:jsonrpc "2.0" :id 41 :method "tools/call"})})]
+    [a (- (System/currentTimeMillis) t0)]))
+
+(deftest read-sse-reply-stops-at-the-event-of-its-id
+  (let [reply (str "data: " (json/write {:jsonrpc "2.0" :id 5 :result {}}))
+        text  (str list-changed-event reply "\r\n\r\ndata: NEVER-READ\n\n")
+        a     (jdk/read-sse-reply (java.io.StringReader. text) 10000 5)]
+    (is (str/includes? (:ok a) reply))
+    (is (not (str/includes? (:ok a) "NEVER-READ")) "nothing after the reply's event is read")
+    (is (= :channel/outcome-unknown
+           (get-in (jdk/read-sse-reply (java.io.StringReader. text) 20 5) [:error :type])))
+    (is (= :channel/outcome-unknown
+           (get-in (jdk/read-sse-reply (java.io.StringReader. list-changed-event) 10000 5) [:error :type]))
+        "the stream ending before the reply to the id")))
+
+(deftest an-sse-reply-is-read-up-to-its-own-message
+  (let [{:keys [url stop!]} (held-sse-server true)]
+    (try
+      (let [[a ms] (post-to url 3000)]
+        (is (= {:ok 1} (:result (:ok (rpc/reply-of (:body (:ok a)) "text/event-stream" 41)))) (pr-str a))
+        (is (< ms 2500) "the held-open stream is not waited on"))
+      (finally (stop!)))))
+
+(deftest a-reply-that-stops-after-its-headers-has-an-unknown-outcome
+  (let [{:keys [url stop!]} (held-sse-server false)]
+    (try
+      (let [[a _] (post-to url 300)]
+        (is (= :channel/outcome-unknown (get-in a [:error :type])) (pr-str a)))
+      (finally (stop!))))
+  (testing "a request that never connects is a transport failure, not an unknown outcome"
+    (let [[a _] (post-to "http://127.0.0.1:9/mcp" 300)]
+      (is (= :channel/transport-failed (get-in a [:error :type])) (pr-str a)))))
+
+(defn- scripted-server
+  "An http-kit server on loopback whose POST handler runs `script` on the
+   channel and the request's JSON-RPC id. Answers {:url :stop!}."
+  [script]
+  (let [srv (hk/run-server
+             (fn [req]
+               (let [id (:id (json/read-json (slurp (:body req))))]
+                 (hk/as-channel req {:on-open (fn [chan] (script chan id))})))
+             {:ip "127.0.0.1" :port 0 :legacy-return-value? false})]
+    {:url   (str "http://127.0.0.1:" (hk/server-port srv) "/mcp")
+     :stop! #(deref (hk/server-stop! srv {:timeout 100}))}))
+
+(defn- outcome-against
+  "The error type of a POST to a server running `script`."
+  [script timeout-ms]
+  (let [{:keys [url stop!]} (scripted-server script)]
+    (try (get-in (first (post-to url timeout-ms)) [:error :type])
+         (finally (stop!)))))
+
+(def ^:private sse-headers {:status 200 :headers {"content-type" "text/event-stream"}})
+
+(deftest a-notification-never-waits-on-its-reply-body
+  (let [{:keys [url stop!]} (scripted-server (fn [chan _] (hk/send! chan sse-headers false)))]
+    (try
+      (let [t0 (System/currentTimeMillis)
+            a  (port/-request! (jdk/client) {:method :post :url url :timeout-ms 3000
+                                             :headers {"content-type" "application/json"}
+                                             :body (json/write {:jsonrpc "2.0" :method "notifications/initialized"})})]
+        (is (= 200 (:status (:ok a))) (pr-str a))
+        (is (< (- (System/currentTimeMillis) t0) 2000) "the held-open body was not read"))
+      (finally (stop!)))))
+
+(deftest a-failure-after-the-request-is-sent-is-an-unknown-outcome
+  (testing "the request is accepted and no headers ever come"
+    (is (= :channel/outcome-unknown (outcome-against (fn [_ _]) 300))))
+  (testing "a reply larger than the body cap"
+    (is (= :channel/outcome-unknown
+           (outcome-against (fn [chan _]
+                              (hk/send! chan {:status 200 :headers {"content-type" "application/json"}
+                                              :body (apply str (repeat (inc jdk/max-body-chars) "x"))}))
+                            5000))))
+  (testing "the stream ends before the reply to this id"
+    (is (= :channel/outcome-unknown
+           (outcome-against (fn [chan _] (hk/send! chan sse-headers false)
+                              (hk/send! chan list-changed-event true))
+                            3000))))
+  (testing "a request that never connects stays a safe-to-retry transport failure"
+    (is (= :channel/transport-failed (get-in (first (post-to "http://127.0.0.1:9/mcp" 300)) [:error :type])))
+    (is (= :channel/transport-failed
+           (get-in (first (post-to "http://no-such-host.invalid/mcp" 2000)) [:error :type])))))
+
+(deftest a-stream-line-past-the-cap-closes-the-stream
+  (let [ok (pumped "data: a\n\ndata: b\n" 16)]
+    (is (= ["data: a\n" "\n" "data: b\n"] (:text ok)))
+    (is (empty? (:failed ok)))
+    (is (= 1 (:closed ok))))
+  (let [over (pumped (str "data: a\n" (apply str (repeat 40 "x")) "\ndata: late\n") 16)]
+    (is (= ["data: a\n"] (:text over)) "nothing past the long line is read")
+    (is (= [:channel/stream-overflow] (map #(get-in % [:error :type]) (:failed over))))
+    (is (= 1 (:closed over)) "the stream is closed once"))
+  (is (= (* 1024 1024) jdk/max-line-chars)))
 
 (deftest a-listing-becomes-a-manifest
   (let [m (rpc/manifest-of "todo" "http://r/todo" tools [{:uri "app://db" :mimeType "x"}])]
@@ -283,6 +538,15 @@
            {:type (get-in a [:error :type]) :status (get-in a [:error :data :status])}))
     (is (not (str/includes? (pr-str a) (tokens "agent-a"))) "a body echoing the token is not carried")))
 
+(deftest the-stream-and-cache-intervals-are-validated
+  (doseq [k [:stream-retry-ms :ttl-ms]]
+    (testing (name k)
+      (is (m/validate bs/Target (assoc target k 0)))
+      (is (m/validate bs/Target (assoc target k 5000)))
+      (is (not (m/validate bs/Target (assoc target k "5000"))) "a string is refused")
+      (is (not (m/validate bs/Target (assoc target k -1))) "a negative interval is refused")
+      (is (not (m/validate bs/Target (assoc target k 1.5))) "a fraction is refused"))))
+
 (deftest an-http-target-needs-a-url
   (is (not (m/validate bs/Target (dissoc target :url))) "a Target without one")
   (is (not (m/validate bs/Target (assoc target :url ""))) "an empty one")
@@ -398,6 +662,107 @@
       (is (seq @seen))
       (is (not-any? #(get-in % [:headers "authorization"]) @seen)))))
 
+(deftest a-refused-actor-leaves-no-channel-state
+  (let [[c seen] (spied (assoc target :credentials (credential-policy)))]
+    (doseq [i (range 50)]
+      (doseq [req [{:op :manifest} {:op :call :tool "todo_list"} {:op :read :uri "app://db"}]]
+        (is (= :channel/credential-missing (get-in (as c (str "stranger-" i) #{:read} req) [:error :type])))))
+    (is (empty? @(:slots (:ch c))) "no cache slot per refused actor")
+    (is (empty? @(:locks (:ch c))) "no lock per refused actor")
+    (is (empty? @(:sessions (:ch c))))
+    (is (empty? @seen) "nothing was sent")
+    (manifest-as c "agent-a" #{:read})
+    (is (= #{"agent-a"} (set (keys @(:slots (:ch c))))) "a configured actor still gets its slot")))
+
+(deftest an-empty-credential-policy-never-goes-anonymous
+  (let [[c seen] (spied (assoc target :credentials {}))
+        a        (manifest-as c "agent-a" #{:read})]
+    (is (= :channel/credential-missing (get-in a [:error :type])) (pr-str a))
+    (is (empty? @seen) "nothing was sent"))
+  (testing "and the schema refuses an empty policy"
+    (is (not (m/validate bs/Target (assoc target :credentials {}))))))
+
+(defn- spy-client
+  "A stub client that records every request it is handed, plus that record."
+  []
+  (let [[client _ _] (open-stub)
+        seen (atom [])]
+    [(reify port/IHttpClient
+       (-request! [_ req] (swap! seen conj req) (port/-request! client req))
+       (-open-stream! [_ req sink] (swap! seen conj req) (port/-open-stream! client req sink)))
+     seen]))
+
+(def ^:private live-session {:id "sid-agent-z" :actor stranger})
+
+(defn- stream-and-close
+  "The answers of opening a stream and closing a session as `actor` on `t`
+   with credential `values`, plus the requests that went out."
+  [t values actor]
+  (let [[client seen] (spy-client)
+        src           (->Environment values)
+        grant         {:actor actor}
+        ses           (assoc live-session :actor actor)]
+    {:stream (ses/open-stream! client src t grant ses (fn [_]) (fn []))
+     :close  (ses/close-session! client src t grant ses)
+     :seen   @seen}))
+
+(deftest stream-open-and-session-close-fail-closed
+  (testing "an actor with no credential entry"
+    (let [{:keys [stream close seen]} (stream-and-close (assoc target :credentials (credential-policy))
+                                                        {"REMOTE_AGENT_A" "aut_a"} stranger)]
+      (is (= :channel/credential-missing (get-in stream [:error :type])) (pr-str stream))
+      (is (= :channel/credential-missing (get-in close [:error :type])) (pr-str close))
+      (is (empty? seen) "no stream was opened and no DELETE went out")))
+  (testing "a configured credential that is unset"
+    (let [{:keys [stream close seen]} (stream-and-close (assoc target :credentials (credential-policy))
+                                                        {} "agent-a")]
+      (is (= :channel/credential-unset (get-in stream [:error :type])) (pr-str stream))
+      (is (= :channel/credential-unset (get-in close [:error :type])) (pr-str close))
+      (is (empty? seen))))
+  (testing "a bearer refused over plain http to another host"
+    (let [{:keys [stream close seen]} (stream-and-close (assoc target :url plain-remote-url
+                                                               :credentials (credential-policy))
+                                                        {"REMOTE_AGENT_A" "aut_a"} "agent-a")]
+      (is (= :channel/insecure-transport (get-in stream [:error :type])) (pr-str stream))
+      (is (= :channel/insecure-transport (get-in close [:error :type])) (pr-str close))
+      (is (not-any? #(str/includes? (pr-str [stream close]) %) (vals tokens)))
+      (is (empty? seen)))))
+
+(deftest a-hostile-actor-is-cut-and-cleaned-in-the-refusal
+  (let [hostile  (str "evil\n\u001b[31mFAKE LOG LINE\r" (apply str (repeat 200 "y")))
+        [c seen] (spied (assoc target :credentials (credential-policy)))
+        a        (manifest-as c hostile #{:read})
+        msg      (get-in a [:error :message])
+        shown    (get-in a [:error :data :actor])]
+    (is (= :channel/credential-missing (get-in a [:error :type])) (pr-str a))
+    (is (not-any? #(Character/isISOControl (char %)) msg) "no control character reaches the message")
+    (is (= 64 (count shown)) "the actor is cut at 64 characters")
+    (is (str/starts-with? shown "evil[31mFAKE LOG LINE"))
+    (is (str/includes? msg shown))
+    (is (not (str/includes? msg (apply str (repeat 100 "y")))))
+    (is (empty? @seen) "nothing was sent")))
+
+(deftest a-shown-actor-drops-separators-and-bidi-controls
+  (doseq [c [\u2028 \u2029 \u200E \u200F \u202A \u202E \u2066 \u2069 \u061C \u200B \u200C \u200D \uFEFF]]
+    (is (= "ab" (http/shown-actor (str "a" c "b"))) (format "U+%04X" (int c))))
+  (is (= "agent-é" (http/shown-actor "agent-é")) "an ordinary letter stays")
+  (testing "the cut never splits a surrogate pair"
+    (let [emoji "\uD83D\uDE00"
+          shown (http/shown-actor (str (apply str (repeat 63 "a")) emoji emoji))]
+      (is (= (str (apply str (repeat 63 "a")) emoji) shown))
+      (is (= 64 (.codePointCount ^String shown 0 (count shown))))
+      (is (not (Character/isHighSurrogate (last shown))) "no lone high surrogate at the end"))))
+
+(deftest every-request-names-its-protocol-and-what-it-accepts
+  (let [[c seen] (spied (assoc target :credentials (credential-policy)))]
+    (manifest-as c "agent-a" #{:read})
+    (is (<= 3 (count @seen)) "initialize, initialized, the stream and tools/list")
+    (is (every? #(= rpc/protocol-version (get-in % [:headers "mcp-protocol-version"])) @seen))
+    (is (every? #(contains? #{"application/json, text/event-stream" "text/event-stream"}
+                            (get-in % [:headers "accept"]))
+                @seen))
+    (is (some #(= "application/json, text/event-stream" (get-in % [:headers "accept"])) @seen))))
+
 (deftest credential-config-promotes-references-only
   (let [entry {:app "todo" :channel :http :url remote-url
                :credentials (credential-policy)}
@@ -418,6 +783,232 @@
      (str "data: " (json/write {:jsonrpc "2.0" :method rpc/list-changed}) "\n\n"))
     (is (= ["todo_list"] (names "agent-a")) "A's listing is refetched after its list_changed")
     (is (= ["todo_list"] (names "agent-b")) "B was not notified: its cached listing stands")))
+
+(defn- notifying-during-list
+  "A client over stub `client` that, the first time it serves a
+   tools/list, first pushes a list_changed to that actor's stream."
+  [client streams]
+  (let [fired? (atom false)]
+    (reify port/IHttpClient
+      (-request! [_ req]
+        (when (and (= "tools/list" (:method (json/read-json (str (:body req)))))
+                   (compare-and-set! fired? false true))
+          ((get-in @streams [(actor-of req) :text!])
+           (str "data: " (json/write {:jsonrpc "2.0" :method rpc/list-changed}) "\n\n")))
+        (port/-request! client req))
+      (-open-stream! [_ req sink] (port/-open-stream! client req sink)))))
+
+(deftest a-list-changed-during-a-fetch-is-not-lost
+  (let [[client state streams] (open-stub)
+        c (channel/make (assoc target :credentials (credential-policy) :ttl-ms 60000
+                               :credential-source (source)
+                               :http/client (notifying-during-list client streams)))
+        first-look (manifest-as c "agent-b" #{:read})]
+    (is (= ["todo_list"] (mapv :name (:tools (:ok first-look))))
+        "the look answers the listing it fetched")
+    (swap! state assoc-in [:scopes "agent-b"] #{:read :write})
+    (is (= ["todo_add" "todo_list"] (mapv :name (:tools (:ok (manifest-as c "agent-b" #{:read})))))
+        "the event that arrived mid-fetch still forces the next look to refetch")))
+
+(defn- slow-initialize
+  "A client over stub `client` that counts initializes in `opened` and
+   holds each for a moment, widening the open race."
+  [client opened]
+  (reify port/IHttpClient
+    (-request! [_ req]
+      (when (= "initialize" (:method (json/read-json (str (:body req)))))
+        (swap! opened inc)
+        (Thread/sleep 50))
+      (port/-request! client req))
+    (-open-stream! [_ req sink] (port/-open-stream! client req sink))))
+
+(deftest concurrent-looks-by-one-actor-open-one-session
+  (let [[client _ _] (open-stub)
+        opened (atom 0)
+        c      (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                                    :http/client (slow-initialize client opened)))
+        calls  (doall (repeatedly 8 #(future (as c "agent-a" #{:read} {:op :call :tool "todo_list"}))))]
+    (is (every? #(answer/ok? (deref % 5000 nil)) calls))
+    (is (= 1 @opened) "one session was opened for the actor")))
+
+(defn- stream-opens-after-a-drop
+  "How many stream opens `agent-a` makes on a channel whose retry interval
+   is `retry-ms`, when its stream ends between two calls."
+  [retry-ms]
+  (let [[client _ streams] (open-stub)
+        opens (atom 0)
+        spy   (reify port/IHttpClient
+                (-request! [_ req] (port/-request! client req))
+                (-open-stream! [_ req sink] (swap! opens inc) (port/-open-stream! client req sink)))
+        c     (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                                   :stream-retry-ms retry-ms :http/client spy))
+        call  #(as c "agent-a" #{:read} {:op :call :tool "todo_list"})]
+    (call)
+    ((get-in @streams ["agent-a" :close!]))
+    (call)
+    @opens))
+
+(defn- notification-first
+  "A client over stub `client` that answers every POST as SSE, a
+   list_changed notification before the stub's own reply."
+  [client]
+  (reify port/IHttpClient
+    (-request! [_ req]
+      (answer/let-answer [resp (port/-request! client req)]
+        (answer/ok (-> resp
+                       (assoc :body (str list-changed-event "data: " (:body resp) "\n\n"))
+                       (assoc-in [:headers "content-type"] "text/event-stream")))))
+    (-open-stream! [_ req sink] (port/-open-stream! client req sink))))
+
+(deftest a-notification-before-the-reply-never-hides-it
+  (let [[client state _] (open-stub)
+        c (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                               :http/client (notification-first client)))]
+    (is (= ["todo_list"] (mapv :name (:tools (:ok (manifest-as c "agent-b" #{:read})))))
+        "tools/list reads the listing, not the notification")
+    (is (= {:ok {:by "agent-a" :tool "todo_add" :args {}}}
+           (as c "agent-a" #{:write} {:op :call :tool "todo_add" :args {}})))
+    (is (= 1 (count (:calls @state))) "the tool ran once")))
+
+(defn- erring-on
+  "A client over stub `client` that answers JSON-RPC `method` with an
+   id-matched error reply naming `secret`."
+  [client method secret]
+  (reify port/IHttpClient
+    (-request! [_ req]
+      (let [msg (json/read-json (str (:body req)))]
+        (if (= method (:method msg))
+          (json-response 200 {:jsonrpc "2.0" :id (:id msg) :error {:code -32603 :message secret}})
+          (port/-request! client req))))
+    (-open-stream! [_ req sink] (port/-open-stream! client req sink))))
+
+(deftest a-2xx-without-a-reply-to-the-request-is-an-unknown-outcome
+  (let [[client _ _] (open-stub)
+        silent (reify port/IHttpClient
+                 (-request! [_ req]
+                   (if (= "tools/call" (:method (json/read-json (str (:body req)))))
+                     {:ok {:status 200 :headers {"content-type" "text/event-stream"} :body list-changed-event}}
+                     (port/-request! client req)))
+                 (-open-stream! [_ req sink] (port/-open-stream! client req sink)))
+        c (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                               :http/client silent))]
+    (is (= :channel/outcome-unknown
+           (get-in (as c "agent-a" #{:write} {:op :call :tool "todo_add"}) [:error :type])))))
+
+(deftest an-error-reply-is-refused-not-taken-as-empty
+  (let [[client _ _] (open-stub)
+        mk     #(channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                                     :ttl-ms 60000 :http/client (erring-on client % "SECRET-REMOTE-TEXT")))
+        listed (manifest-as (mk "tools/list") "agent-a" #{:read})
+        read   (as (mk "resources/read") "agent-a" #{:read} {:op :read :uri "app://db"})]
+    (is (= {:type :channel/rpc-error :data {:code -32603}} (select-keys (:error listed) [:type :data]))
+        "tools/list: an error reply is not a fresh empty listing")
+    (is (= :channel/rpc-error (get-in read [:error :type])) "resources/read: an error reply is not Ok nil")
+    (is (not-any? #(str/includes? (pr-str %) "SECRET") [listed read])))
+  (testing "a reply with no map result"
+    (is (= :channel/rpc-error (get-in (rpc/result-of {:id 1 :result "x"}) [:error :type])))
+    (is (= {:ok {:tools []}} (rpc/result-of {:id 1 :result {:tools []}})))))
+
+(deftest a-dead-stream-is-reopened-on-the-next-look-rate-limited
+  (is (= 2 (stream-opens-after-a-drop 0)) "the next look reopens the ended stream")
+  (is (= 1 (stream-opens-after-a-drop 60000)) "not again within the retry interval"))
+
+(deftest an-old-stream-ending-after-a-renewal-keeps-the-new-one
+  (let [[client state _] (open-stub)
+        sinks (atom [])
+        spy   (reify port/IHttpClient
+                (-request! [_ req] (port/-request! client req))
+                (-open-stream! [_ req sink] (swap! sinks conj sink) (port/-open-stream! client req sink)))
+        c     (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                                   :stream-retry-ms 0 :ttl-ms 0 :http/client spy))
+        look  #(manifest-as c "agent-a" #{:read})]
+    (look)
+    (swap! state update :sessions dissoc "sid-agent-a")
+    (is (answer/ok? (look)) "the forgotten session is renewed")
+    (is (= 2 (count @sinks)) "the renewal opened a second stream")
+    ((:close! (first @sinks)))
+    (look)
+    (is (= 2 (count @sinks)) "the old stream's end left the new stream held")
+    ((:close! (second @sinks)))
+    (look)
+    (is (= 3 (count @sinks)) "the new stream's own end is still noticed")))
+
+(deftest a-remote-without-a-stream-is-not-asked-again
+  (let [[client _ _] (open-stub)
+        opens (atom 0)
+        spy   (reify port/IHttpClient
+                (-request! [_ req] (port/-request! client req))
+                (-open-stream! [_ _req _sink]
+                  (swap! opens inc)
+                  (answer/refusal :channel/stream-refused "the remote stream answered 405" {:status 405})))
+        c     (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                                   :stream-retry-ms 0 :http/client spy))]
+    (dotimes [_ 3] (as c "agent-a" #{:read} {:op :call :tool "todo_list"}))
+    (is (= 1 @opens) "a 405 is terminal: the stream is never reopened"))
+  (testing "the attempt is stamped when it completes, with its outcome"
+    (is (= {:listen-at 9 :close! :c} (hc/listened {} {:ok {:close! :c}} 9)))
+    (is (= {:listen-at 9} (hc/listened {} (answer/refusal :x "y" {:status 503}) 9)))
+    (is (:stream-none? (hc/listened {} (answer/refusal :x "y" {:status 405}) 9)))))
+
+(defn- held-initialize
+  "A client over stub `client` whose initialize delivers `entered`, then
+   waits for `release`."
+  [client entered release]
+  (reify port/IHttpClient
+    (-request! [_ req]
+      (when (= "initialize" (:method (json/read-json (str (:body req)))))
+        (deliver entered true)
+        (deref release 5000 nil))
+      (port/-request! client req))
+    (-open-stream! [_ req sink] (port/-open-stream! client req sink))))
+
+(deftest a-live-session-is-used-while-its-lock-is-busy
+  (let [[client _ streams] (open-stub)
+        opens   (atom 0)
+        entered (promise)
+        release (promise)
+        spy     (reify port/IHttpClient
+                  (-request! [_ req] (port/-request! client req))
+                  (-open-stream! [_ req sink]
+                    (when (< 1 (swap! opens inc)) (deliver entered true) (deref release 5000 nil))
+                    (port/-open-stream! client req sink)))
+        c       (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                                     :stream-retry-ms 0 :lock-wait-ms 100 :http/client spy))
+        call    #(as c "agent-a" #{:read} {:op :call :tool "todo_list"})]
+    (call)
+    ((get-in @streams ["agent-a" :close!]))
+    (let [reviving (future (call))]
+      (is (deref entered 2000 false) "the first look is reopening the stream under the lock")
+      (is (answer/ok? (call)) "a look meanwhile uses the live session, never :channel/busy")
+      (deliver release true)
+      (is (answer/ok? (deref reviving 5000 nil))))))
+
+(deftest a-look-waits-for-the-session-lock-only-so-long
+  (let [[client _ _] (open-stub)
+        entered (promise)
+        release (promise)
+        c       (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                                     :lock-wait-ms 100 :http/client (held-initialize client entered release)))
+        call    #(as c "agent-a" #{:read} {:op :call :tool "todo_list"})
+        first*  (future (call))]
+    (is (deref entered 2000 false) "the first look holds the lock inside initialize")
+    (is (= :channel/busy (get-in (call) [:error :type])) "a second look is refused, not parked")
+    (deliver release true)
+    (is (answer/ok? (deref first* 5000 nil)) "the first look completes")
+    (is (answer/ok? (call)) "once the session exists the lock is not needed"))
+  (is (= 2000 (hc/lock-wait-ms target)) "the default wait is the target's timeout"))
+
+(deftest the-lock-wait-is-a-positive-integer
+  (is (m/validate bs/Target (assoc target :lock-wait-ms 100)))
+  (doseq [bad ["100" 0 -1 1.5 nil]]
+    (is (not (m/validate bs/Target (assoc target :lock-wait-ms bad))) (pr-str bad))))
+
+(deftest a-stored-listing-is-fresh-only-at-its-own-revision
+  (let [sl (assoc hc/empty-slot :revision 3)]
+    (is (false? (:stale? (hc/stored sl {:v 1} 10 3))))
+    (is (true? (:stale? (hc/stored sl {:v 1} 10 2))) "an event moved the revision meanwhile")
+    (is (= {:v 1} (:manifest (hc/stored sl {:v 1} 10 2))) "the fetched listing is still kept")
+    (is (= 4 (:revision (hc/mark-stale sl))))))
 
 (deftest fleet-refreshes-the-notified-target-without-crossing-actors
   (let [[c state streams] (ch)

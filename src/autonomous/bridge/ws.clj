@@ -24,6 +24,7 @@
    live connections; a socket adapter (autonomous.ws.server) drives a
    connection through `open-link`, `on-text!` and `on-close!`."
   (:require [autonomous.bridge.auth :as auth]
+            [autonomous.bridge.failure :as failure]
             [autonomous.bridge.port :as port]
             [autonomous.domain.answer :as answer]
             [autonomous.domain.wire :as wire]))
@@ -210,7 +211,7 @@
                               (str "runtime " (:runtime/id conn) " did not answer within " timeout-ms " ms"))
               a))
           (catch Exception e
-            (answer/refusal :channel/transport-failed (or (ex-message e) (str e))))
+            (answer/refusal :channel/transport-failed (failure/message e)))
           (finally (swap! (:pending hub) dissoc id)))))))
 
 ;; =============================================================================
