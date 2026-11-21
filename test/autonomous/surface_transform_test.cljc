@@ -109,6 +109,13 @@
     (is (= data (get-in (decorator/project-refusal t (answer/refusal :x "m" data)) [:error :data]))
         "never a throw, never a key added")))
 
+(deftest refusal-data-is-masked-in-wire-form
+  (let [t ((decorator/redact-refusal [[:reqs 0 :token]]) (tool :d/acct {}))
+        hand-built {:error {:type :x :message "m" :data {:reqs (list {:token "s3cret"})}}}]
+    (is (= {:reqs [{:token "<redacted>"}]}
+           (get-in (decorator/project-refusal t hand-built) [:error :data]))
+        "a list in a refusal map an adapter built itself is reached by index")))
+
 (def ^:private decorator-gen
   (gen/elements [(decorator/prefix-names "p_")
                  audited

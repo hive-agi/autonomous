@@ -126,10 +126,12 @@
 
 (defn project-refusal
   "L1 Pipeline: Answer `a` with the tool's refusal redactions applied to
-   a refusal's :data. Ok, Pending, a refusal without :data and a tool
-   without refusal redactions pass unchanged."
+   the wire form (autonomous.domain.wire/->wire) of a refusal's :data, so
+   a path through a list or seq reaches what the bridge would carry even
+   when an adapter built the refusal map itself. Ok, Pending, a refusal
+   without :data and a tool without refusal redactions pass unchanged."
   [tool a]
   (let [redactions (seq (::refusal-redactions tool))]
     (if (and redactions (answer/refused? a) (contains? (:error a) :data))
-      (update-in a [:error :data] apply-redactions redactions)
+      (update-in a [:error :data] #(apply-redactions (wire/->wire %) redactions))
       a)))
