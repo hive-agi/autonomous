@@ -863,11 +863,14 @@
     (is (:stream-none? (hc/listened {} (answer/refusal :x "y" {:status 405}) 9)))))
 
 (defn- held-initialize
-  "A client over stub `client` whose initialize waits for `release`."
-  [client release]
+  "A client over stub `client` whose initialize delivers `entered`, then
+   waits for `release`."
+  [client entered release]
   (reify port/IHttpClient
     (-request! [_ req]
-      (when (= "initialize" (:method (json/read-json (str (:body req))))) (deref release 5000 nil))
+      (when (= "initialize" (:method (json/read-json (str (:body req)))))
+        (deliver entered true)
+        (deref release 5000 nil))
       (port/-request! client req))
     (-open-stream! [_ req sink] (port/-open-stream! client req sink))))
 
@@ -894,12 +897,13 @@
 
 (deftest a-look-waits-for-the-session-lock-only-so-long
   (let [[client _ _] (open-stub)
+        entered (promise)
         release (promise)
         c       (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
-                                     :lock-wait-ms 100 :http/client (held-initialize client release)))
+                                     :lock-wait-ms 100 :http/client (held-initialize client entered release)))
         call    #(as c "agent-a" #{:read} {:op :call :tool "todo_list"})
         first*  (future (call))]
-    (Thread/sleep 50)
+    (is (deref entered 2000 false) "the first look holds the lock inside initialize")
     (is (= :channel/busy (get-in (call) [:error :type])) "a second look is refused, not parked")
     (deliver release true)
     (is (answer/ok? (deref first* 5000 nil)) "the first look completes")
