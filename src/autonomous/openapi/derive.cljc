@@ -199,14 +199,18 @@
 
 (defn operation
   "Pure: compile an Operation for the codec and its input schema, or refuse
-   it, also when its input schema would silently accept anything."
-  [bundle {:keys [op] :as o}]
-  (let [resolved (params bundle o)]
-    (or (fail-open-input (get op "operationId") (input-schemas bundle op resolved))
-        (answer/bind (body-of bundle op)
-                     (fn [body]
-                       (answer/ok (build-operation o (mapv spec-parameter resolved)
-                                                   body (responses bundle op))))))))
+   it, also when its input schema would silently accept anything. opts
+   :lenient-schemas? true skips that check: an unknown type or an
+   unresolved $ref reads as :any again (the derivation before the check)."
+  ([bundle o] (operation bundle o {}))
+  ([bundle {:keys [op] :as o} opts]
+   (let [resolved (params bundle o)]
+     (or (when-not (:lenient-schemas? opts)
+           (fail-open-input (get op "operationId") (input-schemas bundle op resolved)))
+         (answer/bind (body-of bundle op)
+                      (fn [body]
+                        (answer/ok (build-operation o (mapv spec-parameter resolved)
+                                                    body (responses bundle op)))))))))
 
 ;; -----------------------------------------------------------------------------
 ;; Promoting an Operation to a tool spec
@@ -247,7 +251,7 @@
 (defn- ->spec
   "Pure: Ok [id spec] of an exposed operation."
   [bundle o cfg opts]
-  (answer/bind (operation bundle o)
+  (answer/bind (operation bundle o opts)
                #(answer/ok [(tool-id (:prefix opts) (:operation-id o)) (tool-spec % o cfg opts)])))
 
 ;; -----------------------------------------------------------------------------
@@ -293,6 +297,10 @@
      :base-url   where requests go (the gateway), e.g. \"https://h/api/payment\"
      :http       (fn [request] response), default autonomous.openapi.http
      :principal  (fn [grant request] request): adds the persona's identity
+     :lenient-schemas?  true reads an unknown type (\"file\", \"int\") or a
+                 $ref the resolver cannot follow (#anchor, $id, a URL) as
+                 :any, as before; default false refuses the operation with
+                 :openapi/unresolved-schema, since :any admits any argument
 
    :read-only? defaults to true for GET and HEAD only. Answers
    {:ok [[id spec] ...]} in :expose order, or a refusal."
