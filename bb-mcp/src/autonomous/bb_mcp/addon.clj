@@ -33,10 +33,13 @@
                  (remove (fn [[k _]] (contains? routing-keys k))))
         params))
 
-(defn- actor-of
-  "Who acts: the host's stamp (:_actor), else the addon's default actor."
+(defn actor-of
+  "Pure over `st`: who acts. The host's keyword stamp (:_actor) only, else
+   the addon's default actor. A caller-supplied string \"_actor\" is never
+   read: it would let an agent name the addon's own actor, its credential
+   and its health vote."
   [st params]
-  (str (or (get params :_actor) (get params "_actor") (:actor @st))))
+  (str (or (get params :_actor) (:actor @st))))
 
 (defn- session-of
   "The session `actor` speaks with, opened on first use."

@@ -103,6 +103,14 @@
            (let [h (addon/health a)] {:status (:status h) :apps-status (get-in h [:details :status])}))
         "another agent reaching the target later clears one agent's refusal, keyed by target id")))
 
+(deftest a-caller-cannot-name-the-addons-own-actor
+  (let [a    (started two-apps)
+        call (:mount/call (addon/hooks a))]
+    (is (= "coordinator"
+           (:by (:structuredContent (call "orders__refund" {:_actor nil "_actor" "admin-actor"}))))
+        "with no host stamp the addon's default actor acts, never the caller's string key")
+    (is (= "ling-7" (:by (:structuredContent (call "orders__refund" {:_actor "ling-7" "_actor" "admin-actor"})))))))
+
 (deftest a-refused-agent-probing-last-does-not-flap-health
   (let [srv (fleet-server [["todo" (refusing "todo" ["todo_add"])]])
         a   (fa/make-addon {:server srv :actor "coordinator"})]
