@@ -78,6 +78,15 @@
   (doseq [good ["clear-done" "-" (apply str (repeat 64 "a"))]]
     (is (= good (get-in (affordance/->tool :t/x (spec {:name good})) [:ok :name])))))
 
+(def ^:private collide-a
+  "With collide-b: two different 192 character tails whose fleet digests
+   are equal (32 blocks equal under the first hash, chosen so the second
+   agrees), the collision the 12 character digest can still have."
+  "n4xfgizh86rtu0a67s3l50v2jppo4hwor2fogdvcdrn4cnzgaq62gpalrp3opaq0zt22wcias7hmvi0tns422un2e6ir85mqfd2758ws6knfn5t8rfmuxbwossqqvhwkn42upv6i881bgrk5w176rox5v1tjot0ugyc69z6hcz1nm7xl21wtgpkn73je0eqw")
+
+(def ^:private collide-b
+  "lrxfgizfttt6u0a67s3l50v2jr2o4hwor2fogdvcdrlrcnzgaq62gpalrp3opc30zt0r9cias7hmvi26nqpp2un2e6ir85mqfd0u3vws6m0fn5t8rfmuxby1ssqqvhwkn42ur6ti881bgrk5uo5v4ox5v1tjq627gyc69z6hcxq0kuxl21wti2klsqje0eqw")
+
 (defn- tools-of [& names]
   (mapv (fn [n] {:name n :description "" :input-schema {}}) names))
 
@@ -94,6 +103,15 @@
         "names differing only by . and _ never collide")
     (is (mcp-name? (fleet/exposed-name "remote" "a/b")))
     (is (mcp-name? (fleet/exposed-name "remote" "ação"))))
+  (testing "a literal name in the digest shape is digested too, so it never takes a digested name"
+    (let [squatter "pay_out-h8vud5tu2h18"
+          n        (fleet/exposed-name "r" squatter)]
+      (is (mcp-name? n))
+      (is (fleet/cut? n))
+      (is (not= (fleet/exposed-name "r" "pay.out") n))
+      (is (= squatter (fleet/resolve-local "r" n ["pay.out" squatter]))))
+    (is (= "r__pay_out-h8vud5tu2h1" (fleet/exposed-name "r" "pay_out-h8vud5tu2h1"))
+        "eleven characters is not the digest shape"))
   (testing "the bridge finds the tool a changed name stands for"
     (let [n (fleet/exposed-name "remote" "admin.tools.list")]
       (is (= "admin.tools.list" (fleet/resolve-local "remote" n ["x" "admin.tools.list" "admin_tools_list"])))))
@@ -119,27 +137,25 @@
       (is (= (:routes s1) (:routes s2)))
       (is (= {:target "r" :tool "pay_out"} (get-in s1 [:routes "r__pay_out"])))
       (is (= 2 (count (:routes s1))))))
-  (testing "a real collision of exposed names exposes neither and reports both as dropped"
-    (let [long-a (str (apply str (repeat 70 "q")) ".x")
-          clash  (first (for [i (range 5000) :let [b (str long-a i)]
-                              :when (= (fleet/exposed-name "r" long-a) (fleet/exposed-name "r" b))]
-                          b))]
-      (is (nil? clash) "no collision among the digested names searched")
-      (testing "the same tool listed twice is one tool, not a collision"
-        (let [s (fleet/merge-probes [{:target "r" :status :up :manifest {:tools (tools-of "a" "a" "c")}}])]
-          (is (= ["r__a" "r__c"] (mapv :name (:tools s))))))
-      (testing "an exposed name an earlier target holds is dropped for the later one"
-        (let [s (fleet/merge-probes [{:target "r" :status :up :manifest {:tools (tools-of "x")}}
-                                     {:target "r" :status :up :manifest {:tools (tools-of "x" "y")}}])]
-          (is (= ["r__x" "r__y"] (mapv :name (:tools s))))
-          (is (= ["x"] (get-in s [:apps 1 :dropped])))))
-      (testing "tools exposing one name are all dropped, whatever their order"
-        (with-redefs [fleet/exposed-name (fn [_ t] (if (#{"a" "b"} t) "r__ab" (str "r__" t)))]
-          (doseq [order [["a" "b" "c"] ["c" "b" "a"]]]
-            (let [s (fleet/merge-probes [{:target "r" :status :up :manifest {:tools (apply tools-of order)}}])]
-              (is (= ["r__c"] (mapv :name (:tools s))))
-              (is (= #{"a" "b"} (set (get-in s [:apps 0 :dropped]))))))
-          (is (nil? (fleet/resolve-local "r" "r__ab" ["a" "b"]))))))))
+  (testing "two different names with the same digest collide, and the collision drops both"
+    (let [clash (fn [t] (str (apply str (repeat 60 "q")) t))
+          a     (clash collide-a)
+          b     (clash collide-b)]
+      (is (not= a b))
+      (is (= (fleet/exposed-name "r" a) (fleet/exposed-name "r" b)))
+      (doseq [order [[a b "c"] ["c" b a]]]
+        (let [s (fleet/merge-probes [{:target "r" :status :up :manifest {:tools (apply tools-of order)}}])]
+          (is (= ["r__c"] (mapv :name (:tools s))))
+          (is (= #{a b} (set (get-in s [:apps 0 :dropped]))))))
+      (is (nil? (fleet/resolve-local "r" (fleet/exposed-name "r" a) [a b "c"])))))
+  (testing "the same tool listed twice is one tool, not a collision"
+    (let [s (fleet/merge-probes [{:target "r" :status :up :manifest {:tools (tools-of "a" "a" "c")}}])]
+      (is (= ["r__a" "r__c"] (mapv :name (:tools s))))))
+  (testing "an exposed name an earlier target holds is dropped for the later one"
+    (let [s (fleet/merge-probes [{:target "r" :status :up :manifest {:tools (tools-of "x")}}
+                                 {:target "r" :status :up :manifest {:tools (tools-of "x" "y")}}])]
+      (is (= ["r__x" "r__y"] (mapv :name (:tools s))))
+      (is (= ["x"] (get-in s [:apps 1 :dropped]))))))
 
 (deftest every-name-doc-naming-shows
   (doseq [[id expected] [[:todo/add "todo_add"]
