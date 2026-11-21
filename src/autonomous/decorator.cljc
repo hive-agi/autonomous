@@ -20,11 +20,15 @@
                     {:autonomous/error :invalid-scope :scope scope})))
   (fn [tool] (update tool :scopes conj scope)))
 
+(def approval-ttl-margin-ms
+  "L1: how long before the pending TTL an approval wait must end."
+  (* 60 1000))
+
 (def max-approval-ms
   "L1: require-approval's :timeout-ms must stay below this: the runtime's
    pending TTL (autonomous.runtime.registry/pending-ttl-ms, 10 minutes)
-   less a one-minute margin, so an approved call's result is collectable."
-  (* 9 60 1000))
+   less approval-ttl-margin-ms, so an approved call's result is collectable."
+  (- (* 10 60 1000) approval-ttl-margin-ms))
 
 (defn require-approval
   "L1 Tool -> Tool: every call waits for a human's Verdict from `asker`

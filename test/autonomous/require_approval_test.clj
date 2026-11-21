@@ -194,7 +194,9 @@
 (deftest a-timeout-at-or-past-the-pending-ttl-is-refused
   (let [asker (approval/queue-asker [])
         make  #(decorator/require-approval {:asker asker :timeout-ms %})]
-    (is (< decorator/max-approval-ms registry/pending-ttl-ms) "a margin below the pending TTL")
+    (is (= decorator/max-approval-ms (- registry/pending-ttl-ms decorator/approval-ttl-margin-ms))
+        "the named margin below the pending TTL")
+    (is (pos? decorator/approval-ttl-margin-ms))
     (is (fn? (make (dec decorator/max-approval-ms))))
     (doseq [ms [decorator/max-approval-ms registry/pending-ttl-ms (* 2 registry/pending-ttl-ms)]]
       (is (= :invalid-approval (try (make ms) nil
