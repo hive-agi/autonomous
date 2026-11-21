@@ -149,15 +149,22 @@
     (read-sse-reply r max-body-chars (:rpc-id req))
     (read-capped r max-body-chars)))
 
+(defn- read-body
+  "Answer of the body of `resp` to `req` read within `ms`; a request with
+   no :rpc-id (a notification) has no reply to wait for, so its body is
+   closed unread and answers \"\"."
+  [^InputStream in req h ms]
+  (if (some? (:rpc-id req))
+    (within ms #(with-open [r (BufferedReader. (InputStreamReader. in "UTF-8"))] (body-reader r req h))
+            #(.close in))
+    (do (.close in) (answer/ok ""))))
+
 (defn- response-of
   "Answer {:status :headers :body} of `resp` to `req`, header names lower
    case, its body read within `ms` and max-body-chars."
   [^HttpResponse resp req ms]
-  (let [^InputStream in (.body resp)
-        h (headers-of resp)]
-    (answer/let-answer [body (within ms #(with-open [r (BufferedReader. (InputStreamReader. in "UTF-8"))]
-                                           (body-reader r req h))
-                                     #(.close in))]
+  (let [h (headers-of resp)]
+    (answer/let-answer [body (read-body (.body resp) req h ms)]
       (answer/ok {:status (.statusCode resp) :headers h :body body}))))
 
 (defn- send

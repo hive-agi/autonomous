@@ -345,6 +345,17 @@
 
 (def ^:private sse-headers {:status 200 :headers {"content-type" "text/event-stream"}})
 
+(deftest a-notification-never-waits-on-its-reply-body
+  (let [{:keys [url stop!]} (scripted-server (fn [chan _] (hk/send! chan sse-headers false)))]
+    (try
+      (let [t0 (System/currentTimeMillis)
+            a  (port/-request! (jdk/client) {:method :post :url url :timeout-ms 3000
+                                             :headers {"content-type" "application/json"}
+                                             :body (json/write {:jsonrpc "2.0" :method "notifications/initialized"})})]
+        (is (= 200 (:status (:ok a))) (pr-str a))
+        (is (< (- (System/currentTimeMillis) t0) 2000) "the held-open body was not read"))
+      (finally (stop!)))))
+
 (deftest a-failure-after-the-request-is-sent-is-an-unknown-outcome
   (testing "the request is accepted and no headers ever come"
     (is (= :channel/outcome-unknown (outcome-against (fn [_ _]) 300))))
