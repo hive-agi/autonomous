@@ -137,12 +137,14 @@
   (is (= "a\\u0022b\\u005cc" (approval/safe-text "a\"b\\c"))))
 
 (defn- typist
-  "A fake terminal: read-line blocks until a line is typed with `type!`.
-   `:reads` counts the read-line calls, so a test can wait until the reader
-   has queued every line typed so far (it is back for the next one)."
+  "A fake terminal: read-line blocks until a line is typed with `type!`;
+   ready? says whether a typed line is waiting. `:reads` counts the
+   read-line calls, so a test can wait until the reader has queued every
+   line typed so far (it is back for the next one)."
   []
   (let [q (java.util.concurrent.LinkedBlockingQueue.) reads (atom 0)]
-    {:read-line #(do (swap! reads inc) (.take q)) :type! #(.put q %) :reads reads}))
+    {:read-line #(do (swap! reads inc) (.take q)) :ready? #(not (.isEmpty q))
+     :type! #(.put q %) :reads reads}))
 
 (defn- screen
   "A fake terminal screen: `:w` a Writer whose text so far is the `:text` atom."
@@ -183,8 +185,8 @@
 (defn- typed-asker
   ([t] (typed-asker t (screen) "op"))
   ([t out approver] (typed-asker t out approver 2000))
-  ([{:keys [read-line]} out approver wait-ms]
-   (approval/stdin-asker {:read-line read-line :out (:w out) :approver approver :wait-ms wait-ms})))
+  ([{:keys [read-line ready?]} out approver wait-ms]
+   (approval/stdin-asker {:read-line read-line :ready? ready? :out (:w out) :approver approver :wait-ms wait-ms})))
 
 (defn- decision [d] (:decision (deref d 2000 ::hung)))
 
@@ -236,11 +238,25 @@
     ((:type! t) "1 y")
     (let [out   (screen)
           asker (typed-asker t out "op")]
-      (is (await-reads t 2) "building the asker starts its reader: \"1 y\" is queued before any ask")
+      (is (zero? @(:reads t)) "building the asker reads nothing")
       (let [a (approval/ask! asker (assoc request :tool "a") 10000)]
         (type-at! t out "1" "nope")
         (is (= :deny (decision a)) "the buffered \"1 y\" did not approve the first request of the stream")
         (is (re-find #"\(1 line\(s\) typed before this prompt were discarded\)" (text out)))))))
+
+(deftest lines-typed-while-nothing-is-asked-are-bounded
+  (let [t (typist) n (+ approval/max-typed-lines 36)]
+    (dotimes [i n] ((:type! t) (str "1 y " i)))
+    (let [out   (screen)
+          asker (typed-asker t out "op")
+          a     (approval/ask! asker (assoc request :tool "a") 10000)]
+      (type-at! t out "1" "nope")
+      (is (= :deny (decision a)) "no typed-ahead line approved the request")
+      (is (= approval/max-typed-lines (+ (.size ^java.util.concurrent.BlockingQueue (:lines (:terminal asker)))
+                                         (.remainingCapacity ^java.util.concurrent.BlockingQueue (:lines (:terminal asker)))))
+          "the typed-line queue is bounded")
+      (is (re-find (re-pattern (str "\\(" n " line\\(s\\) typed before this prompt were discarded\\)")) (text out))
+          "the lines dropped past the bound are counted among the discarded"))))
 
 (deftest a-late-line-for-an-expired-request-cannot-answer-the-next
   (let [t     (typist)
