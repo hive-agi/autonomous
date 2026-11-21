@@ -1,6 +1,7 @@
 (ns autonomous.domain.naming
   "Names agents see. MCP tool names allow [A-Za-z0-9_-] and at most 64
-   characters, while application ids are namespaced keywords. Pure.")
+   characters, while application ids are namespaced keywords. Pure."
+  (:require [clojure.string :as str]))
 
 (def max-length 64)
 
@@ -13,6 +14,18 @@
   (and (string? s)
        (<= 1 (count s) max-length)
        (every? name-chars (seq s))))
+
+(def max-shown-actor
+  "The most characters of a caller-supplied actor the library shows."
+  64)
+
+(defn shown-actor
+  "`actor` as the library shows it to a human or to a host: control
+   characters (C0, DEL and C1) dropped, then cut at max-shown-actor
+   characters. nil shows as \"\"."
+  [actor]
+  (let [clean (str/replace (str actor) #"[\x00-\x1f\x7f-\x9f]" "")]
+    (subs clean 0 (min max-shown-actor (count clean)))))
 
 (defn tool-name
   "MCP-safe name for a tool id: :todo/add is \"todo_add\", :app.todos/add-item

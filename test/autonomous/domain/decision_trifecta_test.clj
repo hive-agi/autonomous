@@ -5,12 +5,16 @@
   (:require [autonomous.domain.affordance :as affordance]
             [autonomous.domain.decision :as decision]
             [autonomous.domain.manifest :as manifest]
+            [autonomous.domain.naming :as naming]
             [autonomous.domain.schema :as s]
+            [autonomous.domain.scope :as scope]
+            [clojure.string :as str]
             [clojure.test.check.generators :as gen]
             [hive-test.trifecta :refer [deftrifecta]]
             [malli.core :as m]))
 
 (def ^:private plan-call* decision/plan-call)
+(def ^:private host-grant* decision/host-grant)
 (def ^:private ->tool* affordance/->tool)
 
 (defn- tool! [id spec] (:ok (affordance/->tool id spec)))
@@ -139,3 +143,30 @@
    :pred (m/validator s/Manifest)
    :mutations [["shows everything" (fn [snap _] (manifest/project snap {:scopes #{:admin}}))]
                ["hides resources" (fn [snap g] (assoc (manifest/project snap g) :resources []))]]})
+
+(deftrifecta host-grant-trifecta
+  autonomous.domain.decision/host-grant
+  {:golden-path "test/golden/domain/host-grant.edn"
+   :cases {:writer        {:actor "agent-1" :scopes #{:write :read}}
+           :anonymous     {:actor "anonymous" :scopes #{:read}}
+           :no-scopes     {:actor "a" :scopes #{}}
+           :many-scopes   {:actor "a" :scopes #{:write :read :admin :billing :zeta :audit :runtime :ops}}
+           :control-chars {:actor (str "ag" (char 27) "[31m" (char 10) "ent" (char 127)) :scopes #{:read}}
+           :long          {:actor (apply str (repeat 200 "x")) :scopes #{:admin}}
+           :empty         {:actor "" :scopes #{:write}}
+           :only-controls {:actor (str (char 0) (char 7) (char 0x85)) :scopes #{:write}}
+           :nil-actor     {:actor nil :scopes #{:write}}}
+   :gen (gen/hash-map :actor (gen/one-of [gen/string gen/string-ascii (gen/return nil)])
+                      :scopes (gen/set (gen/elements [:read :write :admin :billing])))
+   :pred (fn [g] (or (nil? g)
+                     (and (string? (:actor g))
+                          (<= 1 (count (:actor g)) naming/max-shown-actor)
+                          (not (re-find #"[\x00-\x1f\x7f-\x9f]" (:actor g)))
+                          (= (:scopes g) (sort (:scopes g))))))
+   :num-tests 300
+   :mutations [["raw actor" (fn [g] (some-> (host-grant* g) (assoc :actor (:actor g))))]
+               ["no length cut" (fn [g] (when (seq (str (:actor g)))
+                                          {:actor (str/replace (str (:actor g)) #"[\x00-\x1f\x7f-\x9f]" "")
+                                           :scopes (scope/names (:scopes g))}))]
+               ["empty grant passes" (fn [g] (or (host-grant* g) {:actor "" :scopes []}))]
+               ["unsorted scopes" (fn [g] (some-> (host-grant* g) (assoc :scopes (mapv name (:scopes g)))))]]})

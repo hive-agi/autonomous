@@ -9,18 +9,26 @@
    websocket frames are opaque text the host passes through. cabi/include/
    autonomous.h is the contract; doc/cabi.md the guide.
 
-   The host links one function the library calls by name:
+   The host links one function the library calls by name, either
+
+     const char *autonomous_host_dispatch_v2(const char *tool_id, const char *args_json,
+                                             const char *grant_json)
+
+   which is handed the caller's grant {\"actor\": .., \"scopes\": [..]}, or the
+   older grant-blind
 
      const char *autonomous_host_dispatch(const char *tool_id, const char *args_json)
 
-   It answers the tool's result as JSON, or {\"error\": {\"message\": ..}}.
-   The executable must export it (-Wl,--export-dynamic, or -rdynamic).
+   The library prefers _v2 when the executable exports it. Either answers
+   the tool's result as JSON, or {\"error\": {\"message\": ..}}. The
+   executable must export it (-Wl,--export-dynamic, or -rdynamic).
 
    Threads: the jolt runtime is entered from ONE thread, the one that called
    jolt_library_init. Every export below, and the dispatcher the library
    calls back, runs on that thread."
   (:require [autonomous.core :as a]
             [autonomous.domain.answer :as answer]
+            [autonomous.domain.decision :as decision]
             [autonomous.domain.wire :as wire]
             [autonomous.mcp.json :as json]
             [autonomous.ws :as ws]
@@ -38,6 +46,14 @@
     (let [e (:error result)]
       (ex-info (str (or (when (map? e) (:message e)) e "tool failed"))
                (if (map? e) e {:error e})))))
+
+(defn grant-missing
+  "The exception refusing a call of tool `id` that a grant-aware host would
+   be handed with no actor to attribute it to: the call fails closed, the
+   host never runs."
+  [id]
+  (ex-info (str "tool " id " needs a caller with an actor; the call names none")
+           {:autonomous/error :host/grant-missing :tool id}))
 
 (defn hello-frame
   "The websocket :hello frame for a native runtime."
@@ -61,12 +77,24 @@
 ;; Boundary: the host's dispatcher
 ;; =============================================================================
 
+(def ^:private grant-aware-host?
+  (delay (some? (ffi/find-symbol "autonomous_host_dispatch_v2"))))
+
+(defn- host-out
+  "The host's JSON answer for tool `id` with `args`, called for `grant`."
+  [id args grant]
+  (if @grant-aware-host?
+    (if-let [g (decision/host-grant grant)]
+      ((ffi/foreign-fn "autonomous_host_dispatch_v2" [:string :string :string] :string)
+       id (json/write args) (json/write g))
+      (throw (grant-missing id)))
+    ((ffi/foreign-fn "autonomous_host_dispatch" [:string :string] :string)
+     id (json/write args))))
+
 (defn- dispatch
-  "Call the host's tool `id` with `args`; its JSON result as data."
-  [id args]
-  (let [out    ((ffi/foreign-fn "autonomous_host_dispatch" [:string :string] :string)
-                id (json/write args))
-        result (json/read-json out)]
+  "Call the host's tool `id` with `args` for `grant`; its JSON result as data."
+  [id args grant]
+  (let [result (json/read-json (host-out id args grant))]
     (if-let [e (tool-error result)] (throw e) result)))
 
 ;; =============================================================================
@@ -88,7 +116,7 @@
   (answer-json
    (try
      (let [spec (wire/read-edn spec-edn)]
-       (answer/ok (a/reg-tool (keyword id) (assoc spec :handler (fn [args _grant] (dispatch id args))))))
+       (answer/ok (a/reg-tool (keyword id) (assoc spec :handler (fn [args grant] (dispatch id args grant))))))
      (catch Exception e
        (answer/refusal :invalid-tool (ex-message e) (ex-data e))))))
 

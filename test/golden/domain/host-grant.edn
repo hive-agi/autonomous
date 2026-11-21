@@ -1,0 +1,15 @@
+{:anonymous {:actor "anonymous", :scopes ["read"]},
+ :control-chars {:actor "ag[31ment", :scopes ["read"]},
+ :empty nil,
+ :long
+ {:actor
+  "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  :scopes ["admin"]},
+ :many-scopes
+ {:actor "a",
+  :scopes
+  ["admin" "audit" "billing" "ops" "read" "runtime" "write" "zeta"]},
+ :nil-actor nil,
+ :no-scopes {:actor "a", :scopes []},
+ :only-controls nil,
+ :writer {:actor "agent-1", :scopes ["read" "write"]}}

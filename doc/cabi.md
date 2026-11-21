@@ -32,7 +32,7 @@ threaded, `-fPIC` build of the Chez version jolt was made with, found at
 `JOLT_CHEZ_CSV`). Then:
 
 ```sh
-bb cabi        # cabi/build/libautonomous.so, then the C smoke test (16 checks)
+bb cabi        # cabi/build/libautonomous.so, then the C smoke test as a 0.3 and a 0.2 host
 bb cabi-rust   # the Rust example app
 bb cabi-e2e    # live: the Rust app dials a bb bridge, agents call it over MCP
 ```
@@ -59,16 +59,36 @@ frames are opaque text you pass through.
 | `autonomous_ws_reply(frame)` | the frame answering a request, `""` if none is due |
 | `autonomous_rpc(request_edn)` | answer one request in process (tests) |
 
-The app defines, and exports from its executable (`-rdynamic`, or
-`-Wl,--export-dynamic`):
+The app defines one dispatcher, and exports it from its executable
+(`-rdynamic`, or `-Wl,--export-dynamic`):
 
 ```c
+/* 0.3 and later: told who called */
+const char *autonomous_host_dispatch_v2(const char *tool_id, const char *args_json,
+                                        const char *grant_json);
+/* 0.2: grant-blind, still supported */
 const char *autonomous_host_dispatch(const char *tool_id, const char *args_json);
 ```
 
 It receives arguments that already passed the tool's schema and answers the
 result as JSON. `{"error": {"message": "..."}}` reports a failure; the agent
 sees it as a tool error and the journal records `:tool-threw`.
+
+`grant_json` is the caller, in the shape `autonomous.js` hands its handlers:
+`{"actor": "agent-1", "scopes": ["read", "write"]}`. Use the actor to say
+who changed what. The library shows the actor the way it shows actors
+everywhere else: control characters are dropped and it is cut at
+`AUTONOMOUS_MAX_SHOWN_ACTOR` (64) characters. Scopes are sorted names. When
+the executable exports `_v2`, the library calls it and not the old one. It
+never hands `_v2` an empty actor: such a call is refused with
+`:host/grant-missing` before your code runs. A request with no actor at all
+reaches the host as `"anonymous"`, as everywhere in autonomous. An app built
+against 0.2 keeps working unchanged; the version is in
+`AUTONOMOUS_VERSION_MAJOR` / `AUTONOMOUS_VERSION_MINOR`.
+
+In Rust, `Runtime::tool_as(id, spec, |args, who| ..)` gives the handler a
+`Grant`. Such a handler fails closed under a 0.2 library, which passes no
+grant. `Runtime::tool` stays grant-blind.
 
 A tool spec:
 

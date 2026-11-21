@@ -36,7 +36,9 @@
                    (shell {:dir "cabi"} "jolt" "build" "--library" "-m" "autonomous.cabi" "-o" "build/libautonomous")
                    (babashka.fs/delete-tree "cabi/build/libautonomous.so.build")
                    (shell {:dir "cabi/examples/c"} "cc" "-rdynamic" "-I../../include" "-o" "../../build/smoke" "smoke.c" "-ldl")
-                   (shell {:dir "cabi/examples/c"} "../../build/smoke" "../../build/libautonomous.so"))}
+                   (shell {:dir "cabi/examples/c"} "../../build/smoke" "../../build/libautonomous.so")
+                   (shell {:dir "cabi/examples/c"} "cc" "-rdynamic" "-DSMOKE_V1" "-I../../include" "-o" "../../build/smoke-v1" "smoke.c" "-ldl")
+                   (shell {:dir "cabi/examples/c"} "../../build/smoke-v1" "../../build/libautonomous.so"))}
 
   cabi-rust {:doc  "Build the Rust example app over libautonomous (cabi/examples/rust)"
              :task (shell {:dir "cabi/examples/rust"} "cargo" "build" "--release")}

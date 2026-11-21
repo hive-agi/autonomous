@@ -5,17 +5,19 @@
 //!
 //! let rt = Runtime::start().unwrap();
 //! rt.describe("inventory", "A stock service. Receive goods with inventory_receive.");
-//! rt.tool("inventory/receive",
-//!         "{:description \"Receive qty of sku.\" :input [:map [:sku :string] [:qty [:int {:min 1}]]]}",
-//!         |args| Ok(json!({"received": args["qty"]}))).unwrap();
+//! rt.tool_as("inventory/receive",
+//!            "{:description \"Receive qty of sku.\" :input [:map [:sku :string] [:qty [:int {:min 1}]]]}",
+//!            |args, who| Ok(json!({"received": args["qty"], "by": who.actor}))).unwrap();
 //! rt.serve(&Dial::new("ws://127.0.0.1:7890/autonomous/ws", "aut_..."), |_rt| {});
 //! ```
 //!
 //! The library validates arguments against the tool's malli schema, checks
 //! scopes and leases and journals every call; a handler only sees valid
-//! arguments. The jolt runtime inside is single-threaded: create the
-//! `Runtime` on one thread and use it only there (it is `!Send`). Other
-//! threads hand work over through the `tick` hook of [`Runtime::serve`].
+//! arguments. A handler declared with [`Runtime::tool_as`] is also told who
+//! called it (a [`Grant`]); one declared with [`Runtime::tool`] is not. The
+//! jolt runtime inside is single-threaded: create the `Runtime` on one
+//! thread and use it only there (it is `!Send`). Other threads hand work
+//! over through the `tick` hook of [`Runtime::serve`].
 //!
 //! A binary using this crate needs, in its own `build.rs` (cargo does not
 //! pass link arguments on from a dependency):
@@ -25,7 +27,8 @@
 //! println!("cargo:rustc-link-arg=-Wl,--export-dynamic");
 //! ```
 //!
-//! `--export-dynamic` lets the library find `autonomous_host_dispatch`,
+//! `--export-dynamic` lets the library find `autonomous_host_dispatch_v2`
+//! (and the grant-blind `autonomous_host_dispatch` an older library calls),
 //! which this crate defines.
 
 use std::cell::RefCell;
@@ -49,11 +52,18 @@ type S3 = unsafe extern "C" fn(*const c_char, *const c_char, *const c_char) -> *
 type I1 = unsafe extern "C" fn(*const c_char) -> c_int;
 type L1 = unsafe extern "C" fn(*const c_char) -> c_long;
 
+mod grant;
+use grant::{grant_body, Body};
+pub use grant::{Grant, MAX_SHOWN_ACTOR};
+
 /// A tool body: validated arguments in, a JSON result or an error message out.
 pub type Handler = Box<dyn FnMut(&Value) -> Result<Value, String>>;
 
+/// A tool body that is also told who called it.
+pub type GrantHandler = Box<dyn FnMut(&Value, &Grant) -> Result<Value, String>>;
+
 thread_local! {
-    static HANDLERS: RefCell<HashMap<String, Handler>> = RefCell::new(HashMap::new());
+    static HANDLERS: RefCell<HashMap<String, Body>> = RefCell::new(HashMap::new());
     static LAST: RefCell<CString> = RefCell::new(CString::default());
 }
 
@@ -68,13 +78,11 @@ fn cs(s: &str) -> CString {
     CString::new(s.replace('\0', "")).unwrap()
 }
 
-/// Called by libautonomous, on the runtime's thread, with validated args.
-#[no_mangle]
-pub extern "C" fn autonomous_host_dispatch(tool: *const c_char, args: *const c_char) -> *const c_char {
+fn run(tool: *const c_char, args: *const c_char, grant: Option<&Grant>) -> *const c_char {
     let tool = text(tool);
     let args: Value = serde_json::from_str(&text(args)).unwrap_or(Value::Null);
     let out = HANDLERS.with(|h| match h.borrow_mut().get_mut(&tool) {
-        Some(f) => match f(&args) {
+        Some(f) => match f(&args, grant) {
             Ok(v) => v,
             Err(e) => json!({"error": {"message": e}}),
         },
@@ -84,6 +92,27 @@ pub extern "C" fn autonomous_host_dispatch(tool: *const c_char, args: *const c_c
         *l.borrow_mut() = cs(&out.to_string());
         l.borrow().as_ptr()
     })
+}
+
+/// Called by libautonomous 0.3 and later, on the runtime's thread, with
+/// validated args and the caller's grant.
+#[no_mangle]
+pub extern "C" fn autonomous_host_dispatch_v2(
+    tool: *const c_char,
+    args: *const c_char,
+    grant: *const c_char,
+) -> *const c_char {
+    let grant = Grant::from_json(&text(grant));
+    run(tool, args, grant.as_ref())
+}
+
+/// Called by libautonomous 0.2, which passes no grant.
+#[no_mangle]
+pub extern "C" fn autonomous_host_dispatch(
+    tool: *const c_char,
+    args: *const c_char,
+) -> *const c_char {
+    run(tool, args, None)
 }
 
 /// Where and how a runtime dials its bridge.
@@ -141,7 +170,8 @@ fn lookup<T: Copy>(name: &str) -> Result<T, String> {
 impl Runtime {
     /// Start the runtime (once per process).
     pub fn start() -> Result<Runtime, String> {
-        // Keep the dispatcher in the binary for the library to find.
+        // Keep the dispatchers in the binary for the library to find.
+        std::hint::black_box(autonomous_host_dispatch_v2 as *const ());
         std::hint::black_box(autonomous_host_dispatch as *const ());
         if unsafe { jolt_library_init(0, std::ptr::null_mut()) } != 0 {
             return Err("jolt_library_init failed".into());
@@ -164,13 +194,8 @@ impl Runtime {
         unsafe { (self.set_app)(cs(&info).as_ptr()) };
     }
 
-    /// Declare tool `id` ("todo/add", MCP name todo_add) from an EDN spec
-    /// with a malli `:input`; `handler` runs it. Answers the MCP name.
-    pub fn tool<F>(&self, id: &str, spec_edn: &str, handler: F) -> Result<String, String>
-    where
-        F: FnMut(&Value) -> Result<Value, String> + 'static,
-    {
-        HANDLERS.with(|h| h.borrow_mut().insert(id.to_string(), Box::new(handler)));
+    fn register(&self, id: &str, spec_edn: &str, body: Body) -> Result<String, String> {
+        HANDLERS.with(|h| h.borrow_mut().insert(id.to_string(), body));
         let out = text(unsafe { (self.reg_tool)(cs(id).as_ptr(), cs(spec_edn).as_ptr()) });
         let v: Value = serde_json::from_str(&out).unwrap_or(Value::Null);
         match v.get("ok").and_then(Value::as_str) {
@@ -180,6 +205,26 @@ impl Runtime {
                 Err(out)
             }
         }
+    }
+
+    /// Declare tool `id` ("todo/add", MCP name todo_add) from an EDN spec
+    /// with a malli `:input`; `handler` runs it. Answers the MCP name.
+    pub fn tool<F>(&self, id: &str, spec_edn: &str, mut handler: F) -> Result<String, String>
+    where
+        F: FnMut(&Value) -> Result<Value, String> + 'static,
+    {
+        self.register(id, spec_edn, Box::new(move |args, _| handler(args)))
+    }
+
+    /// Declare tool `id` like [`Runtime::tool`], with a `handler` that is
+    /// told who called it, to attribute what it changes. It fails closed:
+    /// a call that reaches it without a grant (a libautonomous older than
+    /// 0.3) is refused, and the handler does not run.
+    pub fn tool_as<F>(&self, id: &str, spec_edn: &str, handler: F) -> Result<String, String>
+    where
+        F: FnMut(&Value, &Grant) -> Result<Value, String> + 'static,
+    {
+        self.register(id, spec_edn, grant_body(id, handler))
     }
 
     /// Record an app event agents can read, e.g. what a human just did:
@@ -194,7 +239,13 @@ impl Runtime {
     }
 
     fn hello(&self, d: &Dial) -> String {
-        text(unsafe { (self.ws_hello)(cs(&d.token).as_ptr(), cs(&d.runtime_id).as_ptr(), cs(&d.label).as_ptr()) })
+        text(unsafe {
+            (self.ws_hello)(
+                cs(&d.token).as_ptr(),
+                cs(&d.runtime_id).as_ptr(),
+                cs(&d.label).as_ptr(),
+            )
+        })
     }
 
     fn kind(&self, frame: &str) -> String {
@@ -232,7 +283,10 @@ impl Runtime {
                                     }
                                     "welcome" => {
                                         attempt = 0;
-                                        eprintln!("autonomous: {} connected to {}", dial.runtime_id, dial.url);
+                                        eprintln!(
+                                            "autonomous: {} connected to {}",
+                                            dial.runtime_id, dial.url
+                                        );
                                     }
                                     "fatal" => {
                                         eprintln!("autonomous: refused for good: {frame}");
@@ -244,7 +298,10 @@ impl Runtime {
                             Ok(Message::Close(_)) => break,
                             Ok(_) => {}
                             Err(tungstenite::Error::Io(e))
-                                if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
+                                if matches!(
+                                    e.kind(),
+                                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                                ) => {}
                             Err(_) => break,
                         }
                         tick(self);

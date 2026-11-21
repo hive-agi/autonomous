@@ -10,13 +10,20 @@
  * results are JSON, requests and frames are opaque text.
  *
  * Threads: call jolt_library_init once, then make EVERY call from that same
- * thread. The library calls autonomous_host_dispatch on that thread too.
+ * thread. The library calls the app's dispatcher on that thread too.
  *
  * Strings: arguments are copied by the library. Returned strings stay valid
  * until the next call into the library; copy what you keep.
  */
 #ifndef AUTONOMOUS_H
 #define AUTONOMOUS_H
+
+/* The library version this header describes. A minor bump only adds. */
+#define AUTONOMOUS_VERSION_MAJOR 0
+#define AUTONOMOUS_VERSION_MINOR 3
+
+/* The most characters of an actor the library hands a host. */
+#define AUTONOMOUS_MAX_SHOWN_ACTOR 64
 
 #ifdef __cplusplus
 extern "C" {
@@ -71,11 +78,25 @@ typedef const char *(*autonomous_ws_kind_fn)(const char *frame);
  * one text frame. Runs the tool (and so the dispatcher) before it returns. */
 typedef const char *(*autonomous_ws_reply_fn)(const char *frame);
 
-/* ---- the app defines this one, exported from its executable ------------- */
+/* ---- the app defines ONE of these, exported from its executable --------- */
 
 /* Run tool `tool_id` with `args_json` (already validated against the tool's
- * input schema). Answer its result as JSON, or {"error": {"message": "..."}}.
- * The library copies the result before the next dispatch. */
+ * input schema) for the caller `grant_json`:
+ *   {"actor": "agent-1", "scopes": ["read", "write"]}
+ * The actor is shown the way the library shows actors everywhere: control
+ * characters dropped, at most AUTONOMOUS_MAX_SHOWN_ACTOR characters; scopes
+ * are sorted names. Answer the result as JSON, or
+ * {"error": {"message": "..."}}. The library copies the result before the
+ * next dispatch.
+ *
+ * Preferred since 0.3. When the executable exports it the library calls it
+ * and not autonomous_host_dispatch, and it never calls it without an actor:
+ * a call with none is refused (:host/grant-missing) before the app runs. */
+const char *autonomous_host_dispatch_v2(const char *tool_id, const char *args_json,
+                                        const char *grant_json);
+
+/* The grant-blind dispatcher of 0.2, still called when the executable does
+ * not export autonomous_host_dispatch_v2. */
 const char *autonomous_host_dispatch(const char *tool_id, const char *args_json);
 
 #ifdef __cplusplus
