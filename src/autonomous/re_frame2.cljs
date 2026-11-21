@@ -42,23 +42,89 @@
            (rf/handler-meta {:frame frame :kind kind :id id})
            (rf/handler-meta kind id))))
 
+(def ^:private pre-commit-errors
+  "re-frame2 error categories raised before the failing event's :db write:
+   that event changed nothing. Any other category (an :fx handler threw,
+   a later event of the cascade failed) comes after a commit."
+  #{:rf.error/handler-exception
+    :rf.error/interceptor-exception
+    :rf.error/coeffect-exception
+    :rf.error/flow-eval-exception})
+
+(defn- applied-state
+  "Pure: :not-applied when every error `records` reports is a pre-commit
+   failure of the dispatched event `event-id` in frame `target` and that
+   frame's app-db is the same value `before` and `after`; else
+   :maybe-applied. The :errors stream carries every frame's errors and the
+   dispatch drains what its effects dispatch, so nothing weaker proves the
+   dispatch changed nothing."
+  [records event-id target before after]
+  (if (and (identical? before after)
+           (every? (fn [{:keys [error frame] :as record}]
+                     (and (contains? pre-commit-errors error)
+                          (= event-id (:event-id record))
+                          (= target frame)))
+                   records))
+    :not-applied
+    :maybe-applied))
+
+(def ^:private exception-classes
+  "Fixed names by exception constructor, most specific first. A handler
+   can set an exception's .name or message to anything, so neither is
+   read; only instance? against these."
+  [[ExceptionInfo   "ExceptionInfo"]
+   [js/TypeError      "TypeError"]
+   [js/RangeError     "RangeError"]
+   [js/ReferenceError "ReferenceError"]
+   [js/SyntaxError    "SyntaxError"]
+   [js/Error          "Error"]])
+
+(defn- exception-class
+  "Pure: the fixed class name of exception `e` (nil when there is none),
+   \"a non-Error value\" for a thrown value no constructor matches."
+  [e]
+  (when (some? e)
+    (or (some (fn [[ctor nm]] (when (instance? ctor e) nm)) exception-classes)
+        "a non-Error value")))
+
+(def ^:private state-messages
+  {:not-applied   "app-db was not changed"
+   :maybe-applied "the dispatch may have changed app-db"})
+
+(defn- handler-error
+  "Pure: the :re-frame/handler-error refusal for re-frame2 error `record`.
+   Its message is fixed text, the category, the event id and the
+   exception's class; never the exception's own message, which the
+   handler or a remote it called may have written."
+  [{:keys [error event-id exception] :as record} state]
+  (let [cls (exception-class exception)]
+    (ex-info (str "re-frame2 reported " error " for " (pr-str event-id)
+                  (when cls (str " (" cls ")"))
+                  "; " (state-messages state))
+             (cond-> {:autonomous/error :re-frame/handler-error
+                      :error error :event-id event-id :frame (:frame record)
+                      :state state}
+               cls (assoc :exception-class cls)))))
+
 (defn- dispatch-sync-or-throw!
   "dispatch-sync `event` (in `frame` when given) and throw the first error
    re-frame2 reported while it ran. re-frame2 does not throw from a failing
    handler; it emits on the :errors listener stream, so this listens there
-   for the length of the call."
+   for the length of the call. The stream carries every frame's errors and
+   the call drains the events its effects dispatch, so the refusal says
+   whether app-db may already have changed (see applied-state)."
   [event frame]
   (let [id     (keyword "autonomous.re-frame2" (str "dispatch-" (random-uuid)))
-        errors (atom [])]
+        errors (atom [])
+        target (or frame (try (rf/current-frame-id) (catch :default _ nil)))
+        before (when target (rf/app-db-value target))]
     (rf/register-listener! :errors id #(swap! errors conj %))
     (try
       (if frame (rf/dispatch-sync event {:frame frame}) (rf/dispatch-sync event))
       (finally (rf/unregister-listener! :errors id)))
-    (when-let [{:keys [error event-id exception] :as record} (first @errors)]
-      (throw (ex-info (str "re-frame2 reported " error " for " (pr-str event-id)
-                           (when exception (str ": " (ex-message exception))))
-                      {:autonomous/error :re-frame/handler-error
-                       :error error :event-id event-id :frame (:frame record)})))))
+    (when-let [record (first @errors)]
+      (throw (handler-error record (applied-state @errors (first event) target before
+                                                  (when target (rf/app-db-value target))))))))
 
 (def host
   "The kernel Host for re-frame2."
