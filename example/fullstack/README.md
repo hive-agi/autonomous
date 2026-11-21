@@ -85,9 +85,10 @@ autonomous runtime on its main thread, through the
 [`autonomous` crate](../../cabi/bindings/rust):
 
 ```rust
-rt.tool("todos/add",
-        "{:description \"Add a todo.\" :input [:map [:text [:string {:min 1 :max 200}]]]}",
-        move |args| Ok(store.change("agent", ..., |s| s.add(args["text"].as_str().unwrap()))))?;
+rt.tool_as("todos/add",
+           "{:description \"Add a todo.\" :input [:map [:text [:string {:min 1 :max 200}]]]}",
+           move |args, who| Ok(store.change(&format!("agent:{}", who.actor), ...,
+                                            |s| s.add(args["text"].as_str().unwrap()))))?;
 rt.serve(&Dial::new(&ws_url, &token), |rt| { /* journal what humans did */ });
 ```
 

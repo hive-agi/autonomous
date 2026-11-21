@@ -46,11 +46,24 @@
          :task (exec 'autonomous.e2e.bb-runner/-main)}
 
   cabi  {:doc  "libautonomous, the runtime as a C library (jolt build --library; needs JOLT_CHEZ_CSV), then the C smoke test (doc/cabi.md)"
-         :task (do (babashka.fs/create-dirs "cabi/build")
-                   (shell {:dir "cabi"} "jolt" "build" "--library" "-m" "autonomous.cabi" "-o" "build/libautonomous")
-                   (babashka.fs/delete-tree "cabi/build/libautonomous.so.build")
-                   (shell {:dir "cabi/examples/c"} "cc" "-rdynamic" "-I../../include" "-o" "../../build/smoke" "smoke.c" "-ldl")
-                   (shell {:dir "cabi/examples/c"} "../../build/smoke" "../../build/libautonomous.so"))}
+         :task (let [csv  (System/getenv "JOLT_CHEZ_CSV")
+                     hint (str ". Set JOLT_CHEZ_CSV to the Chez kernel dir csv<version>/<machine> of a"
+                               " threaded -fPIC Chez build, the one holding scheme.h, e.g."
+                               " JOLT_CHEZ_CSV=$HOME/.local/share/chez/10.4.1/lib/csv10.4.1/ta6le"
+                               " (doc/cabi.md, Build it).")
+                     fail (fn [why] (binding [*out* *err*] (println (str "bb cabi: " why hint))) (System/exit 2))]
+                 (when (and csv (not (babashka.fs/exists? (babashka.fs/path csv "scheme.h"))))
+                   (fail (str "JOLT_CHEZ_CSV is " csv ", which has no scheme.h")))
+                 (babashka.fs/create-dirs "cabi/build")
+                 (when-not (zero? (:exit (shell {:dir "cabi" :continue true}
+                                                "jolt" "build" "--library" "-m" "autonomous.cabi" "-o" "build/libautonomous")))
+                   (fail (str "jolt build --library failed"
+                              (when-not csv " and JOLT_CHEZ_CSV is not set, so jolt looked for its own Chez build files"))))
+                 (babashka.fs/delete-tree "cabi/build/libautonomous.so.build")
+                 (shell {:dir "cabi/examples/c"} "cc" "-rdynamic" "-I../../include" "-o" "../../build/smoke" "smoke.c" "-ldl")
+                 (shell {:dir "cabi/examples/c"} "../../build/smoke" "../../build/libautonomous.so")
+                 (shell {:dir "cabi/examples/c"} "cc" "-rdynamic" "-DSMOKE_V1" "-I../../include" "-o" "../../build/smoke-v1" "smoke.c" "-ldl")
+                 (shell {:dir "cabi/examples/c"} "../../build/smoke-v1" "../../build/libautonomous.so"))}
 
   cabi-rust {:doc  "Build the Rust example app over libautonomous (cabi/examples/rust)"
              :task (shell {:dir "cabi/examples/rust"} "cargo" "build" "--release")}
@@ -62,8 +75,10 @@
                      (shell {:dir "cabi/build"} "./go-example"))}
 
   cabi-zig {:doc  "Build and run the Zig example over libautonomous (cabi/bindings/zig, after bb cabi); fails on a wrong answer"
-            :task (shell {:dir "cabi/bindings/zig"} "zig" "build" "test" "run"
-                         "--prefix" "../../build/zig-out" "--cache-dir" "../../build/zig-cache")}
+            :task (do (shell {:dir "cabi/bindings/zig"} "zig" "build" "test" "run"
+                             "--prefix" "../../build/zig-out" "--cache-dir" "../../build/zig-cache")
+                      (shell {:dir "cabi/bindings/zig"} "zig" "build" "run" "-Dblind=true"
+                             "--prefix" "../../build/zig-out-blind" "--cache-dir" "../../build/zig-cache"))}
 
   cabi-bindings {:doc  "libautonomous and every binding example that builds here: C smoke, Go, Zig, Rust"
                  :depends [cabi cabi-go cabi-zig cabi-rust]}

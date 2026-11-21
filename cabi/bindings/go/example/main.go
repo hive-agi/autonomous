@@ -63,6 +63,21 @@ func main() {
 	}
 	check("kept", `{:op :call :tool "calc_add" :args {:a 1 :b 2} :scopes #{:write}}`, ":sum 3")
 
+	// A ToolAs handler is told who called (libautonomous 0.3), so it can
+	// attribute the change; the library refuses an actor that names no one.
+	if _, err := rt.ToolAs("calc/double",
+		`{:description "Double an integer, saying who asked" :input [:map [:n :int]]}`,
+		func(args map[string]any, who autonomous.Grant) (any, error) {
+			n, _ := args["n"].(float64)
+			return map[string]any{"double": int64(2 * n), "for": who.Actor, "scopes": who.Scopes}, nil
+		}); err != nil {
+		fmt.Println("FAIL toolas  ", err)
+		failures++
+	}
+	check("grant", `{:op :call :tool "calc_double" :args {:n 21} :scopes #{:write} :actor "agent-1"}`, `:for "agent-1"`)
+	check("grant", `{:op :call :tool "calc_double" :args {:n 21} :scopes #{:write} :actor "agent-1"}`, `:scopes ["write"]`)
+	check("blank", `{:op :call :tool "calc_double" :args {:n 1} :scopes #{:write} :actor " "}`, ":host/grant-missing")
+
 	// Unregistered, a tool is gone.
 	if _, err := rt.Tool("calc/tmp", `{:description "Temporary" :input [:map]}`,
 		func(map[string]any) (any, error) { return nil, nil }); err != nil {

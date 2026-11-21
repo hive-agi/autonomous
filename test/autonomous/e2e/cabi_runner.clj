@@ -107,7 +107,8 @@
             (t/is (not (:error? (call a "autonomous_attach" {:runtime_id "inv-1"})))))
           (let [r (call agent "inventory_receive" {:sku "bolt" :qty 5})]
             (t/is (= 5 (get-in r [:value :on_hand])) (pr-str r))
-            (t/is (= "rust" (get-in r [:value :by])) "the tool body ran in Rust"))
+            (t/is (= "rust" (get-in r [:value :by])) "the tool body ran in Rust")
+            (t/is (= "agent-a" (get-in r [:value :actor])) "the caller's actor reached the Rust host"))
           (t/is (= 8 (get-in (call agent "inventory_receive" {:sku "bolt" :qty "3"}) [:value :on_hand]))
                 "a quoted number is decoded by the library's malli schema")
           (t/is (:error? (call agent "inventory_receive" {:sku "bolt" :qty 0}))
