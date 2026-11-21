@@ -88,10 +88,11 @@ typedef const char *(*autonomous_ws_reply_fn)(const char *frame);
  * input schema) for the caller `grant_json`:
  *   {"actor": "agent-1", "scopes": ["read", "write"]}
  * The actor is shown the way the library shows actors everywhere: printable
- * ASCII (0x20..0x7E) as itself, and a backslash and every other UTF-16 code
- * unit escaped as the six characters \uXXXX (so a bidi, zero-width or
- * control character is visible, and an astral character arrives as its
- * surrogate pair, e.g. \uD83D\uDE00). Distinct actors stay distinct. The
+ * ASCII (0x20..0x7E) as itself, except that a double quote, a backslash and
+ * every other UTF-16 code unit are escaped as the six characters \uxxxx in
+ * lowercase hex (so a bidi, zero-width or control character is visible, and
+ * an astral character arrives as its surrogate pair, e.g. \ud83d\ude00).
+ * Distinct actors stay distinct. The
  * result is cut at AUTONOMOUS_MAX_SHOWN_ACTOR characters, never inside an
  * escape. Scopes are sorted names. Answer the result as JSON, or
  * {"error": {"message": "..."}}. The library copies the result before the
@@ -101,9 +102,10 @@ typedef const char *(*autonomous_ws_reply_fn)(const char *frame);
  * call: copy what you keep. The decoded actor is at most
  * AUTONOMOUS_MAX_SHOWN_ACTOR characters of printable ASCII, so at most 64
  * bytes (plus the NUL). The 64 counts characters of the shown form, so a
- * \uXXXX escape counts 6 and is never split. Inside grant_json, JSON
- * escapes a quote or backslash once more, so the actor's JSON string takes
- * at most 128 bytes; parse grant_json, never slice it.
+ * \uxxxx escape counts 6 and is never split. The shown actor holds no quote
+ * and no backslash except the one that starts an escape, so inside
+ * grant_json its JSON string takes at most 64 + 10 bytes (an escape's
+ * backslash is escaped once more); parse grant_json, never slice it.
  *
  * Preferred since 0.3. The library looks the symbol up ONCE per process,
  * process-wide (dlsym over every loaded object, as RTLD_DEFAULT does), so a

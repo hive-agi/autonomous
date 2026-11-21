@@ -78,10 +78,11 @@ sees it as a tool error and the journal records `:tool-threw`.
 `{"actor": "agent-1", "scopes": ["read", "write"]}`. Use the actor to say
 who changed what. The library shows the actor the way it shows actors
 everywhere else (`autonomous.domain.naming/shown-actor`). It is printable
-ASCII only: a backslash and every other UTF-16 code unit is escaped as
-`\uXXXX`, so a bidi override (`\u202E`), a zero-width space (`\u200B`) or a
-control character is visible, and an emoji arrives as its surrogate pair
-(`\uD83D\uDE00`). Two different actors never show the same, unless both
+ASCII only: a double quote, a backslash and every other UTF-16 code unit is
+escaped as `\uxxxx` (lowercase hex), so a bidi override (`\u202e`), a
+zero-width space (`\u200b`) or a control character is visible, and an emoji
+arrives as its surrogate pair (`\ud83d\ude00`). The require-approval prompt
+shows actors through the same function. Two different actors never show the same, unless both
 are cut. The result is cut at `AUTONOMOUS_MAX_SHOWN_ACTOR` (64) characters,
 which are also 64 bytes, and never inside an escape. Scopes are sorted names. The
 library looks `_v2` up once per process and process-wide (dlsym over every

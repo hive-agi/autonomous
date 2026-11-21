@@ -5,7 +5,8 @@
 
    Verdict   what an Asker answers: {:decision :approve|:deny :approver str}.
    Decision  what `ask!` answers: a Verdict or :timeout, with :ms waited."
-  (:require [autonomous.thenable :as thenable]
+  (:require [autonomous.domain.naming :as naming]
+            [autonomous.thenable :as thenable]
             [clojure.string :as str]
             [clojure.walk :as walk]
             [malli.core :as m]))
@@ -99,14 +100,17 @@
   (cap (if (string? v) (str "\"" (safe-text v) "\"") (safe-text (pr-str v))) max-leaf-chars))
 
 (def max-actor-chars
-  "L1: the longest actor a human is shown; the rest is counted, not shown."
-  64)
+  "L1: the longest actor a human is shown (naming/max-shown-actor); the
+   rest is counted, not shown."
+  naming/max-shown-actor)
 
 (defn shown-actor
-  "L1: the actor as a human is shown it: quoted, escaped once (safe-text),
-   capped at max-actor-chars with a visible note of the rest."
+  "L1: the actor as a human is shown it: naming/shown-actor (the one rule
+   for showing an actor), quoted, with a visible note of how much was cut."
   [actor]
-  (str "\"" (cap (safe-text (str actor)) max-actor-chars) "\""))
+  (let [shown (naming/shown-actor actor)
+        cut   (- (count (naming/actor-text actor)) (count shown))]
+    (str "\"" shown (when (pos? cut) (str " (+" cut " chars)")) "\"")))
 
 (defn- leaves
   "L1: [path leaf] for every leaf of wire value `x` under `path`; an empty

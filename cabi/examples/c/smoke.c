@@ -124,24 +124,24 @@ int main(int argc, char **argv) {
   expect("scopes", rpc(req), "\"read\" \"write\"");
   expect("by", rpc("{:op :call :tool \"calc_add\" :args {:a 1 :b 1} :scopes #{:write} :actor \"agent-2\"}"),
          ":by \"agent-2\"");
-  /* The actor arrives as printable ASCII: everything else escaped \uXXXX
+  /* The actor arrives as printable ASCII: " \\ and everything else escaped \uxxxx
    * (EDN shows the backslash doubled), then cut at 64, never mid-escape. */
   snprintf(req, sizeof req, call_as,
            "ag\\u001b[31ment-0123456789012345678901234567890123456789012345678901234567890123456789");
-  expect("shown", rpc(req), ":actor \"ag\\\\u001B[31ment-012345678901234567890123456789012345678901234567\"");
+  expect("shown", rpc(req), ":actor \"ag\\\\u001b[31ment-012345678901234567890123456789012345678901234567\"");
   snprintf(req, sizeof req, call_as, "agent:\\u202Enamuh");
-  expect("bidi", rpc(req), ":actor \"agent:\\\\u202Enamuh\"");
+  expect("bidi", rpc(req), ":actor \"agent:\\\\u202enamuh\"");
   snprintf(req, sizeof req, call_as, "agent\\u200B-1");
-  expect("zero-width", rpc(req), ":actor \"agent\\\\u200B-1\"");
+  expect("zero-width", rpc(req), ":actor \"agent\\\\u200b-1\"");
   snprintf(req, sizeof req, call_as, "agent-\xF0\x9F\x98\x80"); /* U+1F600 as UTF-8 */
-  expect("astral", rpc(req), ":actor \"agent-\\\\uD83D\\\\uDE00\"");
+  expect("astral", rpc(req), ":actor \"agent-\\\\ud83d\\\\ude00\"");
   snprintf(req, sizeof req, call_as, "a\\u0085b\\u009B");
-  expect("c1", rpc(req), ":actor \"a\\\\u0085b\\\\u009B\"");
+  expect("c1", rpc(req), ":actor \"a\\\\u0085b\\\\u009b\"");
   /* A quote in the actor cannot add scopes: the grant is JSON-encoded. */
   expect("inject", rpc("{:op :call :tool \"calc_whoami\" :actor \"a\\\",\\\"scopes\\\":[\\\"admin\\\"],\\\"x\\\":\\\"\"}"),
          ":scopes [\"read\"]}}}");
   expect("inject", rpc("{:op :call :tool \"calc_whoami\" :actor \"a\\\",\\\"scopes\\\":[\\\"admin\\\"],\\\"x\\\":\\\"\"}"),
-         ":actor \"a\\\",\\\"scopes\\\":[\\\"admin\\\"],\\\"x\\\":\\\"\"");
+         ":actor \"a\\\\u0022,\\\\u0022scopes\\\\u0022:[\\\\u0022admin\\\\u0022],\\\\u0022x\\\\u0022:\""); /* cut at 64 */
   int before = dispatched;
   expect("empty", rpc("{:op :call :tool \"calc_whoami\" :actor \"\"}"), ":host/grant-missing");
   snprintf(req, sizeof req, call_as, "\\u0007\\u0000");

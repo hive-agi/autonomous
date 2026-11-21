@@ -34,23 +34,30 @@
           (seq (str s))))
 
 (defn- hex4 [c]
-  (apply str (map #(nth "0123456789ABCDEF" (bit-and (bit-shift-right c %) 15)) [12 8 4 0])))
+  (apply str (map #(nth "0123456789abcdef" (bit-and (bit-shift-right c %) 15)) [12 8 4 0])))
 
 (defn- shown-unit
-  "One code unit as shown: printable ASCII as itself, a backslash and
-   anything else as \\uXXXX."
+  "One code unit as shown: printable ASCII but \" and \\ as itself, anything
+   else as \\uxxxx."
   [c]
-  (if (and (<= 0x20 c 0x7E) (not= c 0x5C))
+  (if (and (<= 0x20 c 0x7E) (not= c 0x22) (not= c 0x5C))
     (str (char c))
     (str "\\u" (hex4 c))))
 
+(defn actor-text
+  "`actor` escaped as shown-actor escapes it, without the cut."
+  [actor]
+  (apply str (map shown-unit (units actor))))
+
 (defn shown-actor
-  "`actor` as the library shows it to a human or to a host. Only printable
-   ASCII (U+0020..U+007E) is shown as itself. A backslash and every other
-   UTF-16 code unit is escaped as \\uXXXX: a control, bidi or zero-width
-   character becomes visible, and an astral character becomes its
-   surrogate pair. Distinct actors therefore stay distinct. The result is
-   then cut at max-shown-actor characters, never inside an escape. nil
+  "`actor` as the library shows it to a human or to a host, the one rule
+   every place that shows an actor uses. Only printable ASCII (U+0020..
+   U+007E) other than \" and \\ is shown as itself. Those two and every
+   other UTF-16 code unit become \\uxxxx (lowercase hex): a control, bidi
+   or zero-width character becomes visible, and an astral character becomes
+   its surrogate pair (\\ud83d\\ude00), on every runtime. Distinct actors
+   therefore stay distinct, and the text is safe inside quotes. The result
+   is then cut at max-shown-actor characters, never inside an escape. nil
    shows as \"\"."
   [actor]
   (loop [[t & more] (map shown-unit (units actor)) out ""]
