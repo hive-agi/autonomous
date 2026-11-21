@@ -45,9 +45,9 @@
     (settled-later (js/Promise.reject (ex-info "denied" {:token "s3cret" :set-cookie "sid=s3cret"}))
                    (fn [a]
                      (is (= {:error {:type :tool-threw :message "denied"
-                                     :data {:token "<redacted>" :set-cookie "sid=s3cret"}}}
+                                     :data {:token "<redacted>" :set-cookie "<redacted>"}}}
                             a)
-                         "masked, and a path through a string neither throws nor hangs")
+                         "masked, and a path that stops at a string masks the string, never throws nor hangs")
                      (done)))))
 
 (deftest a-promise-of-a-marked-refusal-settles-as-that-refusal

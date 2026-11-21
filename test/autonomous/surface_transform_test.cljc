@@ -87,6 +87,13 @@
     (is (= {:user "ana" :card {:pan 0}} (mask (decorator/redact-output [[:card :pan]] 0)))
         "the replacement argument is kept")))
 
+(deftest an-output-path-that-stops-at-a-scalar-or-a-set-masks-it-whole
+  (let [raw  {:set-cookie "sid=s3cret" :tokens #{"s3cret"} :accounts [{:token "t"}]}
+        mask (fn [d] (:ok (decorator/project-output (d (tool :d/acct {})) raw)))]
+    (is (= {:set-cookie "<redacted>" :tokens "<redacted>" :accounts [{:token "t"}]}
+           (mask (decorator/redact-output [[:set-cookie 0] [:tokens "s3cret"] [:accounts 3 :token]])))
+        "a string where a vector was expected and a set are masked; a missed index adds nothing")))
+
 (deftest redactions-are-data-so-equal-decorations-are-equal-tools
   (let [d (comp (decorator/redact-output [[:card :pan]]) (decorator/redact-refusal [[:token]]))]
     (is (= (dissoc (d (tool :d/acct {})) :handler :decode :explain)
@@ -103,11 +110,12 @@
            (decorator/project-refusal (tool :d/acct {}) (answer/refusal :x "m" {:token "abc"})))
         "a tool without refusal redactions passes its data")))
 
-(deftest a-path-through-a-scalar-or-a-set-is-absent
-  (let [t ((decorator/redact-refusal [[:set-cookie 0] [:tags "a"] [:n :x] [:v 9]]) (tool :d/acct {}))
-        data {:set-cookie "sid=s3cret" :tags #{"a"} :n 1 :v [1]}]
-    (is (= data (get-in (decorator/project-refusal t (answer/refusal :x "m" data)) [:error :data]))
-        "never a throw, never a key added")))
+(deftest a-refusal-path-that-stops-at-a-scalar-or-a-set-masks-it-whole
+  (let [t ((decorator/redact-refusal [[:set-cookie 0] [:tags "a"] [:n :x] [:v 9] [:none :x]]) (tool :d/acct {}))
+        data {:set-cookie "sid=s3cret" :tags #{"a"} :n 1 :v [1] :none nil}]
+    (is (= {:set-cookie "<redacted>" :tags "<redacted>" :n "<redacted>" :v [1] :none nil}
+           (get-in (decorator/project-refusal t (answer/refusal :x "m" data)) [:error :data]))
+        "the string, the set and the number are masked; a missed index and nil add nothing")))
 
 (deftest refusal-data-is-masked-in-wire-form
   (let [t ((decorator/redact-refusal [[:reqs 0 :token]]) (tool :d/acct {}))
