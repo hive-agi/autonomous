@@ -385,6 +385,20 @@
     (is (shows? out #"request 2 denied, not run: input has ended"))))
 
 
+(deftest a-reader-that-throws-ends-input-and-every-request-is-denied-at-once
+  (let [out   (screen)
+        boom  (promise)
+        asker (approval/stdin-asker {:read-line #(do @boom (throw (java.io.IOException. "stream closed")))
+                                     :out (:w out) :approver "op" :wait-ms 60000})
+        a     (approval/ask! asker (assoc request :tool "a") 50000)]
+    (is (await-ref (:text out) #(re-find #"\[1\] approval requested" %)))
+    (deliver boom true)
+    (is (= :deny (decision a)) "the waiting request is denied at once, not left to wait 50 s")
+    (is (await-ref (:state (:terminal asker)) :eof?) "the failed reader marked the terminal ended")
+    (is (= :deny (decision (approval/ask! asker (assoc request :tool "b") 50000)))
+        "a later request is denied at once too")
+    (is (shows? out #"request 2 denied, not run: input has ended"))))
+
 (deftest default-askers-under-different-in-bindings-share-system-in
   (let [a (binding [*in* (BufferedReader. (StringReader. ""))] (approval/stdin-asker {:out *err*}))
         b (binding [*in* (BufferedReader. (StringReader. ""))] (approval/stdin-asker {:out *err*}))]

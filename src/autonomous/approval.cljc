@@ -388,18 +388,20 @@
       drained without blocking: `drained` is delivered at once, and a line
       buffered before the first prompt may be read after it and answer it.
       It reads until end of input, for the life of the process; at end of
-      input it marks the terminal :eof: every request still waiting, and
-      every later one on the stream, is then denied at once. The terminal
+      input, or when its reader throws, it marks the terminal :eof: every
+      request still waiting, and every later one on the stream, is then
+      denied at once. The terminal
       stays the stream's after end of input, so an asker built later on the
       stream shares it (and is denied) instead of starting a second reader.
       Answers `terminal`."
      [{:keys [read-line! ready? pumping drained state] :as terminal}]
      (when (compare-and-set! pumping false true)
-       (daemon! #(do (loop []
-                       (when-not (or (realized? drained) (ready-now? ready?)) (deliver drained true))
-                       (when-let [l (read-line!)] (keep-line! terminal l) (recur)))
-                     (swap! state assoc :eof? true)
-                     (deliver drained true))))
+       (daemon! #(try (loop []
+                        (when-not (or (realized? drained) (ready-now? ready?)) (deliver drained true))
+                        (when-let [l (read-line!)] (keep-line! terminal l) (recur)))
+                      (finally
+                        (swap! state assoc :eof? true)
+                        (deliver drained true)))))
      terminal))
 
 #?(:cljs nil
