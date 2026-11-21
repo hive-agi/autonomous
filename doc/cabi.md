@@ -32,7 +32,7 @@ threaded, `-fPIC` build of the Chez version jolt was made with, found at
 `JOLT_CHEZ_CSV`). Then:
 
 ```sh
-bb cabi        # cabi/build/libautonomous.so, then the C smoke test (16 checks)
+bb cabi        # cabi/build/libautonomous.so, then the C smoke test as a 0.3 and a 0.2 host
 bb cabi-rust   # the Rust example app
 bb cabi-go     # the Go (cgo) example: registers a tool, dispatches calls, prints answers
 bb cabi-zig    # the same in Zig (zig build run)
@@ -69,16 +69,52 @@ frames are opaque text you pass through.
 | `autonomous_ws_reply(frame)` | the frame answering a request, `""` if none is due |
 | `autonomous_rpc(request_edn)` | answer one request in process (tests) |
 
-The app defines, and exports from its executable (`-rdynamic`, or
-`-Wl,--export-dynamic`):
+The app defines one dispatcher, and exports it from its executable
+(`-rdynamic`, or `-Wl,--export-dynamic`):
 
 ```c
+/* 0.3 and later: told who called */
+const char *autonomous_host_dispatch_v2(const char *tool_id, const char *args_json,
+                                        const char *grant_json);
+/* 0.2: grant-blind, still supported */
 const char *autonomous_host_dispatch(const char *tool_id, const char *args_json);
 ```
 
 It receives arguments that already passed the tool's schema and answers the
 result as JSON. `{"error": {"message": "..."}}` reports a failure; the agent
 sees it as a tool error and the journal records `:tool-threw`.
+
+`grant_json` is the caller, in the shape `autonomous.js` hands its handlers:
+`{"actor": "agent-1", "scopes": ["read", "write"]}`. Use the actor to say
+who changed what. The library shows the actor the way it shows actors
+everywhere else (`autonomous.domain.naming/shown-actor`). It is printable
+ASCII only: a double quote, a backslash and every other UTF-16 code unit is
+escaped as `\uxxxx` (lowercase hex), so a bidi override (`\u202e`), a
+zero-width space (`\u200b`) or a control character is visible, and an emoji
+arrives as its surrogate pair (`\ud83d\ude00`). The require-approval prompt
+shows actors through the same function. The actor reaches the
+host whole: one whose shown form is longer than `AUTONOMOUS_MAX_SHOWN_ACTOR`
+(64) characters is refused with `:host/actor-too-long` before your code runs,
+so two different actors never reach the host as the same string. A decoded
+actor is at most 64 printable-ASCII bytes. Parse `grant_json` with a JSON
+parser, and never slice it or size a buffer from it: a JSON writer may
+escape any character (jolt writes `/` as `\/`), so the encoded actor can
+take up to 6 bytes per character. Scopes are sorted names. The
+library looks `_v2` up once per process and process-wide (dlsym over every
+loaded object), so a process must hold exactly one definition of each
+dispatcher. If any loaded object exports `_v2`, the library calls only
+`_v2`. The Rust binding crate exports both dispatchers, so do not link it
+into a process that defines its own. It
+never hands `_v2` an actor that names no one: an empty, whitespace-only or
+invisible-only actor (controls, zero-width, bidi, separators) is refused with
+`:host/grant-missing` before your code runs. A request with no actor at all
+reaches the host as `"anonymous"`, as everywhere in autonomous. An app built
+against 0.2 keeps working unchanged; the version is in
+`AUTONOMOUS_VERSION_MAJOR` / `AUTONOMOUS_VERSION_MINOR`.
+
+In Rust, `Runtime::tool_as(id, spec, |args, who| ..)` gives the handler a
+`Grant`. Such a handler fails closed under a 0.2 library, which passes no
+grant. `Runtime::tool` stays grant-blind.
 
 A tool spec:
 

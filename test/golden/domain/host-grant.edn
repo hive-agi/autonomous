@@ -1,0 +1,22 @@
+{:anonymous {:actor "anonymous", :scopes ["read"]},
+ :astral {:actor "agent-\\ud83d\\ude00", :scopes ["write"]},
+ :backslash {:actor "a\\u005cu0041", :scopes ["read"]},
+ :bidi {:actor "agent:\\u202enamuh", :scopes ["write"]},
+ :c1 {:actor "a\\u0085b\\u009b", :scopes ["read"]},
+ :cap-at-escape nil,
+ :control-chars
+ {:actor "ag\\u001b[31m\\u000aent\\u007f", :scopes ["read"]},
+ :empty nil,
+ :long nil,
+ :long-escapes nil,
+ :many-scopes
+ {:actor "a",
+  :scopes
+  ["admin" "audit" "billing" "ops" "read" "runtime" "write" "zeta"]},
+ :nil-actor nil,
+ :no-scopes {:actor "a", :scopes []},
+ :only-invisible nil,
+ :quote-injection nil,
+ :whitespace-only nil,
+ :writer {:actor "agent-1", :scopes ["read" "write"]},
+ :zero-width {:actor "agent\\u200b-1", :scopes ["write"]}}

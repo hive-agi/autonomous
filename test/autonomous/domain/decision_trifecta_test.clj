@@ -5,12 +5,18 @@
   (:require [autonomous.domain.affordance :as affordance]
             [autonomous.domain.decision :as decision]
             [autonomous.domain.manifest :as manifest]
+            [autonomous.domain.naming :as naming]
             [autonomous.domain.schema :as s]
+            [autonomous.domain.scope :as scope]
+            [clojure.test.check.clojure-test :as tc]
             [clojure.test.check.generators :as gen]
+            [clojure.test.check.properties :as prop]
+            [clojure.test :refer [deftest is]]
             [hive-test.trifecta :refer [deftrifecta]]
             [malli.core :as m]))
 
 (def ^:private plan-call* decision/plan-call)
+(def ^:private host-grant* decision/host-grant)
 (def ^:private ->tool* affordance/->tool)
 
 (defn- tool! [id spec] (:ok (affordance/->tool id spec)))
@@ -139,3 +145,123 @@
    :pred (m/validator s/Manifest)
    :mutations [["shows everything" (fn [snap _] (manifest/project snap {:scopes #{:admin}}))]
                ["hides resources" (fn [snap g] (assoc (manifest/project snap g) :resources []))]]})
+
+(def ^:private nasty-code-points
+  "Code points an actor may smuggle in: ASCII, quote and backslash, C0, DEL,
+   C1, NBSP, zero-width, bidi controls and isolates, line and paragraph
+   separators, the BOM and astral emoji."
+  (gen/one-of [(gen/choose 0x20 0x7E)
+               (gen/elements [0x22 0x5C 0x00 0x07 0x0A 0x1B 0x7F 0x85 0x9F 0xA0
+                              0x200B 0x200C 0x200D 0x200E 0x200F 0x202A 0x202E
+                              0x2066 0x2069 0x2028 0x2029 0xFEFF 0xE9 0x4E2D])
+               (gen/choose 0x1F300 0x1FAFF)
+               (gen/choose 0x10000 0x10FFFF)]))
+
+(def ^:private nasty-actor
+  (gen/fmap (fn [cps] (apply str (map #(String. (Character/toChars (int %))) cps)))
+            (gen/vector nasty-code-points 0 90)))
+
+(def ^:private grant-gen
+  (gen/hash-map :actor (gen/one-of [nasty-actor gen/string gen/string-ascii (gen/return nil)
+                                    (gen/elements [" " "\t\n" (str (char 0x200B) (char 0x2028))])])
+                :scopes (gen/set (gen/elements [:read :write :admin :billing]))))
+
+(defn- printable-ascii? [s] (every? #(<= 0x20 (int %) 0x7E) s))
+
+(deftrifecta host-grant-trifecta
+  autonomous.domain.decision/host-grant
+  {:golden-path "test/golden/domain/host-grant.edn"
+   :cases {:writer          {:actor "agent-1" :scopes #{:write :read}}
+           :anonymous       {:actor "anonymous" :scopes #{:read}}
+           :no-scopes       {:actor "a" :scopes #{}}
+           :many-scopes     {:actor "a" :scopes #{:write :read :admin :billing :zeta :audit :runtime :ops}}
+           :control-chars   {:actor (str "ag" (char 27) "[31m" (char 10) "ent" (char 127)) :scopes #{:read}}
+           :c1              {:actor (str "a" (char 0x85) "b" (char 0x9B)) :scopes #{:read}}
+           :bidi            {:actor (str "agent:" (char 0x202E) "namuh") :scopes #{:write}}
+           :zero-width      {:actor (str "agent" (char 0x200B) "-1") :scopes #{:write}}
+           :astral          {:actor (str "agent-" (String. (Character/toChars 0x1F600))) :scopes #{:write}}
+           :quote-injection {:actor "a\",\"scopes\":[\"admin\"],\"x\":\"" :scopes #{:read}}
+           :backslash       {:actor "a\\u0041" :scopes #{:read}}
+           :long            {:actor (apply str (repeat 200 "x")) :scopes #{:admin}}
+           :long-escapes    {:actor (apply str (repeat 30 (char 0x202E))) :scopes #{:read}}
+           :cap-at-escape   {:actor (str "abc" (apply str (repeat 12 "é"))) :scopes #{:read}}
+           :empty           {:actor "" :scopes #{:write}}
+           :whitespace-only {:actor " \t\n " :scopes #{:write}}
+           :only-invisible  {:actor (str (char 0) (char 7) (char 0x85) (char 0x200B) (char 0x2028)) :scopes #{:write}}
+           :nil-actor       {:actor nil :scopes #{:write}}}
+   :gen grant-gen
+   :pred (fn [g] (or (nil? g)
+                     (and (string? (:actor g))
+                          (<= 1 (count (:actor g)) naming/max-shown-actor)
+                          (printable-ascii? (:actor g))
+                          (= (:scopes g) (sort (:scopes g))))))
+   :num-tests 300
+   :mutations [["raw actor" (fn [g] (some-> (host-grant* g) (assoc :actor (:actor g))))]
+               ["drops instead of escaping"
+                (fn [g] (some-> (host-grant* g)
+                                (assoc :actor (apply str (filter #(<= 0x20 (int %) 0x7E) (str (:actor g)))))))]
+               ["no length cut" (fn [g] (when-not (naming/nameless-actor? (:actor g))
+                                          {:actor (apply str (filter #(<= 0x20 (int %) 0x7E) (str (:actor g))))
+                                           :scopes (scope/names (:scopes g))}))]
+               ["cuts instead of refusing" (fn [g] (or (host-grant* g)
+                                                       (when-not (naming/nameless-actor? (:actor g))
+                                                         {:actor (naming/shown-actor (:actor g))
+                                                          :scopes (scope/names (:scopes g))})))]
+               ["empty grant passes" (fn [g] (or (host-grant* g) {:actor "" :scopes []}))]
+               ["blank grant passes" (fn [g] (if (seq (str (:actor g)))
+                                               {:actor (str (:actor g)) :scopes ["read"]}
+                                               (host-grant* g)))]
+               ["unsorted scopes" (fn [g] (some-> (host-grant* g) (assoc :scopes (mapv name (:scopes g)))))]
+               ["adds admin" (fn [g] (some-> (host-grant* g)
+                                             (update :scopes #(vec (sort (distinct (conj % "admin")))))))]]})
+
+(tc/defspec host-grant-keeps-the-callers-scopes 300
+  (prop/for-all [g grant-gen]
+    (let [out (decision/host-grant g)]
+      (if (decision/host-grant-refusal g)
+        (nil? out)
+        (and (= (:scopes out) (vec (sort (map name (:scopes g)))))
+             (= (:actor out) (naming/actor-text (:actor g))))))))
+
+(tc/defspec a-host-is-never-handed-a-cut-actor 300
+  (prop/for-all [g grant-gen]
+    (let [out (decision/host-grant g)]
+      (or (nil? out) (= (:actor out) (naming/actor-text (:actor g)))))))
+
+(tc/defspec actors-a-host-sees-stay-distinct 300
+  (prop/for-all [a nasty-actor b nasty-actor]
+    (let [ga (decision/host-grant {:actor a :scopes #{}})
+          gb (decision/host-grant {:actor b :scopes #{}})]
+      (or (= a b) (nil? ga) (nil? gb) (not= (:actor ga) (:actor gb))))))
+
+(tc/defspec actor-text-keeps-distinct-actors-distinct 300
+  (prop/for-all [a nasty-actor b nasty-actor]
+    (or (= a b) (not= (naming/actor-text a) (naming/actor-text b)))))
+
+(tc/defspec the-cut-never-splits-an-escape-or-a-pair 300
+  (prop/for-all [a nasty-actor]
+    (let [s (naming/shown-actor a)]
+      (and (<= (count s) naming/max-shown-actor)
+           (.startsWith ^String (naming/actor-text a) s)
+           (not (re-find #"\\u[0-9a-f]{0,3}$" s))
+           (not (re-find #"\\ud[89ab][0-9a-f]{2}$" s))))))
+
+(deftest a-long-actor-is-refused-not-cut
+  (let [shared (apply str (repeat 10 (char 0x202E)))]
+    (is (= :host/actor-too-long (decision/host-grant-refusal {:actor (str shared "alice")})))
+    (is (nil? (decision/host-grant {:actor (str shared "alice")})))
+    (is (nil? (decision/host-grant {:actor (str shared "abcd-1")})))
+    (is (nil? (decision/host-grant {:actor (str shared "abcd-2")})))
+    (is (= (naming/shown-actor (str shared "abcd-1")) (naming/shown-actor (str shared "abcd-2")))
+        "cut, abcd-1 and abcd-2 would show the same, which is why they are refused")
+    (is (some? (decision/host-grant {:actor (str shared "bob")})) "63 characters fit")
+    (is (= :host/actor-too-long (decision/host-grant-refusal {:actor (apply str (repeat 65 "x"))})))
+    (is (some? (decision/host-grant {:actor (apply str (repeat 64 "x"))})) "64 printable characters fit")
+    (is (= :host/grant-missing (decision/host-grant-refusal {:actor " \t"})) "blank comes first")))
+
+(deftest the-cut-keeps-a-surrogate-pair-whole
+  (let [emoji (String. (Character/toChars 0x1F600))]
+    (is (= (apply str (repeat 58 "x")) (naming/shown-actor (str (apply str (repeat 58 "x")) emoji)))
+        "the pair does not fit, so neither half is shown")
+    (is (= (str (apply str (repeat 52 "x")) "\\ud83d\\ude00")
+           (naming/shown-actor (str (apply str (repeat 52 "x")) emoji))))))
