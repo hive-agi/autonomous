@@ -21,8 +21,9 @@
    re-frisk) see what agents did.
 
    For re-frame2, whose app-db lives per frame, use autonomous.re-frame2:
-   the same functions, with a :frame option. This namespace has no frames,
-   so a :frame is refused here.
+   reg-event-tool, reg-sub-tool and expose-db!, with a :frame option. It
+   has no observe-events! or install-dev-tools! yet. This namespace has no
+   frames, so a :frame is refused here.
 
    Pure decisions live in autonomous.re-frame.model; the tool-building code
    both adapters share lives in autonomous.re-frame.kernel."
