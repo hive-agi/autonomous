@@ -34,6 +34,7 @@
     autonomous.runtime.intercept-test
     autonomous.surface-transform-test
     autonomous.re-frame.model-trifecta-test
+    autonomous.re-frame.model-frame-test
     autonomous.openapi-test
     autonomous.openapi-derive-test
     autonomous.openapi-surface-test
@@ -44,6 +45,7 @@
     autonomous.openapi-pure-strata-test
     autonomous.asyncapi-core-test
     autonomous.asyncapi-source-test
+    autonomous.json-spec-test
     autonomous.bb-mcp.mount-test])
 
 (defn -main [& _]

@@ -20,18 +20,22 @@
    origin, so agents see what the human did and the human's tools (10x,
    re-frisk) see what agents did.
 
-   Pure decisions live in autonomous.re-frame.model."
+   For re-frame2, whose app-db lives per frame, use autonomous.re-frame2:
+   reg-event-tool, reg-sub-tool and expose-db!, with a :frame option. It
+   has no observe-events! or install-dev-tools! yet. This namespace has no
+   frames, so a :frame is refused here.
+
+   Pure decisions live in autonomous.re-frame.model; the tool-building code
+   both adapters share lives in autonomous.re-frame.kernel."
   (:require [autonomous.core :as core]
             [autonomous.domain.wire :as wire]
+            [autonomous.re-frame.kernel :as kernel]
             [autonomous.re-frame.model :as model]
+            [autonomous.spi :as spi]
             [re-frame.core :as rf]
             [re-frame.db :as rf-db]
             [re-frame.registrar :as registrar]
-            [reagent.ratom :as ratom]
-            [autonomous.domain.answer :as answer]
-            [autonomous.spi :as spi]
-            [autonomous.surface :as surface])
-  (:require-macros [autonomous.domain.answer :as answer]))
+            [reagent.ratom :as ratom]))
 
 (defn- registered? [kind id]
   (some? (registrar/get-handler kind id)))
@@ -48,90 +52,38 @@
     (try @r
          (finally (ratom/dispose! r)))))
 
-(defn- refuse-unregistered [kind id]
-  (throw (ex-info (str "no re-frame " (name kind) " handler registered for " id)
-                  {:autonomous/error :unregistered-handler :kind kind :id id})))
+(def host
+  "The kernel Host for re-frame 1: one global app-db, no frames."
+  {:frames?       false
+   :registered?   (fn [kind id _frame] (registered? kind id))
+   :dispatch      (fn [event _frame] (rf/dispatch event))
+   :dispatch-sync (fn [event _frame] (rf/dispatch-sync event))
+   :read-sub      (fn [query _frame] (read-sub query))
+   :app-db        (fn [_frame] @rf-db/app-db)
+   :check-frame   (fn [frame] (kernel/checked-frame! {:frames? false} frame))})
 
-(defn- result-of
-  "What an event tool answers after its dispatch."
-  [tool args event]
-  (cond
-    (:result tool)      ((:result tool) @rf-db/app-db args)
-    (:result-sub tool)  (let [q (:result-sub tool)] (read-sub (if (fn? q) (q args) q)))
-    (:result-path tool) (get-in @rf-db/app-db (:result-path tool))
-    :else               {:dispatched (wire/->wire event)}))
+(def ^:private adapters
+  (kernel/adapters host {:source-kind :autonomous.re-frame/declarations
+                         :event-kind  :re-frame/event
+                         :sub-kind    :re-frame/sub}))
 
-(defn- event-call
-  "L3 Pipeline: dispatch an encoded event and produce its declared result."
-  [tool args event grant]
-  (when-not (registered? :event (first event)) (refuse-unregistered :event (first event)))
-  (if (:async? tool)
-    (do (rf/dispatch (model/tag-event event grant)) {:queued (wire/->wire event)})
-    (do (rf/dispatch-sync (model/tag-event event grant)) (result-of tool args event))))
+(def event-codec kernel/event-codec)
 
-(defn- subscription-call
-  "L3 Pipeline: read an encoded query through a component lifecycle."
-  [query]
-  (when-not (registered? :sub (first query)) (refuse-unregistered :sub (first query)))
-  (read-sub query))
-
-(def event-codec
-  "L3 Codec for a re-frame event tool: encode {:event :args}; dispatch
-   output becomes its declared result."
-  {:encode (fn [tool args]
-             (if (fn? (:args->event tool))
-               (answer/ok {:event ((:args->event tool) args) :args args})
-               (answer/refusal :re-frame/invalid-call "event tool needs :args->event")))
-   :decode (fn [_ value] (answer/ok value))})
-
-(def subscription-codec
-  "L3 Codec for a re-frame subscription tool: args become a query; the
-   subscription's value is the decoded result."
-  {:encode (fn [tool args]
-             (if (fn? (:args->query tool))
-               (answer/ok ((:args->query tool) args))
-               (answer/refusal :re-frame/invalid-call "subscription tool needs :args->query")))
-   :decode (fn [_ value] (answer/ok value))})
-
-(defn- invoke-event
-  "L3 Boundary: dispatch an encoded event through re-frame."
-  [tool {:keys [event args]} grant]
-  (answer/ok (event-call tool args event grant)))
-
-(defn- invoke-subscription
-  "L3 Boundary: read an encoded query through re-frame."
-  [_tool query _grant]
-  (answer/ok (subscription-call query)))
-
-(defn- exposed-specs
-  "L3 Collect: only explicitly exposed event and subscription declarations."
-  [{:keys [events subs]}]
-  (concat (map (fn [[id spec]] [id (assoc spec :kind :re-frame/event)])
-               (filter (comp :expose val) events))
-          (map (fn [[id spec]] [id (assoc spec :kind :re-frame/sub :read-only? true)])
-               (filter (comp :expose val) subs))))
-
-(defn- declaration-specs
-  "L3 Promote: compile exposed re-frame declarations into ToolSpecs."
-  [source]
-  (surface/compile-tools (exposed-specs source)))
+(def subscription-codec kernel/subscription-codec)
 
 (def re-frame-adapter
   "L3 Source of explicit {:events {id spec} :subs {id spec}} declarations.
    Each spec opts in with :expose true; codec adapters are `event-adapter`
    and `subscription-adapter`."
-  {:source-kind :autonomous.re-frame/declarations
-   :derive (fn [source opts]
-             (answer/let-answer [tools (declaration-specs source)]
-               (surface/->surface {:app (:app opts {:name "app"}) :tools tools})))})
+  (:source adapters))
 
 (def event-adapter
   "L3 re-frame event Codec and its host dispatch port."
-  {:kind :re-frame/event :codec event-codec :invoke invoke-event})
+  (:event adapters))
 
 (def subscription-adapter
   "L3 re-frame subscription Codec and its host query port."
-  {:kind :re-frame/sub :codec subscription-codec :invoke invoke-subscription})
+  (:sub adapters))
 
 (spi/register-adapter! re-frame-adapter)
 (spi/register-adapter! event-adapter)
@@ -149,33 +101,21 @@
      :result-path  app-db path to read after
    Answers the MCP tool name."
   [event-id spec]
-  (core/reg-tool (or (:tool-id spec) event-id)
-                 (merge (dissoc spec :tool-id)
-                        {:kind :re-frame/event
-                         :args->event (or (:args->event spec) #(model/default-event event-id %))})))
+  (kernel/reg-event-tool host :re-frame/event event-id spec))
 
 (defn reg-sub-tool
   "Expose re-frame subscription `query-id` as a read-only tool.
    spec: as reg-tool minus :handler, plus :tool-id and
    :args->query (fn [args] query-vector), default [id] / [id args]."
   [query-id spec]
-  (core/reg-tool (or (:tool-id spec) query-id)
-                 (merge {:read-only? true}
-                        (dissoc spec :tool-id)
-                        {:kind :re-frame/sub
-                         :args->query (or (:args->query spec) #(model/default-query query-id %))})))
+  (kernel/reg-sub-tool host :re-frame/sub query-id spec))
 
 (defn expose-db!
   "Register app-db as a resource. opts: :uri (default re-frame://app-db),
    :paths (only these), :redact (paths shown as <redacted>), :scopes,
    :description."
   ([] (expose-db! {}))
-  ([{:keys [uri paths redact scopes description]}]
-   (core/reg-resource (or uri "re-frame://app-db")
-                      (cond-> {:name "app-db"
-                               :description (or description "The re-frame application state")
-                               :read (fn [_] (model/db-view @rf-db/app-db paths redact))}
-                        scopes (assoc :scopes scopes)))))
+  ([opts] (kernel/expose-db! host opts)))
 
 (defonce ^:private !observing? (atom false))
 
@@ -194,6 +134,10 @@
         (core/journal! (model/event-entry event (meta event) payloads?)))))
    (reset! !observing? true)
    nil))
+
+(defn- refuse-unregistered [kind id]
+  (throw (ex-info (str "no re-frame " (name kind) " handler registered for " id)
+                  {:autonomous/error :unregistered-handler :kind kind :id id})))
 
 (defn install-dev-tools!
   "Register generic, :admin-scoped tools for development: dispatch any

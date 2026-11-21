@@ -174,14 +174,43 @@
      :params params :body (body-field body mode) :responses responses
      :input (into [:map] (concat (map parameter-entry projections) (body-entries mode body)))}))
 
+(defn- input-schemas
+  "Pure: the resolved JSON Schemas an operation's arguments are checked
+   against: each parameter's and each JSON body media's."
+  [bundle op resolved-params]
+  (concat (keep #(get % "schema") resolved-params)
+          (let [content (get (some->> (get op "requestBody") (doc/resolved bundle)) "content")]
+            (keep (fn [[media c]] (when (json-media? media) (get c "schema"))) content))))
+
+(defn- fail-open-input
+  "Pure: the refusal of an operation whose input schema would read as :any
+   where the spec means something else (a $ref that resolves nowhere, a
+   type that is not a JSON Schema type), or nil. A cycle is a recursive
+   schema, legal in OpenAPI, so it stays :any."
+  [op-id schemas]
+  (when-let [ps (seq (remove #(= :cycle (:problem %)) (mapcat schema/problems schemas)))]
+    (let [{:keys [problem ref type]} (first ps)]
+      (answer/refusal :openapi/unresolved-schema
+                      (str "operation " op-id " input schema: "
+                           (if (= :unknown-type problem)
+                             (str "type " (pr-str type) " is not a JSON Schema type")
+                             (str "$ref " ref " does not resolve")))
+                      {:problems (vec ps)}))))
+
 (defn operation
-  "Pure: compile an Operation for the codec and its input schema, or refuse it."
-  [bundle {:keys [op] :as o}]
-  (let [resolved (params bundle o)]
-    (answer/bind (body-of bundle op)
-                 (fn [body]
-                   (answer/ok (build-operation o (mapv spec-parameter resolved)
-                                               body (responses bundle op)))))))
+  "Pure: compile an Operation for the codec and its input schema, or refuse
+   it, also when its input schema would silently accept anything. opts
+   :lenient-schemas? true skips that check: an unknown type or an
+   unresolved $ref reads as :any again (the derivation before the check)."
+  ([bundle o] (operation bundle o {}))
+  ([bundle {:keys [op] :as o} opts]
+   (let [resolved (params bundle o)]
+     (or (when-not (:lenient-schemas? opts)
+           (fail-open-input (get op "operationId") (input-schemas bundle op resolved)))
+         (answer/bind (body-of bundle op)
+                      (fn [body]
+                        (answer/ok (build-operation o (mapv spec-parameter resolved)
+                                                    body (responses bundle op)))))))))
 
 ;; -----------------------------------------------------------------------------
 ;; Promoting an Operation to a tool spec
@@ -222,7 +251,7 @@
 (defn- ->spec
   "Pure: Ok [id spec] of an exposed operation."
   [bundle o cfg opts]
-  (answer/bind (operation bundle o)
+  (answer/bind (operation bundle o opts)
                #(answer/ok [(tool-id (:prefix opts) (:operation-id o)) (tool-spec % o cfg opts)])))
 
 ;; -----------------------------------------------------------------------------
@@ -268,6 +297,10 @@
      :base-url   where requests go (the gateway), e.g. \"https://h/api/payment\"
      :http       (fn [request] response), default autonomous.openapi.http
      :principal  (fn [grant request] request): adds the persona's identity
+     :lenient-schemas?  true reads an unknown type (\"file\", \"int\") or a
+                 $ref the resolver cannot follow (#anchor, $id, a URL) as
+                 :any, as before; default false refuses the operation with
+                 :openapi/unresolved-schema, since :any admits any argument
 
    :read-only? defaults to true for GET and HEAD only. Answers
    {:ok [[id spec] ...]} in :expose order, or a refusal."

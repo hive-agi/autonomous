@@ -33,35 +33,35 @@
 
 (def redacted "<redacted>")
 
-(defn- present?
-  "L1: true when `path` reaches a value in `m` through maps and vectors
-   only. A step into anything else (a string, a set, a number) is
-   absent: get-in would read a string by index, and assoc-in cannot
-   write into it."
-  [m path]
-  (loop [v m [k & more :as ks] path]
-    (cond
-      (empty? ks) true
-      (map? v)    (and (contains? v k) (recur (get v k) more))
-      (vector? v) (and (int? k) (< -1 k (count v)) (recur (nth v k) more))
-      :else       false)))
-
 (defn- mask-path
-  "`m` with the value at `path` replaced by `replacement` when present;
-   the empty path is `m` itself. An absent path, or one through a value
-   that is not a map or vector, adds no key and never throws."
-  [replacement m path]
-  (cond
-    (empty? path)          replacement
-    (not (present? m path)) m
-    :else                  (assoc-in m path replacement)))
+  "L1: `v` with the value at `path` replaced by `replacement`; the empty
+   path is `v` itself. Maps and vectors are stepped through: a missing
+   key, an index out of range or a non-integer step into a vector is an
+   absent path and adds nothing. nil holds nothing to hide and is kept.
+   Any other value the path stops at before it is consumed (a string, a
+   set, a number) is masked whole, because the path promised a secret
+   somewhere inside it. Never throws."
+  [replacement v path]
+  (if (empty? path)
+    replacement
+    (let [[k & more] path]
+      (cond
+        (map? v)    (if (contains? v k) (assoc v k (mask-path replacement (get v k) more)) v)
+        (vector? v) (if (and (int? k) (< -1 k (count v)))
+                      (assoc v k (mask-path replacement (nth v k) more))
+                      v)
+        (nil? v)    v
+        :else       replacement))))
 
 (defn redact-paths
-  "`m` with the value at every present path of `paths` (vectors of keys or
-   indices) replaced by `replacement`, default `redacted`. Absent paths
-   add nothing; the empty path replaces `m` itself. Give it a wire-form
-   value (wire/->wire): an index into a seq or list is not a path there,
-   so a secret under one would be reported absent and kept."
+  "`m` with the value at every path of `paths` (vectors of keys or
+   indices) replaced by `replacement`, default `redacted`. A path that
+   misses a map key or a vector index adds nothing; the empty path
+   replaces `m` itself. A path that stops at any other non-nil value
+   before it is consumed (a string where a vector of cookies was
+   expected, a set) masks that whole value: it is never kept as absent.
+   Give it a wire-form value (wire/->wire), where every seq and list is
+   a vector the path's indices reach."
   ([m paths] (redact-paths m paths redacted))
   ([m paths replacement]
    (reduce (partial mask-path replacement) m paths)))
