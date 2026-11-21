@@ -33,23 +33,27 @@ func run(tool string, argsJSON string, in grantIn) []byte {
 		return errorJSON("arguments are not a JSON object: " + err.Error())
 	}
 	var (
-		out any
+		b   []byte
 		err error
 	)
+	// The handler and the encoding of its result both run under recover,
+	// so a panicking handler or MarshalJSON answers an error.
 	func() {
 		defer func() {
 			if r := recover(); r != nil {
 				err = fmt.Errorf("handler panicked: %v", r)
 			}
 		}()
-		out, err = h(args, in)
+		var out any
+		if out, err = h(args, in); err != nil {
+			return
+		}
+		if b, err = json.Marshal(out); err != nil {
+			err = fmt.Errorf("result is not JSON: %w", err)
+		}
 	}()
 	if err != nil {
 		return errorJSON(err.Error())
-	}
-	b, err := json.Marshal(out)
-	if err != nil {
-		return errorJSON("result is not JSON: " + err.Error())
 	}
 	return b
 }

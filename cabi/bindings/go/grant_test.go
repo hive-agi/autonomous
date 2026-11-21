@@ -82,6 +82,19 @@ func TestAGrantBodyFailsClosedWithoutAGrant(t *testing.T) {
 	}
 }
 
+type panicky struct{}
+
+func (panicky) MarshalJSON() ([]byte, error) { panic("encoder exploded") }
+
+func TestAPanickingResultEncoderAnswersAnError(t *testing.T) {
+	handlers["t/panicky"] = blindBody(func(map[string]any) (any, error) { return panicky{}, nil })
+	defer delete(handlers, "t/panicky")
+	got := string(run("t/panicky", "{}", grantIn{}))
+	if !strings.Contains(got, `"error"`) || !strings.Contains(got, "encoder exploded") {
+		t.Fatal(got)
+	}
+}
+
 func TestGrantHas(t *testing.T) {
 	if !(Grant{Scopes: []string{"admin"}}).Has("billing") || (Grant{Scopes: []string{"read"}}).Has("write") {
 		t.Fatal("Has")
