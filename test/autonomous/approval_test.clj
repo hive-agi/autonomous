@@ -214,6 +214,17 @@
       (is (= :deny (decision b)) "the pre-typed \"2 y\" did not approve request 2 unseen")
       (is (re-find #"\(1 line\(s\) typed before this prompt were discarded\)" (text out))))))
 
+(deftest a-line-buffered-before-the-first-request-is-discarded
+  (let [t (typist)]
+    ((:type! t) "1 y")
+    (let [out   (screen)
+          asker (typed-asker t out "op")]
+      (is (await-reads t 2) "building the asker starts its reader: \"1 y\" is queued before any ask")
+      (let [a (approval/ask! asker (assoc request :tool "a") 10000)]
+        (type-at! t out "1" "nope")
+        (is (= :deny (decision a)) "the buffered \"1 y\" did not approve the first request of the stream")
+        (is (re-find #"\(1 line\(s\) typed before this prompt were discarded\)" (text out)))))))
+
 (deftest a-late-line-for-an-expired-request-cannot-answer-the-next
   (let [t     (typist)
         out   (screen)

@@ -348,15 +348,20 @@
    :default
    (defn- pump!
      "L1 Boundary: once per terminal, a daemon thread moving every line read
-      into the terminal's `lines` queue, so no request waits on a read. It
-      reads until end of input, for the life of the process; at end of
-      input it marks the terminal :eof (every request still waiting, and
-      every later one, is then denied) and lets the stream's terminal go."
-     [{:keys [read-line! lines pumping state]} stream]
+      into the terminal's `lines` queue, so no request waits on a read.
+      Started when the asker is built, so a line already buffered is read
+      into the queue, and discarded by the next prompt, rather than read
+      after that prompt. It reads until end of input, for the life of the
+      process; at end of input it marks the terminal :eof: every request
+      still waiting, and every later one on the stream, is then denied at
+      once. The terminal stays the stream's after end of input, so an asker
+      built later on the stream shares it (and is denied) instead of
+      starting a second reader. Answers `terminal`."
+     [{:keys [read-line! lines pumping state] :as terminal}]
      (when (compare-and-set! pumping false true)
        (daemon! #(do (loop [] (when-let [l (read-line!)] (.put lines l) (recur)))
-                     (swap! state assoc :eof? true)
-                     (swap! terminals dissoc stream))))))
+                     (swap! state assoc :eof? true))))
+     terminal))
 
 #?(:cljs nil
    :default
@@ -419,8 +424,7 @@
    (defn- start-server!
      "L1 Boundary: queue `entry` on `terminal` and start its server on a
       daemon thread unless one is running."
-     [{:keys [state] :as terminal} stream entry]
-     (pump! terminal stream)
+     [{:keys [state] :as terminal} entry]
      (let [[before _] (swap-vals! state #(assoc (enqueued % entry) :serving? true))]
        (when-not (:serving? before) (daemon! #(serve! terminal))))))
 
@@ -442,7 +446,7 @@
      Asker
      (-ask! [_ request]
        (let [p (promise)]
-         (start-server! terminal stream {:p p :approver approver :request request :wait-ms wait-ms})
+         (start-server! terminal {:p p :approver approver :request request :wait-ms wait-ms})
          p))
      Withdraw
      (-withdraw! [_ answer]
@@ -493,5 +497,5 @@
      ([] (stdin-asker {}))
      ([{:keys [in read-line stream out approver wait-ms] :or {approver "stdin" wait-ms 60000}}]
       (let [stream (stream-key stream read-line in)]
-        (->StdinAsker (terminal-for stream read-line (line-reader (or in *in*)) out)
+        (->StdinAsker (pump! (terminal-for stream read-line (line-reader (or in *in*)) out))
                       stream approver wait-ms)))))
