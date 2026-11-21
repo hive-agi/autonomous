@@ -11,7 +11,7 @@
             [clojure.test.check.clojure-test :as tc]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]
-            [clojure.test :refer [deftest is]]
+            [clojure.test :refer [deftest is testing]]
             [hive-test.trifecta :refer [deftrifecta]]
             [malli.core :as m]))
 
@@ -265,3 +265,24 @@
         "the pair does not fit, so neither half is shown")
     (is (= (str (apply str (repeat 52 "x")) "\\ud83d\\ude00")
            (naming/shown-actor (str (apply str (repeat 52 "x")) emoji))))))
+
+(deftest a-lease-refusal-quotes-the-holder-as-shown
+  (let [msg #(get-in (plan-call* (assoc snapshot :lease {:actor % :until 1000})
+                                 "todo_add" {:text "x"} rw 10)
+                     [:refusal :error :message])]
+    (is (clojure.string/starts-with? (msg "b") "runtime is leased by \"b\";"))
+    (is (clojure.string/includes? (msg "b\u202e\nc") "\"b\\u202e\\u000ac\"")
+        "a bidi control and a newline in the holder are escaped")
+    (is (every? #(<= 0x20 (int %) 0x7E) (msg "b\u202e\nc")))
+    (is (not= (msg "bc") (msg "b\u200bc")) "distinct holders stay distinct")
+    (testing "a holder named like a cut note is not shown as cut"
+      (is (clojure.string/starts-with? (msg "ops (+9 chars)") "runtime is leased by \"ops (+9 chars)\";"))
+      (is (clojure.string/starts-with? (msg (apply str (repeat 73 "o")))
+                                       (str "runtime is leased by \"" (apply str (repeat 64 "o")) "\" (+9 chars);"))))))
+
+(deftest a-lease-refusal-carries-the-raw-and-the-shown-holder
+  (let [data (get-in (plan-call* (assoc snapshot :lease {:actor "b\u200bc" :until 1000})
+                                 "todo_add" {:text "x"} rw 10)
+                     [:refusal :error :data])]
+    (is (= {:actor "b\u200bc" :until 1000 :shown-actor "b\\u200bc"} data)
+        ":actor is the raw holder, as data; :shown-actor is what to display")))

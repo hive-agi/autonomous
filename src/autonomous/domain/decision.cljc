@@ -35,9 +35,9 @@
 
       (lease/blocks? held tool grant now)
       (refuse (answer/refusal :leased
-                              (str "runtime is leased by " (:actor held)
+                              (str "runtime is leased by " (naming/quoted-actor (:actor held))
                                    "; writes by other actors are refused until the lease ends")
-                              held))
+                              (lease/refusal-data held)))
 
       :else
       (let [conformed (affordance/conform-args tool args)]

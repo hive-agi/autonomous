@@ -8,7 +8,7 @@
  :invokes [:invoke "todo_add" {:text "milk"}],
  :lease-expired [:invoke "todo_add" {:text "x"}],
  :leased-read-open [:invoke "todo_list" {}],
- :leased-write [:refuse :leased {:actor "b", :until 1000}],
+ :leased-write [:refuse :leased {:actor "b", :until 1000, :shown-actor "b"}],
  :missing-arg [:refuse :invalid-args {:text ["missing required key"]}],
  :unknown
  [:refuse :unknown-tool {:known ["todo_add" "todo_list" "todo_purge"]}]}
