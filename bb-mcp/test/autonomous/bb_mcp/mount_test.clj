@@ -103,6 +103,25 @@
            (let [h (addon/health a)] {:status (:status h) :apps-status (get-in h [:details :status])}))
         "another agent reaching the target later clears one agent's refusal, keyed by target id")))
 
+(deftest a-refused-agent-probing-last-does-not-flap-health
+  (let [srv (fleet-server [["todo" (refusing "todo" ["todo_add"])]])
+        a   (fa/make-addon {:server srv :actor "coordinator"})]
+    (addon/initialize! a {})
+    (addon/tools a)
+    (Thread/sleep 5)
+    (bf/probe (:fleet srv) (s/open-session refused-actor {:actor refused-actor :scopes #{:read}}))
+    (is (= :ok (:status (addon/health a))) "the addon's own look decides, not the newest refused one")))
+
+(deftest status-by-target-prefers-own-then-fresh-up
+  (let [now 100000
+        own {:status :down :at 10}
+        up  {:status :up :at (- now 1000)}
+        old {:status :up :at 1}
+        dn  {:status :down :at (- now 10)}]
+    (is (= {"t" :down} (fa/status-by-target {["t" "me"] own ["t" "b"] up} "me" now)) "own look wins")
+    (is (= {"t" :up} (fa/status-by-target {["t" "a"] up ["t" "b"] dn} "me" now)) "a fresh :up beats a newer :down")
+    (is (= {"t" :down} (fa/status-by-target {["t" "a"] old ["t" "b"] dn} "me" now)) "a stale :up does not")))
+
 (deftest addon-tools-become-bb-mcp-tools
   (let [m     [(started two-apps)]
         tools (mount/tools m (constantly "ling-1"))

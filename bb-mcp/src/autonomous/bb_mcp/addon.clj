@@ -77,24 +77,37 @@
   [st]
   (server/tools-fingerprint (:srv @st) (session-of st (:actor @st))))
 
-(defn- latest-by-target
-  "{target-id status} of the fleet's last probes, which are kept per
-   [target actor]: a target's status is that of its most recent probe by
-   any actor, an :up one winning a tie. One agent refused by a remote thus
-   degrades nobody once another agent reaches it later."
-  [last-probes]
-  (let [rank   (fn [pr] [(:at pr 0) (if (= :up (:status pr)) 1 0)])
-        newest (reduce (fn [acc [[tid _actor] pr]]
-                         (if (and (acc tid) (neg? (compare (rank pr) (rank (acc tid))))) acc (assoc acc tid pr)))
-                       {} last-probes)]
-    (into (sorted-map) (map (fn [[tid pr]] [tid (:status pr)])) newest)))
+(def fresh-up-ms
+  "How long an :up probe of a target by any agent keeps it healthy, when
+   the addon's own actor has not looked at it."
+  60000)
+
+(defn- rank
+  "Sort key of probe `pr` for a target's health, best last: the addon's
+   own `actor`'s probe first, then an :up within fresh-up-ms of `now`,
+   then the newest."
+  [actor now [[_tid by] pr]]
+  [(if (= actor by) 1 0)
+   (if (and (= :up (:status pr)) (< (- now (:at pr 0)) fresh-up-ms)) 1 0)
+   (:at pr 0)])
+
+(defn status-by-target
+  "Pure: {target-id status} of the fleet's last probes, kept per [target
+   actor], seen by the addon's `actor` at `now`. One agent refused by a
+   remote never flaps the target's health: the addon's own look decides,
+   else a fresh :up by anyone, else the newest probe."
+  [last-probes actor now]
+  (let [best (fn [entries] (last (sort-by (partial rank actor now) entries)))]
+    (->> (group-by ffirst last-probes)
+         (map (fn [[tid entries]] [tid (:status (second (best entries)))]))
+         (into (sorted-map)))))
 
 (defn- health-of
-  "Health from the last look at every target (see `latest-by-target`): :ok
+  "Health from the last look at every target (see `status-by-target`): :ok
    all up (or none looked at yet), :degraded some down or slow. :details
    :status is keyed by target id."
-  [srv]
-  (let [status (latest-by-target @(get-in srv [:fleet :last]))]
+  [srv actor]
+  (let [status (status-by-target @(get-in srv [:fleet :last]) actor (System/currentTimeMillis))]
     {:status  (if (every? #{:up} (vals status)) :ok :degraded)
      :details {:apps (get-in srv [:fleet :order]) :status status}}))
 
@@ -125,9 +138,9 @@
     (if (= :active (:lifecycle @state)) (tool-defs state) []))
   (schema-extensions [_] {})
   (health [_]
-    (let [{:keys [lifecycle srv error]} @state]
+    (let [{:keys [lifecycle srv error actor]} @state]
       (if (= :active lifecycle)
-        (health-of srv)
+        (health-of srv actor)
         {:status :down :details {:lifecycle lifecycle :error error}})))
   (excluded-tools [_] #{})
   (hooks [_]
