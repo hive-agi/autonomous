@@ -33,8 +33,11 @@
    drives it with a stub record instead of a network."
   (-request! [client req]
     "Answer of sending ring-style `req` ({:method :url :headers :body
-     :timeout-ms}): {:ok {:status :headers :body}} or a
-     :channel/transport-failed refusal. Never throws.")
+     :timeout-ms :rpc-id}): {:ok {:status :headers :body}}, a
+     :channel/transport-failed refusal when the request never got an
+     answer, or :channel/outcome-unknown when the reply stopped after its
+     headers (the remote may have acted). An SSE reply is read up to the
+     message whose id is :rpc-id. Never throws.")
   (-open-stream! [client req sink]
     "Answer of a held GET to `req` whose event text arrives at `sink`
      ({:text! (fn [s]) :close! (fn [])}), or a refusal. Ok of

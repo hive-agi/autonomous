@@ -27,7 +27,8 @@
             [autonomous.bridge.http.channel :as hc]
             [autonomous.cli :as cli]
             [autonomous.config :as config]
-            [malli.core :as m]))
+            [malli.core :as m]
+            [org.httpkit.server :as hk]))
 
 (def ^:private remote-url "https://remote.test/todo")
 
@@ -239,7 +240,7 @@
     (is (not (str/includes? (pr-str a) "SECRET")) "no remote text in the refusal"))
   (let [closed (promise)
         a      (jdk/within 100 #(do (Thread/sleep 5000) (answer/ok "late")) #(deliver closed true))]
-    (is (= :channel/transport-failed (get-in a [:error :type])))
+    (is (= :channel/outcome-unknown (get-in a [:error :type])) "a reply late after its headers")
     (is (true? (deref closed 1000 false)) "a late reply is closed"))
   (is (= {:ok 1} (jdk/within 1000 #(answer/ok 1) (fn [])))))
 
@@ -262,6 +263,61 @@
     (deref pumper 2000 nil)
     (is (= [rpc/list-changed] got)
         "the event completes at a blank lone-CR line while the stream is still open")))
+
+(defn- held-sse-server
+  "An http-kit server on loopback whose POST reply is SSE headers, then
+   (when `reply?`) a notification and the reply to the request's id, and
+   then nothing: the connection is held open. Answers {:url :stop!}."
+  [reply?]
+  (let [srv (hk/run-server
+             (fn [req]
+               (let [id (:id (json/read-json (slurp (:body req))))]
+                 (hk/as-channel req
+                   {:on-open (fn [chan]
+                               (hk/send! chan {:status 200 :headers {"content-type" "text/event-stream"}} false)
+                               (when reply?
+                                 (hk/send! chan (str list-changed-event "data: "
+                                                     (json/write {:jsonrpc "2.0" :id id :result {:ok 1}})
+                                                     "\n\n") false)))})))
+             {:ip "127.0.0.1" :port 0 :legacy-return-value? false})]
+    {:url   (str "http://127.0.0.1:" (hk/server-port srv) "/mcp")
+     :stop! #(deref (hk/server-stop! srv {:timeout 100}))}))
+
+(defn- post-to
+  "The JDK client's answer to a JSON-RPC POST of id 41 to `url`, and the ms it took."
+  [url timeout-ms]
+  (let [t0 (System/currentTimeMillis)
+        a  (port/-request! (jdk/client) {:method :post :url url :rpc-id 41 :timeout-ms timeout-ms
+                                         :headers {"content-type" "application/json"}
+                                         :body (json/write {:jsonrpc "2.0" :id 41 :method "tools/call"})})]
+    [a (- (System/currentTimeMillis) t0)]))
+
+(deftest read-sse-reply-stops-at-the-event-of-its-id
+  (let [reply (str "data: " (json/write {:jsonrpc "2.0" :id 5 :result {}}))
+        text  (str list-changed-event reply "\r\n\r\ndata: NEVER-READ\n\n")
+        a     (jdk/read-sse-reply (java.io.StringReader. text) 10000 5)]
+    (is (str/includes? (:ok a) reply))
+    (is (not (str/includes? (:ok a) "NEVER-READ")) "nothing after the reply's event is read")
+    (is (= :channel/transport-failed
+           (get-in (jdk/read-sse-reply (java.io.StringReader. text) 20 5) [:error :type])))))
+
+(deftest an-sse-reply-is-read-up-to-its-own-message
+  (let [{:keys [url stop!]} (held-sse-server true)]
+    (try
+      (let [[a ms] (post-to url 3000)]
+        (is (= {:ok 1} (:result (:ok (rpc/reply-of (:body (:ok a)) "text/event-stream" 41)))) (pr-str a))
+        (is (< ms 2500) "the held-open stream is not waited on"))
+      (finally (stop!)))))
+
+(deftest a-reply-that-stops-after-its-headers-has-an-unknown-outcome
+  (let [{:keys [url stop!]} (held-sse-server false)]
+    (try
+      (let [[a _] (post-to url 300)]
+        (is (= :channel/outcome-unknown (get-in a [:error :type])) (pr-str a)))
+      (finally (stop!))))
+  (testing "a request that never connects is a transport failure, not an unknown outcome"
+    (let [[a _] (post-to "http://127.0.0.1:9/mcp" 300)]
+      (is (= :channel/transport-failed (get-in a [:error :type])) (pr-str a)))))
 
 (deftest a-stream-line-past-the-cap-closes-the-stream
   (let [ok (pumped "data: a\n\ndata: b\n" 16)]

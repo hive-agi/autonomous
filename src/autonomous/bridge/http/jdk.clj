@@ -57,6 +57,11 @@
   "The most characters a remote reply body may hold: 4 MiB."
   (* 4 1024 1024))
 
+(defn- too-long
+  "The refusal of a reply body past `cap` characters."
+  [cap]
+  (answer/refusal :channel/transport-failed (str "the remote reply passed " cap " characters")))
+
 (defn read-capped
   "Boundary: Ok of the text of `r`, or a :channel/transport-failed refusal
    once it passes `cap` characters. Never holds more than `cap` plus one
@@ -67,33 +72,90 @@
       (let [n (.read r buf)]
         (cond
           (neg? n)                   (answer/ok (str sb))
-          (< cap (+ (.length sb) n)) (answer/refusal :channel/transport-failed
-                                                     (str "the remote reply passed " cap " characters"))
+          (< cap (+ (.length sb) n)) (too-long cap)
           :else                      (do (.append sb buf 0 n) (recur)))))))
 
+(defn- outcome-unknown
+  "The refusal of a reply that stopped after the request was accepted: the
+   remote may have acted on it, so a caller must not simply retry."
+  [why]
+  (answer/refusal :channel/outcome-unknown
+                  (str "the remote accepted the request but its reply " why
+                       ": the outcome is unknown")))
+
 (defn within
-  "Boundary: the Answer of `read!` run on its own thread, or, past `ms`, a
-   :channel/transport-failed refusal after `close!` stops it."
+  "Boundary: the Answer of `read!` run on its own thread. Past `ms`, or when
+   the reply breaks off, a :channel/outcome-unknown refusal after `close!`
+   stops it: the headers arrived, so the request may have run."
   [ms read! close!]
-  (let [f (future (try (read!) (catch Exception _closed
-                                 (answer/refusal :channel/transport-failed "the remote reply broke off"))))
+  (let [f (future (try (read!) (catch Exception _closed (outcome-unknown "broke off"))))
         a (deref f ms ::late)]
     (if (= ::late a)
       (do (close!) (future-cancel f)
-          (answer/refusal :channel/transport-failed (str "the remote reply took longer than " ms " ms")))
+          (outcome-unknown (str "took longer than " ms " ms")))
       a)))
 
+(declare line-of)
+
+(defn- reply-event?
+  "True when the SSE event `lines` holds a message answering request `id`."
+  [lines id]
+  (some #(= id (:id %)) (rpc/read-messages (str/join "\n" lines))))
+
+(defn- sse-step
+  "Pure: what reading `line` does to the SSE reply being gathered, whose
+   current event holds `ev`, for request `id`: :done once a blank line ends
+   the event answering `id`, :next-event at any other blank line, else
+   :more."
+  [ev line id]
+  (cond
+    (not (str/blank? line)) :more
+    (reply-event? ev id)    :done
+    :else                   :next-event))
+
+(defn read-sse-reply
+  "Boundary: Ok of SSE text read from `r` up to and including the event
+   that answers request `id`, so a stream the remote keeps open after its
+   reply is not waited on. EOF first answers the text read; past `cap`
+   characters, a :channel/transport-failed refusal."
+  [^Reader r cap id]
+  (let [sb (StringBuilder.) cr? (volatile! false)]
+    (loop [ev []]
+      (let [a (line-of r cap cr?) l (:ok a)]
+        (cond
+          (answer/refused? a)                (too-long cap)
+          (nil? l)                           (answer/ok (str sb))
+          (< cap (+ (.length sb) (count l))) (too-long cap)
+          :else (do (.append (.append sb l) "\n")
+                    (case (sse-step ev l id)
+                      :done       (answer/ok (str sb))
+                      :next-event (recur [])
+                      :more       (recur (conj ev l)))))))))
+
+(defn- headers-of
+  "The headers of `resp`, names lower case, the first value of each."
+  [^HttpResponse resp]
+  (into {} (map (fn [[k vs]] [(str/lower-case k) (first vs)])) (.map (.headers resp))))
+
+(defn- body-reader
+  "The reading of a reply body from `r` for request `req` with headers `h`:
+   up to the request's own message when it is SSE, else the whole capped
+   body."
+  [^Reader r req h]
+  (if (and (rpc/sse-type? (get h "content-type")) (some? (:rpc-id req)))
+    (read-sse-reply r max-body-chars (:rpc-id req))
+    (read-capped r max-body-chars)))
+
 (defn- response-of
-  "Answer {:status :headers :body} of `resp`, header names lower case, its
-   body read within `ms` and max-body-chars."
-  [^HttpResponse resp ms]
-  (let [^InputStream in (.body resp)]
-    (answer/let-answer [body (within ms #(with-open [r (InputStreamReader. in "UTF-8")]
-                                           (read-capped r max-body-chars))
+  "Answer {:status :headers :body} of `resp` to `req`, header names lower
+   case, its body read within `ms` and max-body-chars."
+  [^HttpResponse resp req ms]
+  (let [^InputStream in (.body resp)
+        h (headers-of resp)]
+    (answer/let-answer [body (within ms #(with-open [r (BufferedReader. (InputStreamReader. in "UTF-8"))]
+                                           (body-reader r req h))
                                      #(.close in))]
-      (answer/ok {:status  (.statusCode resp)
-                  :headers (into {} (map (fn [[k vs]] [(str/lower-case k) (first vs)])) (.map (.headers resp)))
-                  :body    body}))))
+      (answer/ok {:status (.statusCode resp) :headers h :body body}))))
 
 (defn- send
   "Answer of sending `req`, its body taken as text or JSON, the reply
@@ -105,7 +167,7 @@
           pub  (if body (HttpRequest$BodyPublishers/ofString ^String body)
                    (HttpRequest$BodyPublishers/noBody))
           b    (builder req (:method req) pub ms)]
-      (response-of (.send ^HttpClient @shared (.build b) (HttpResponse$BodyHandlers/ofInputStream)) ms))
+      (response-of (.send ^HttpClient @shared (.build b) (HttpResponse$BodyHandlers/ofInputStream)) req ms))
     (catch Exception e
       (transport-failed e))))
 

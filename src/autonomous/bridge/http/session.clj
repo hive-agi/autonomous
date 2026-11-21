@@ -31,6 +31,7 @@
                           :headers (assoc (protocol-headers ident rpc/post-accept sid)
                                           "content-type" "application/json")
                           :body (rpc/json-text msg)
+                          :rpc-id (:id msg)
                           :timeout-ms timeout-ms}))
 
 (def ^:private gone-status 404)
