@@ -108,10 +108,36 @@
     (coll? x)                  (mapcat (fn [i v] (leaves (conj path i) v)) (range) x)
     :else                      [[path x]]))
 
+(def ^:private strict-re
+  "L1 host: one character a non-plain key name is not shown as."
+  #?(:cljs    (js/RegExp. "[^A-Za-z0-9_.\\-]" "gu")
+     :default #"[^A-Za-z0-9_.\-]"))
+
+(defn- strict-text
+  "L1: `s` with every character but [A-Za-z0-9_.-] escaped (see escape-char)."
+  [s]
+  #?(:cljs    (.replace (str s) strict-re escape-char)
+     :default (str/replace (str s) strict-re escape-char)))
+
+(defn- plain-name?
+  "L1: is `s` a plain identifier, optionally ns-qualified (no space, =, :, # ...)?"
+  [s]
+  (boolean (re-matches #"([A-Za-z_*+!?<>-][A-Za-z0-9_*+!?<>.-]*/)?[A-Za-z_*+!?<>-][A-Za-z0-9_*+!?<>.-]*" s)))
+
+(defn shown-key
+  "L1: one path element as a human is shown it: a plain keyword or symbol
+   as printed; any other as (keyword \"...\") or (symbol \"...\") with
+   every character but [A-Za-z0-9_.-] escaped; any other key as shown-value."
+  [k]
+  (let [text (cond (keyword? k) (subs (str k) 1) (symbol? k) (str k))]
+    (cond (nil? text)        (shown-value k)
+          (plain-name? text) (pr-str k)
+          :else              (str "(" (if (keyword? k) "keyword" "symbol") " \"" (strict-text text) "\")"))))
+
 (defn- arg-line
   "L1: the prompt line of the argument leaf `v` at `path`."
   [[path v]]
-  (str "    " (cap (str/join " " (map shown-value path)) max-leaf-chars) " = " (shown-value v)))
+  (str "    " (cap (str/join " " (map shown-key path)) max-leaf-chars) " = " (shown-value v)))
 
 (defn showable?
   "L1: can every argument value of `request` be shown, one per line

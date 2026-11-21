@@ -31,20 +31,26 @@
   (doseq [v [{:decision :approve :approver "a"} {:decision :deny :approver "b"} nil]]
     (is (m/validate approval/Decision (ask (approval/queue-asker (if v [v] [])) 20)))))
 
-(defn- stdin-asker [typed out]
-  (approval/stdin-asker {:in (BufferedReader. (StringReader. typed)) :out out :approver "op"
-                         :wait-ms 300}))
+(declare typist typed-asker type-at! eventually)
+
+(defn- answered
+  "The Decision of one request on a fresh terminal where `line` is typed
+   once the prompt shows, with its terminal output."
+  [line]
+  (let [t (typist) out (StringWriter.) asker (typed-asker t out "op" 1000)
+        d (approval/ask! asker request 2000)]
+    (type-at! t out "1" line)
+    [(dissoc (deref d 2000 ::hung) :ms) out]))
 
 (deftest the-stdin-asker-approves-only-its-own-numbered-yes
   (testing "\"1 y\" approves request 1, the prompt shows its number and tool, and the outcome is said"
-    (let [out (StringWriter.)]
-      (is (= {:decision :approve :approver "op"} (dissoc (ask (stdin-asker "1 Y\n" out) 500) :ms)))
+    (let [[d out] (answered "1 Y")]
+      (is (= {:decision :approve :approver "op"} d))
       (is (re-find #"\[1\] approval requested: tool \"pay\"" (str out)))
-      (Thread/sleep 50)
-      (is (re-find #"request 1 approved" (str out)))))
-  (testing "a bare y, another number, anything else or end of input denies or expires"
-    (doseq [typed ["y\n" "yes\n" "2 y\n" "1 y please\n" "n\n" ""]]
-      (is (#{:deny :timeout} (:decision (ask (stdin-asker typed (StringWriter.)) 500))) typed))))
+      (is (eventually #(re-find #"request 1 approved" (str out))))))
+  (testing "a bare y, another number or anything else typed denies"
+    (doseq [line ["y" "yes" "2 y" "1 y please" "n" ""]]
+      (is (= :deny (:decision (first (answered line)))) line))))
 
 (def ^:private hostile
   "Characters that move a cursor, end a line, reorder or hide text, or look
@@ -77,6 +83,18 @@
     (is (re-find #"(?m)^    :amount = 1000000$" text))
     (is (re-find #"(?m)^    :to = \"mallory\"$" text))
     (is (re-find #"\\u02ba" text) "the look-alike is shown as an escape")))
+
+(deftest a-key-cannot-fake-an-argument-line
+  (doseq [fake [(keyword "amount = 10   #") (symbol "amount = 10") (keyword "amount\u00a0= 10")]]
+    (let [text (prompt {:tool "pay" :actor "agent" :args {:amount 1000000 fake "x"}})]
+      (is (= 1 (count (re-seq #"(?m)^    :amount =" text))) (pr-str fake))
+      (is (re-find #"(?m)^    :amount = 1000000$" text) "the real amount is there")
+      (is (re-find #"(?m)^    \((keyword|symbol) \"amount\\u00(20|a0)\\u003d\\u0020" text)
+          "the fake key is shown quoted, with space and = escaped")))
+  (testing "a plain or qualified key prints as is"
+    (is (= ":amount" (approval/shown-key :amount)))
+    (is (= ":pay/to" (approval/shown-key :pay/to)))
+    (is (= "0" (approval/shown-key 0)))))
 
 (deftest a-long-memo-before-amount-hides-no-field
   (let [text (prompt {:tool "pay" :actor "agent-7" :session "s1"
