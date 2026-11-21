@@ -12,7 +12,8 @@
             [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.test.check :as tc]
             [clojure.test.check.generators :as gen]
-            [clojure.test.check.properties :as prop]))
+            [clojure.test.check.properties :as prop]
+            [clojure.data.json :as json]))
 
 (def providers
   "As the payment service resolves them: the real bank and its simulator."
@@ -113,11 +114,34 @@
   (testing "unrelated keys are fine"
     (is (not (decorator/ambiguous-path? [:body :provider] {:body {:provider "sicoob-sim" :amount 1 :providers 2}})))))
 
-(deftest go-folds-the-kelvin-sign-and-the-long-s
-  (is (= (decorator/json-fold "k") (decorator/json-fold "\u212a")))
-  (is (= (decorator/json-fold "s") (decorator/json-fold "\u017f")))
-  (is (= (decorator/json-fold "provider") (decorator/json-fold "PROVIDER")))
-  (is (not= (decorator/json-fold "provider") (decorator/json-fold "provider_"))))
+(deftest keys-are-compared-as-the-encoder-writes-them
+  (testing "a namespaced keyword or a symbol is written by its name"
+    (doseq [k [:x/Provider :x/provider :a.b/PROVIDER 'Provider 'x/provider "x/Provider"]]
+      (is (= (decorator/wire-key k)
+             (first (keys (json/read-str (json/write-str {k 1})))))
+          (pr-str k))))
+  (testing "a sibling that only differs by namespace, case or kind is refused"
+    (doseq [sibling [:x/Provider :x/provider :pay/PROVIDER 'Provider 'provider 'x/provider]]
+      (is (decorator/ambiguous-path? [:provider] {:provider "sicoob-sim" sibling "756"}) (pr-str sibling))
+      (is (decorator/ambiguous-path? [:body :provider] {:body {:provider "sicoob-sim" sibling "756"}})
+          (pr-str sibling))))
+  (testing "a key with no agreed wire text, or a non-ASCII one, fails closed"
+    (doseq [odd [1 nil true [:a] (keyword "pr\u00f6vider") "\u212aey" "\u017fum" (symbol "\u1fd3")]]
+      (is (decorator/ambiguous-path? [:provider] {:provider "sicoob-sim" odd "x"}) (pr-str odd))))
+  (testing "a namespaced path key is matched by its wire name too"
+    (is (decorator/ambiguous-path? [:x/provider] {:x/provider "sicoob-sim" :provider "756"})))
+  (testing "plain ASCII siblings with other names are fine"
+    (is (not (decorator/ambiguous-path? [:provider] {:provider "sicoob-sim" :amount 1 'payer "a" "valor" "1"})))))
+
+(deftest a-namespaced-sibling-never-reaches-the-service
+  (let [asker (approval/queue-asker (repeat 5 {:decision :approve :approver "ana"}))]
+    (a/decorate! (a/each-tool (comp allowlist (decorator/require-approval {:asker asker :timeout-ms 1000}))))
+    (doseq [sibling ["x/Provider" "x/provider"]]
+      (let [args (json/read-str (json/write-str {"provider" "sicoob-sim" sibling "756" "amount" 1}) :key-fn keyword)
+            r    (call args)]
+        (is (= :provider-ambiguous (get-in r [:error :type])) sibling)))
+    (is (empty? @(:requests asker)))
+    (is (empty? @runs))))
 
 (deftest a-second-allowlist-cannot-widen-the-first
   (a/decorate! (a/each-tool allowlist))
@@ -137,7 +161,9 @@
               [{:code "sicoob-sim" :name "Sicoob\u212a"} {:code "756" :name "SicoobK"}]
               [{:code "sicoob-sim" :name "756"} {:code "756" :name "Sicoob"}]
               [{:code "756" :name "SICOOB-SIM"} {:code "sicoob-sim" :name "SicoobSim"}]
-              [{:code "sicoob-sim"} {:code "sicoob-sim" :name "Other"}]]]
+              [{:code "sicoob-sim"} {:code "sicoob-sim" :name "Other"}]
+              [{:code "sicoob-sim" :name "Sicoob\u017fim"} {:code "756" :name "Sicoob"}]
+              [{:code "sicoob-sim" :name "SicoobSim"} {:code "75\u0666" :name "Sicoob"}]]]
     (is (= :invalid-allowlist
            (try (decorator/provider-allowlist {:path [:provider] :providers ps :allowed ["sicoob-sim"]}) nil
                 (catch clojure.lang.ExceptionInfo e (:autonomous/error (ex-data e)))))
@@ -201,22 +227,39 @@
                             base picks swaps))]
       (if (= s base) (str (subs s 0 1) "\u212a" (subs s 1)) s))))
 
+(def ^:private fold-alike
+  "The sim's name with at least one letter replaced by a code point a
+   Unicode case fold takes for it (long s for s, dotless or dotted i for
+   i): every one equalsIgnoreCase \"sicoobsim\", none is ASCII."
+  (gen/let [base  (gen/elements ["sicoobsim" "SicoobSim" "SICOOBSIM"])
+            swaps (gen/vector gen/boolean (count base))
+            first-swap (gen/elements [0 6 1 7])]
+    (apply str (map-indexed (fn [i ch]
+                              (let [lc (Character/toLowerCase (char ch))]
+                                (if (or (= i first-swap) (nth swaps i))
+                                  (case lc \s "\u017f" \i (if (even? i) "\u0131" "\u0130") (str ch))
+                                  (str ch))))
+                            base))))
+
 (def ^:private spelling
   "Strings near the sim's code and name: case flips, padding, code points
-   swapped for look-alikes, plus arbitrary strings."
+   swapped for look-alikes (some a Unicode case fold accepts), plus
+   arbitrary strings."
   (gen/one-of [gen/string
                gen/string-ascii
                swapped
-               swapped
+               fold-alike
                (gen/let [base (gen/elements ["sicoob-sim" "SicoobSim" "756" "Sicoob"])
                          flips (gen/vector gen/boolean (count base))
                          pad (gen/elements ["" " " "\t" "\u00a0" "\u200b" "%20"])]
                  (str pad (apply str (map #(if %2 (str/upper-case (str %1)) (str %1)) base flips)) pad))]))
 
 (deftest the-generator-reaches-look-alikes-a-unicode-fold-would-accept
-  (let [sample (gen/sample swapped 300)]
-    (is (some #(.equalsIgnoreCase "sicoobsim" ^String %) (remove #(re-matches #"[\x20-\x7E]+" %) sample))
-        "a resolver folding with Unicode rules would allow some of them")))
+  (let [sample (gen/sample fold-alike 100)]
+    (is (every? #(.equalsIgnoreCase "sicoobsim" ^String %) sample)
+        "a resolver folding with Unicode rules would allow every one of them")
+    (is (not-any? #(re-matches #"[\x20-\x7E]+" %) sample) "none is ASCII")
+    (is (not-any? #(decorator/resolve-provider providers %) sample) "the real resolver allows none")))
 
 (deftest a-unicode-folding-resolver-is-caught
   (let [mutant (fn [providers v]

@@ -106,24 +106,29 @@
                                   [:name {:optional true} [:string {:min 1}]]]]]
    [:allowed [:set {:min 1} [:string {:min 1}]]]])
 
-(declare json-fold)
+(declare fold-ascii)
 
 (defn- allowlist-problem
   "L1: what is wrong with allowlist options `al`, nil when nothing is: a
-   shape problem; two providers with one code; two names that fold alike
-   (the service's name lookup walks a Go map, so which one it answers is
-   unspecified); a name that folds like another provider's code; or an
-   :allowed code no provider has."
+   shape problem; a code or name that is not printable ASCII (the
+   service folds Unicode wider than an ASCII fold, so such a provider
+   could be reached by a value read differently here); two providers
+   with one code; two names that fold alike (the service's name lookup
+   walks a Go map, so which one it answers is unspecified); a name that
+   folds like another provider's code; or an :allowed code no provider
+   has."
   [al]
   (if-let [e (m/explain ProviderAllowlist al)]
     (me/humanize e)
     (let [ps    (:providers al)
           codes (map :code ps)
+          texts (remove nil? (mapcat (juxt :code :name) ps))
           pairs (for [p ps q ps :when (and (:name p) (not= (:code p) (:code q)))] [p q])]
-      (or (not-empty (for [[c n] (frequencies codes) :when (< 1 n)] {:duplicate-code c}))
-          (not-empty (for [[p q] pairs :when (= (json-fold (:name p)) (json-fold (:code q)))]
+      (or (not-empty (for [t texts :when (not (re-matches #"[\x20-\x7E]+" t))] {:not-ascii t}))
+          (not-empty (for [[c n] (frequencies codes) :when (< 1 n)] {:duplicate-code c}))
+          (not-empty (for [[p q] pairs :when (= (fold-ascii (:name p)) (fold-ascii (:code q)))]
                        {:name (:name p) :folds-like-code (:code q)}))
-          (not-empty (for [[p q] pairs :when (and (:name q) (= (json-fold (:name p)) (json-fold (:name q))))]
+          (not-empty (for [[p q] pairs :when (and (:name q) (= (fold-ascii (:name p)) (fold-ascii (:name q))))]
                        {:names-fold-alike [(:name p) (:name q)]}))
           (not-empty (remove (set codes) (:allowed al)))))))
 
@@ -187,45 +192,42 @@
   [{:keys [path providers allowed]} args]
   (contains? allowed (resolve-provider providers (get-in args path))))
 
-(defn- fold-code-point
-  "L1 host: code point `cp` as Go's encoding/json folds it to match a key
-   to a field: the upper case of its lower case (simple mappings on the
-   JVM; on cljs the first code point of the full mappings, which folds at
-   least as much)."
-  [cp]
-  #?(:cljs    (.codePointAt (.toUpperCase (.toLowerCase (js/String.fromCodePoint cp))) 0)
-     :default (Character/toUpperCase (Character/toLowerCase (int cp)))))
-
-(defn json-fold
-  "L1: string `s` folded code point by code point (fold-code-point), as a
-   vector: two keys a case-insensitive JSON decoder matches to one field
-   fold equal. \"provider\" and \"PROVIDER\" fold equal, as K (Kelvin
-   sign) folds like K and ſ (long s) like S."
-  [s]
-  (loop [i 0 acc []]
-    (if (< i (count s))
-      (let [cp #?(:cljs (.codePointAt s i) :default (Character/codePointAt ^CharSequence s (int i)))]
-        (recur (+ i (if (> cp 0xFFFF) 2 1)) (conj acc (fold-code-point cp))))
-      acc)))
-
-(defn- key-text
-  "L1: map key `k` as the JSON key it is sent as; nil for other keys."
+(defn wire-key
+  "L1: map key `k` as a JSON encoder writes it: a string as is, a
+   keyword or symbol by its NAME only (clojure.data.json drops the
+   namespace, so :x/Provider is written \"Provider\"); nil for any other
+   key, which has no agreed wire text."
   [k]
-  (cond (keyword? k) (subs (str k) 1)
-        (string? k)  k))
+  (cond (string? k)                     k
+        (or (keyword? k) (symbol? k))   (name k)))
+
+(defn- ascii-key?
+  "L1: is `t` a key text of printable ASCII only?"
+  [t]
+  (boolean (and (string? t) (re-matches #"[\x20-\x7E]*" t))))
 
 (defn- shadowed-key?
-  "L1: does map `m` hold a key other than `k` that folds like it?"
+  "L1: is the key `k` of map `m` not the only one a case-insensitive JSON
+   decoder could read as it? True when some key of `m` has no wire text
+   (wire-key), or a non-ASCII wire text (Go's simple folding maps far
+   more code points than an ASCII fold, so those keys fail closed), or
+   when a key other than `k` writes a text equal to `k`'s ignoring ASCII
+   case, a duplicate included."
   [m k]
-  (when-let [t (and (map? m) (key-text k))]
-    (let [f (json-fold t)]
-      (boolean (some #(and (not= % k) (= f (some-> (key-text %) json-fold))) (keys m))))))
+  (when (map? m)
+    (let [texts (map wire-key (keys m))
+          own   (fold-ascii (str (wire-key k)))]
+      (boolean
+       (or (nil? (wire-key k))
+           (not-every? ascii-key? texts)
+           (< 1 (count (filter #(= own (fold-ascii %)) texts))))))))
 
 (defn ambiguous-path?
-  "L1: does some map along `path` in `args` hold, beside the path's own
-   key, another key (keyword or string) a case-insensitive JSON decoder
-   reads as that key? Then the service may read a value the allowlist did
-   not, so the call names no provider safely."
+  "L1: could a case-insensitive JSON decoder read, in some map along
+   `path` in `args`, another key as the path's own? Keys are compared as
+   the encoder writes them (wire-key); a map with a key that has no wire
+   text or a non-ASCII one counts as ambiguous. Then the service may read
+   a value the allowlist did not, so the call names no provider safely."
   [path args]
   (loop [m args [k & more :as ks] path]
     (cond (empty? ks)           false

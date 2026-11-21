@@ -55,11 +55,20 @@ an allowed provider, so each goes to the human (or is refused):
 
 The service decodes JSON with Go's `encoding/json`, which matches keys
 case-insensitively (with Unicode simple folding: `K` is `k`, `ſ` is
-`s`). So when any map along `:path` holds a second key, keyword or
-string, that folds like the path's key (`{:provider "sicoob-sim"
-:Provider "756"}`), the call is refused `:provider-ambiguous`. This
-happens whether or not there is an approval gate, because the human
-would be shown one provider while the service read the other.
+`s`). Keys are compared as the encoder writes them: a keyword or symbol
+by its name only, so `:x/Provider` is sent as `"Provider"`. The call is
+refused `:provider-ambiguous` when any map along `:path` holds either of
+the following:
+- a second key whose wire text equals the path key's, ignoring ASCII
+  case (`{:provider "sicoob-sim" :Provider "756"}`, `:x/provider`,
+  `'Provider`);
+- a key with no agreed wire text (a number, nil, a vector), or a
+  non-ASCII one.
+
+The second rule fails closed instead of copying Go's whole fold table.
+The refusal applies whether or not there is an approval gate, because
+the human would be shown one provider while the service read the other.
+Provider codes and names must be printable ASCII for the same reason.
 
 The match is narrower than the service's on purpose: a value read
 differently on the two sides can only fail to be allowed, never let the
