@@ -96,6 +96,28 @@ func TestUnregisterRemovesTheTool(t *testing.T) {
 	})
 }
 
+func TestUnregisterTakesTheMCPNameToo(t *testing.T) {
+	onRuntime(func() {
+		name, err := rt.Tool("t/byname", addSpec, add("go"))
+		if err != nil || name != "t_byname" {
+			t.Fatal(name, err)
+		}
+		if err := rt.Unregister(name); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := rt.RPC(`{:op :call :tool "t_byname" :args {:a 1 :b 2} :scopes #{:write}}`)
+		if !strings.Contains(got, ":unknown-tool") {
+			t.Fatal("unregistering by MCP name left the tool:", got)
+		}
+		if _, ok := handlers["t/byname"]; ok {
+			t.Fatal("unregistering by MCP name left the handler under its id")
+		}
+		if _, ok := ids["t_byname"]; ok {
+			t.Fatal("the name is still mapped")
+		}
+	})
+}
+
 func TestEveryCallOffTheThreadIsRefused(t *testing.T) {
 	// This goroutine is not the runtime's; lock it so the refusal is not luck.
 	runtime.LockOSThread()

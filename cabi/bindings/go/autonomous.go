@@ -86,6 +86,8 @@ var (
 	startErr  error
 
 	handlers = map[string]Handler{}
+	// ids maps each registered tool's MCP name to its id.
+	ids = map[string]string{}
 )
 
 func cs(s string) *C.char { return C.CString(s) }
@@ -201,15 +203,26 @@ func (rt *Runtime) Tool(id, specEDN string, h Handler) (string, error) {
 		return "", fmt.Errorf("autonomous: tool %s refused: %s", id, out)
 	}
 	handlers[id] = h
+	ids[name] = id
 	return name, nil
 }
 
-// Unregister removes tool id (or its MCP name) and its handler.
-func (rt *Runtime) Unregister(id string) error {
+// Unregister removes a tool and its handler, named by its id ("calc/add")
+// or by the MCP name Tool answered ("calc_add").
+func (rt *Runtime) Unregister(idOrName string) error {
+	id := idOrName
+	if known, ok := ids[idOrName]; ok {
+		id = known
+	}
 	if _, err := rt.i1(rt.unregTool, id); err != nil {
 		return err
 	}
 	delete(handlers, id)
+	for name, of := range ids {
+		if of == id {
+			delete(ids, name)
+		}
+	}
 	return nil
 }
 
