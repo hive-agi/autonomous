@@ -12,17 +12,16 @@ const Args = struct { a: i64, b: i64 };
 
 var out_buf: [256]u8 = undefined;
 
-/// The app's tools. Args arrive as validated JSON, e.g. {"a":2,"b":40}.
-fn dispatch(tool: []const u8, args_json: []const u8) [*:0]const u8 {
-    if (!std.mem.eql(u8, tool, "calc/add"))
-        return "{\"error\":{\"message\":\"unknown tool\"}}";
-    const parsed = std.json.parseFromSlice(Args, std.heap.page_allocator, args_json, .{
+/// The app's tools. Args arrive as validated JSON, e.g. {"a":2,"b":40}; an
+/// error (bad args, an overflowing sum) is answered as a tool error.
+fn dispatch(tool: []const u8, args_json: []const u8) anyerror![*:0]const u8 {
+    if (!std.mem.eql(u8, tool, "calc/add")) return error.UnknownTool;
+    const parsed = try std.json.parseFromSlice(Args, std.heap.page_allocator, args_json, .{
         .ignore_unknown_fields = true,
-    }) catch return "{\"error\":{\"message\":\"bad args\"}}";
+    });
     defer parsed.deinit();
-    const s = std.fmt.bufPrintZ(&out_buf, "{{\"sum\":{d},\"by\":\"zig\"}}", .{parsed.value.a + parsed.value.b}) catch
-        return "{\"error\":{\"message\":\"result too long\"}}";
-    return s.ptr;
+    const sum = try std.math.add(i64, parsed.value.a, parsed.value.b);
+    return (try std.fmt.bufPrintZ(&out_buf, "{{\"sum\":{d},\"by\":\"zig\"}}", .{sum})).ptr;
 }
 
 comptime {
@@ -46,17 +45,30 @@ pub fn main() !u8 {
     const rt = try autonomous.Runtime.start();
     try rt.describe("{\"name\":\"calc\",\"description\":\"A Zig calculator. calc_add adds two integers.\"}");
 
-    const reg = rt.tool("calc/add", "{:description \"Add two integers (in Zig)\" :input [:map [:a :int] [:b :int]]}") catch |e| {
+    const name = rt.tool("calc/add", "{:description \"Add two integers (in Zig)\" :input [:map [:a :int] [:b :int]]}") catch |e| {
         const r = autonomous.lastRefusal();
         _ = printf("FAIL reg      %.*s\n", @as(c_int, @intCast(r.len)), r.ptr);
         return e;
     };
-    _ = printf("registered %.*s\n", @as(c_int, @intCast(reg.len)), reg.ptr);
+    _ = printf("registered %.*s\n", @as(c_int, @intCast(name.len)), name.ptr);
 
     // "40" is decoded to 40 by the library before the dispatcher sees it.
     check(rt, "call", "{:op :call :tool \"calc_add\" :args {:a 2 :b \"40\"} :scopes #{:write} :actor \"agent-1\"}", ":sum 42");
     check(rt, "invalid", "{:op :call :tool \"calc_add\" :args {:a \"x\"} :scopes #{:write}}", ":invalid-args");
     check(rt, "scope", "{:op :call :tool \"calc_add\" :args {:a 1 :b 2}}", ":forbidden");
+    check(rt, "overflow", "{:op :call :tool \"calc_add\" :args {:a 9223372036854775807 :b 1} :scopes #{:write}}", "Overflow");
+
+    // A refused spec is kept as an owned copy, readable after more calls.
+    if (rt.tool("calc/bad", "{:input [:map]}")) |_| {
+        _ = printf("FAIL refuse   a spec without a description registered\n");
+        failures += 1;
+    } else |_| {
+        _ = try rt.rpc("{:op :ping}");
+        const r = autonomous.lastRefusal();
+        const ok = std.mem.indexOf(u8, r, "invalid-tool") != null;
+        if (!ok) failures += 1;
+        _ = printf("%s refuse   %.*s\n", if (ok) "ok  " else "FAIL", @as(c_int, @intCast(r.len)), r.ptr);
+    }
 
     // Off the runtime's thread a call is refused, not run.
     var refused = false;
