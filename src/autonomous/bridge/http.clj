@@ -82,11 +82,21 @@
   "The most characters of a caller-supplied actor a message repeats."
   64)
 
+(defn- unshown?
+  "True for a character a message must not repeat: a control character, a
+   line or paragraph separator (U+2028, U+2029), or a bidi control (U+200E,
+   U+200F, U+202A-U+202E, U+2066-U+2069) that could reorder a log line."
+  [c]
+  (let [i (int c)]
+    (or (Character/isISOControl (char c))
+        (<= 0x2028 i 0x2029) (<= 0x200E i 0x200F)
+        (<= 0x202A i 0x202E) (<= 0x2066 i 0x2069))))
+
 (defn shown-actor
-  "Pure: `actor` as a refusal message may repeat it: control characters
-   dropped, then cut at max-shown-actor characters."
+  "Pure: `actor` as a refusal message may repeat it: control, separator
+   and bidi characters dropped, then cut at max-shown-actor characters."
   [actor]
-  (let [s (apply str (remove #(Character/isISOControl (char %)) (str actor)))]
+  (let [s (apply str (remove unshown? (str actor)))]
     (subs s 0 (min max-shown-actor (count s)))))
 
 (defn- selected-reference

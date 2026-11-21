@@ -597,6 +597,11 @@
     (is (not (str/includes? msg (apply str (repeat 100 "y")))))
     (is (empty? @seen) "nothing was sent")))
 
+(deftest a-shown-actor-drops-separators-and-bidi-controls
+  (doseq [c [\u2028 \u2029 \u200E \u200F \u202A \u202E \u2066 \u2069]]
+    (is (= "ab" (http/shown-actor (str "a" c "b"))) (format "U+%04X" (int c))))
+  (is (= "agent-é" (http/shown-actor "agent-é")) "an ordinary letter stays"))
+
 (deftest every-request-names-its-protocol-and-what-it-accepts
   (let [[c seen] (spied (assoc target :credentials (credential-policy)))]
     (manifest-as c "agent-a" #{:read})
