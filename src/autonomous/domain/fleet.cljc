@@ -42,8 +42,7 @@
   #?(:cljs (.charCodeAt c 0) :default (int c)))
 
 (defn- poly-hash
-  "Polynomial hash of `s` with multiplier `m` modulo prime `p` (< 2^31), so
-   every step stays exact in a JS double."
+  "Polynomial hash of `s` with multiplier `m` modulo prime `p` (< 2^31)."
   [m p s]
   (reduce (fn [h c] (mod (+ (* h m) (char-code c)) p)) 7 (seq (str s))))
 
@@ -58,8 +57,7 @@
 (def digest-length 12)
 
 (defn digest
-  "Twelve base-36 characters (two independent 31-bit hashes) that depend on
-   every character of `s`. The same on the JVM, babashka and JavaScript."
+  "Twelve base-36 characters that depend on every character of `s`."
   [s]
   (str (base36-of (poly-hash 31 2147483647 s) 6)
        (base36-of (poly-hash 131 2147483629 s) 6)))
