@@ -125,10 +125,20 @@
                               :when (= (fleet/exposed-name "r" long-a) (fleet/exposed-name "r" b))]
                           b))]
       (is (nil? clash) "no collision among the digested names searched")
-      (with-redefs [fleet/exposed-name (fn [_ t] (if (#{"a" "b"} t) "r__ab" (str "r__" t)))]
-        (let [s (fleet/merge-probes [{:target "r" :status :up :manifest {:tools (tools-of "a" "b" "c")}}])]
-          (is (= ["r__c"] (mapv :name (:tools s))))
-          (is (= #{"a" "b"} (set (get-in s [:apps 0 :dropped]))))
+      (testing "the same tool listed twice is one tool, not a collision"
+        (let [s (fleet/merge-probes [{:target "r" :status :up :manifest {:tools (tools-of "a" "a" "c")}}])]
+          (is (= ["r__a" "r__c"] (mapv :name (:tools s))))))
+      (testing "an exposed name an earlier target holds is dropped for the later one"
+        (let [s (fleet/merge-probes [{:target "r" :status :up :manifest {:tools (tools-of "x")}}
+                                     {:target "r" :status :up :manifest {:tools (tools-of "x" "y")}}])]
+          (is (= ["r__x" "r__y"] (mapv :name (:tools s))))
+          (is (= ["x"] (get-in s [:apps 1 :dropped])))))
+      (testing "tools exposing one name are all dropped, whatever their order"
+        (with-redefs [fleet/exposed-name (fn [_ t] (if (#{"a" "b"} t) "r__ab" (str "r__" t)))]
+          (doseq [order [["a" "b" "c"] ["c" "b" "a"]]]
+            (let [s (fleet/merge-probes [{:target "r" :status :up :manifest {:tools (apply tools-of order)}}])]
+              (is (= ["r__c"] (mapv :name (:tools s))))
+              (is (= #{"a" "b"} (set (get-in s [:apps 0 :dropped]))))))
           (is (nil? (fleet/resolve-local "r" "r__ab" ["a" "b"]))))))))
 
 (deftest every-name-doc-naming-shows

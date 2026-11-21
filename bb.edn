@@ -1,7 +1,7 @@
 ;; The bridge on babashka: `bb serve --dir ../todo`, one cheap process per
 ;; agent (or one per fleet), the same code as the JVM bridge. ClojureWasm runs
 ;; the same namespaces (`cljw -cp ... -m autonomous.cli serve`), stdio only.
-{:paths ["src" "test" "bb-mcp/src" "bb-mcp/test"]
+{:paths ["src" "test" "test-cljc" "bb-mcp/src" "bb-mcp/test"]
  :deps {metosin/malli                {:mvn/version "0.20.3"}
         io.github.hive-agi/bb-mcp    {:mvn/version "1.3.7"}
         io.github.hive-agi/hive-addon {:mvn/version "1.1.10"}
