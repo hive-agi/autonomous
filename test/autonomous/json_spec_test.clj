@@ -161,8 +161,11 @@
         (is (re-find #"^tool a input carries code"
                      (str (get-in (js/->tool-spec (assoc spec "input" input)) [:error :message]))))))
     (testing "the host may allow it; the file cannot"
-      (is (answer/ok? (js/->tool-spec nil (assoc spec "input" "[:map [:x [:fn pos?]]]")
-                                      (autonomous.openapi.doc/bundle {}) {:allow-fn? true})))
+      (let [a (js/->tool-spec nil (assoc spec "input" "[:map [:x [:fn pos?]]]")
+                              (autonomous.openapi.doc/bundle {}) {:allow-fn? true})]
+        (is (or (answer/ok? a)
+                (= ":malli.core/sci-not-available" (get-in a [:error :data :cause])))
+            "past the guard only malli itself may refuse (a JVM without sci)"))
       (is (= :invalid-tool (get-in (js/->tool-spec (assoc spec "allowFn" true "input" "[:map [:x [:fn pos?]]]"))
                                    [:error :type]))))
     (testing "keywords that merely look like code stay schemas"
