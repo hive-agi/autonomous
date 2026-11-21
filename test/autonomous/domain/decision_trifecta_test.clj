@@ -11,7 +11,7 @@
             [clojure.test.check.clojure-test :as tc]
             [clojure.test.check.generators :as gen]
             [clojure.test.check.properties :as prop]
-            [clojure.test :refer [deftest is]]
+            [clojure.test :refer [deftest is testing]]
             [hive-test.trifecta :refer [deftrifecta]]
             [malli.core :as m]))
 
@@ -274,4 +274,8 @@
     (is (clojure.string/includes? (msg "b\u202e\nc") "\"b\\u202e\\u000ac\"")
         "a bidi control and a newline in the holder are escaped")
     (is (every? #(<= 0x20 (int %) 0x7E) (msg "b\u202e\nc")))
-    (is (not= (msg "bc") (msg "b\u200bc")) "distinct holders stay distinct")))
+    (is (not= (msg "bc") (msg "b\u200bc")) "distinct holders stay distinct")
+    (testing "a holder named like a cut note is not shown as cut"
+      (is (clojure.string/starts-with? (msg "ops (+9 chars)") "runtime is leased by \"ops (+9 chars)\";"))
+      (is (clojure.string/starts-with? (msg (apply str (repeat 73 "o")))
+                                       (str "runtime is leased by \"" (apply str (repeat 64 "o")) "\" (+9 chars);"))))))

@@ -97,12 +97,15 @@
 
 (defn quoted-actor
   "`actor` as a message or a prompt quotes it: shown-actor in double quotes,
-   with a visible note of how many characters the cut left out. shown-actor
-   holds no quote, so the quotes always delimit the whole actor."
+   then, only when the cut left characters out, a note of how many AFTER
+   the closing quote: \"shown\" (+N chars). shown-actor holds no quote, so
+   the quotes delimit exactly the actor's own text, and an actor whose name
+   itself ends in \" (+9 chars)\" shows that inside the quotes, never as a
+   cut."
   [actor]
   (let [shown (shown-actor actor)
         cut   (- (count (actor-text actor)) (count shown))]
-    (str "\"" shown (when (pos? cut) (str " (+" cut " chars)")) "\"")))
+    (str "\"" shown "\"" (when (pos? cut) (str " (+" cut " chars)")))))
 
 (def ^:private invisible-units
   "Code units that show nothing: whitespace, C0, DEL and C1 controls,

@@ -26,7 +26,9 @@
   (is (= "a\\u0022\\u005cb" (naming/shown-actor "a\"\\b")))
   (is (= 64 (count (naming/shown-actor (apply str (repeat 80 "x"))))))
   (is (= "\"a\\u200bb\"" (naming/quoted-actor "a\u200bb")))
-  (is (= (str "\"" (apply str (repeat 64 "x")) " (+16 chars)\"") (naming/quoted-actor (apply str (repeat 80 "x")))))
+  (is (= (str "\"" (apply str (repeat 64 "x")) "\" (+16 chars)") (naming/quoted-actor (apply str (repeat 80 "x")))))
+  (is (= "\"ops (+9 chars)\"" (naming/quoted-actor "ops (+9 chars)"))
+      "an uncut actor that names a cut note shows it inside the quotes, with no note after")
   (is (naming/nameless-actor? " \t\u200b\u2028"))
   (is (not (naming/nameless-actor? "a"))))
 

@@ -741,7 +741,7 @@
     (is (= 64 (count shown)) "the cut counts escaped characters: 64 of them")
     (is (str/starts-with? shown "evil\\u000a\\u001b[31mFAKE LOG LINE\\u000dyyy")
         "a newline, an ESC and a carriage return are escaped, not dropped")
-    (is (str/includes? msg (str "\"" shown " (+" (- (count (naming/actor-text hostile)) 64) " chars)\""))
+    (is (str/includes? msg (str "\"" shown "\" (+" (- (count (naming/actor-text hostile)) 64) " chars)"))
         "the message quotes the shown actor and says how much was cut")
     (is (not (str/includes? msg (apply str (repeat 100 "y")))))
     (is (empty? @seen) "nothing was sent")))
@@ -763,7 +763,9 @@
   (is (= "agent-\\u00e9" (get-in (refused-actor "agent-é") [:data :actor]))
       "a non-ASCII letter is escaped too")
   (is (= "a\\u0022\\u005cb" (get-in (refused-actor "a\"\\b") [:data :actor]))
-      "a quote and a backslash are escaped, so the quoted actor has no quote inside"))
+      "a quote and a backslash are escaped, so the quoted actor has no quote inside")
+  (is (str/includes? (:message (refused-actor "ops (+9 chars)")) "agent \"ops (+9 chars)\" on ")
+      "an uncut actor named like a cut note has no note after its closing quote"))
 
 (deftest distinct-actors-stay-distinct-in-the-refusal
   (let [actors ["ab" "a\u200bb" "a\u200cb" "a\u202eb" "a\uFEFFb" "a b" "a\u00a0b"
@@ -790,7 +792,8 @@
         (is (= (str (apply str (repeat 52 "a")) pair) shown) "52 + 12 = 64; the second pair does not fit")
         (is (= 64 (count shown)))
         (is (not (str/ends-with? shown "\\ud83d")) "no lone high-surrogate escape at the end")
-        (is (str/includes? (:message e) "(+12 chars)") "the message counts the escaped characters cut")))
+        (is (str/includes? (:message e) (str "\"" shown "\" (+12 chars)"))
+            "the message counts the escaped characters cut, after the closing quote")))
     (testing "a pair that does not fit at all is not split either"
       (is (= (apply str (repeat 58 "a"))
              (get-in (refused-actor (str (apply str (repeat 58 "a")) emoji)) [:data :actor]))))))
