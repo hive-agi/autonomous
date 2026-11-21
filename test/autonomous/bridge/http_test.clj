@@ -677,9 +677,15 @@
     (is (empty? @seen) "nothing was sent")))
 
 (deftest a-shown-actor-drops-separators-and-bidi-controls
-  (doseq [c [\u2028 \u2029 \u200E \u200F \u202A \u202E \u2066 \u2069]]
+  (doseq [c [\u2028 \u2029 \u200E \u200F \u202A \u202E \u2066 \u2069 \u061C \u200B \u200C \u200D \uFEFF]]
     (is (= "ab" (http/shown-actor (str "a" c "b"))) (format "U+%04X" (int c))))
-  (is (= "agent-é" (http/shown-actor "agent-é")) "an ordinary letter stays"))
+  (is (= "agent-é" (http/shown-actor "agent-é")) "an ordinary letter stays")
+  (testing "the cut never splits a surrogate pair"
+    (let [emoji "\uD83D\uDE00"
+          shown (http/shown-actor (str (apply str (repeat 63 "a")) emoji emoji))]
+      (is (= (str (apply str (repeat 63 "a")) emoji) shown))
+      (is (= 64 (.codePointCount ^String shown 0 (count shown))))
+      (is (not (Character/isHighSurrogate (last shown))) "no lone high surrogate at the end"))))
 
 (deftest every-request-names-its-protocol-and-what-it-accepts
   (let [[c seen] (spied (assoc target :credentials (credential-policy)))]

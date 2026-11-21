@@ -82,22 +82,35 @@
   "The most characters of a caller-supplied actor a message repeats."
   64)
 
+(def ^:private unshown-ranges
+  "Code point ranges a message must not repeat: line and paragraph
+   separators, the bidi controls and marks that could reorder a log line
+   (U+061C, U+200E-200F, U+202A-202E, U+2066-2069), and the zero-width
+   characters that hide text (U+200B-200D, U+FEFF)."
+  [[0x061C 0x061C] [0x200B 0x200F] [0x2028 0x202E] [0x2066 0x2069] [0xFEFF 0xFEFF]])
+
 (defn- unshown?
-  "True for a character a message must not repeat: a control character, a
-   line or paragraph separator (U+2028, U+2029), or a bidi control (U+200E,
-   U+200F, U+202A-U+202E, U+2066-U+2069) that could reorder a log line."
-  [c]
-  (let [i (int c)]
-    (or (Character/isISOControl (char c))
-        (<= 0x2028 i 0x2029) (<= 0x200E i 0x200F)
-        (<= 0x202A i 0x202E) (<= 0x2066 i 0x2069))))
+  "True for code point `cp` a message must not repeat: a control character
+   or one in unshown-ranges."
+  [cp]
+  (or (Character/isISOControl (int cp))
+      (some (fn [[lo hi]] (<= lo cp hi)) unshown-ranges)))
+
+(defn- code-points
+  "The code points of `s`, so a surrogate pair is one element, never two."
+  [^String s]
+  (loop [i 0 out []]
+    (if (< i (count s))
+      (let [cp (.codePointAt s (int i))] (recur (+ i (Character/charCount cp)) (conj out cp)))
+      out)))
 
 (defn shown-actor
-  "Pure: `actor` as a refusal message may repeat it: control, separator
-   and bidi characters dropped, then cut at max-shown-actor characters."
+  "Pure: `actor` as a refusal message may repeat it: control, separator,
+   bidi and zero-width characters dropped, then cut at max-shown-actor
+   code points, so a surrogate pair is never split."
   [actor]
-  (let [s (apply str (remove unshown? (str actor)))]
-    (subs s 0 (min max-shown-actor (count s)))))
+  (let [cps (take max-shown-actor (remove unshown? (code-points (str actor))))]
+    (apply str (map #(String. (Character/toChars (int %))) cps))))
 
 (defn- selected-reference
   "Ok of `grant`'s credential reference on `target`, nil for a target with
