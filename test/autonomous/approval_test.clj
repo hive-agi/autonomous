@@ -125,15 +125,44 @@
   [f]
   (loop [i 0] (cond (f) true (< i 100) (do (Thread/sleep 10) (recur (inc i))) :else false)))
 
+(defn- type-at!
+  "Type `line` on typist `t` once request `id` is prompted on `out`."
+  [t out id line]
+  (is (eventually #(some #{id} (shown-ids out))) (str "request " id " was prompted"))
+  ((:type! t) line))
+
 (deftest concurrent-calls-are-asked-one-at-a-time-in-order
   (let [t     (typist)
-        asker (typed-asker t)
+        out   (StringWriter.)
+        asker (typed-asker t out "op")
         a     (approval/ask! asker (assoc request :tool "a") 2000)
         b     (approval/ask! asker (assoc request :tool "b") 2000)]
-    ((:type! t) "2 y")
-    ((:type! t) "2 y")
+    (type-at! t out "1" "2 y")
+    (type-at! t out "2" "2 y")
     (is (= :deny (decision a)) "request 1 read the first line, meant for 2")
     (is (= :approve (decision b)) "request 2 is approved by its own line")))
+
+(deftest a-line-typed-before-its-prompt-is-discarded
+  (let [t     (typist)
+        out   (StringWriter.)
+        asker (typed-asker t out "op" 300)]
+    ((:type! t) "1 y")
+    (Thread/sleep 50)
+    (let [a (approval/ask! asker (assoc request :tool "a") 2000)]
+      (is (= :timeout (decision a)) "the pre-typed \"1 y\" did not approve request 1 unseen")
+      (is (re-find #"\(1 line\(s\) typed before this prompt were discarded\)" (str out))))))
+
+(deftest a-late-line-for-an-expired-request-cannot-answer-the-next
+  (let [t     (typist)
+        out   (StringWriter.)
+        asker (typed-asker t out "op" 100)
+        a     (approval/ask! asker (assoc request :tool "a") 2000)]
+    (is (= :timeout (decision a)))
+    ((:type! t) "2 y")
+    (Thread/sleep 50)
+    (let [b (approval/ask! asker (assoc request :tool "b") 2000)]
+      (is (= :timeout (decision b)) "\"2 y\", typed before 2 was shown, is discarded")
+      (is (re-find #"discarded" (str out))))))
 
 (deftest two-askers-on-one-stream-share-its-queue-and-numbers
   (let [t   (typist)
@@ -142,8 +171,8 @@
         rfd (typed-asker t out "bob")
         a   (approval/ask! pay (assoc request :tool "pay") 2000)
         b   (approval/ask! rfd (assoc request :tool "refund") 2000)]
-    ((:type! t) "1 y")
-    ((:type! t) "2 n")
+    (type-at! t out "1" "1 y")
+    (type-at! t out "2" "2 n")
     (is (= :approve (decision a)) "request 1 got the line typed for it")
     (is (= :deny (decision b)) "request 2 got its own line, not 1's")
     (is (= ["1" "2"] (shown-ids out)) "one counter: no two requests share a number")))
@@ -179,13 +208,13 @@
         a     (approval/ask! asker (assoc request :tool "a") 2000)
         b     (approval/ask! asker (assoc request :tool "b") 30)]
     (is (= :timeout (decision b)))
-    ((:type! t) "1 y")
+    (type-at! t out "1" "1 y")
     (is (= :approve (decision a)))
     (Thread/sleep 50)
     (is (= ["1"] (shown-ids out)) "2 expired while 1 was being answered")
     (is (not (re-find #"request 2" (str out))) "nothing is said about a request never shown")
     (let [c (approval/ask! asker (assoc request :tool "c") 2000)]
-      ((:type! t) "3 y")
+      (type-at! t out "3" "3 y")
       (is (= :approve (decision c)) "no reader is left parked on the expired request"))))
 
 (deftest mass-withdrawal-leaves-the-queue-empty
@@ -198,7 +227,7 @@
     (is (= 1 (count (:queue @(:state (:terminal asker))))) "only the prompted head is left")
     (is (= ["1"] (shown-ids out)))
     (is (empty? (re-seq #"request \d+ expired" (str out))) "no expiry is said for unprompted requests")
-    ((:type! t) "1 y")
+    (type-at! t out "1" "1 y")
     (is (= :approve (decision head)))
     (is (eventually #(empty? (:queue @(:state (:terminal asker))))))))
 
@@ -208,8 +237,8 @@
         asker (typed-asker t out "op")
         a     (approval/ask! asker (assoc request :tool "a") 2000)
         b     (approval/ask! asker (assoc request :tool "b") 2000)]
-    ((:type! t) "1 yes")
-    ((:type! t) "nope")
+    (type-at! t out "1" "1 yes")
+    (type-at! t out "2" "nope")
     (is (= [:approve :deny] [(decision a) (decision b)]))
     (is (eventually #(re-find #"(?s)request 1 approved.*request 2 denied, not run" (str out))))))
 

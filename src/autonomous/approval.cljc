@@ -325,12 +325,22 @@
 
 #?(:cljs nil
    :default
+   (defn- discarded-lines!
+     "L1 Boundary: empty the terminal's typed-line queue; answer the line
+      saying how many lines it held, or nothing when it was empty."
+     [{:keys [lines]}]
+     (let [n (.drainTo ^java.util.concurrent.LinkedBlockingQueue lines (java.util.ArrayList.))]
+       (when (pos? n) [(str "(" n " line(s) typed before this prompt were discarded)")]))))
+
+#?(:cljs nil
+   :default
    (defn- answer!
-     "L1 Boundary: prompt request `entry` on `terminal` and deliver its
-      Verdict for the next line, or ::expired when no line comes in its
-      :wait-ms or it is withdrawn first."
+     "L1 Boundary: discard every line typed before this prompt (saying how
+      many), prompt request `entry` on `terminal`, and deliver its Verdict
+      for the next line, or ::expired when no line comes in its :wait-ms or
+      it is withdrawn first."
      [{:keys [out] :as terminal} {:keys [id p approver request wait-ms]}]
-     (apply say! out (prompt-lines id request))
+     (apply say! out (concat (discarded-lines! terminal) (prompt-lines id request)))
      (let [line (await-line terminal p wait-ms)]
        (deliver p (if line (verdict approver id line) ::expired)))))
 
