@@ -279,3 +279,10 @@
       (is (clojure.string/starts-with? (msg "ops (+9 chars)") "runtime is leased by \"ops (+9 chars)\";"))
       (is (clojure.string/starts-with? (msg (apply str (repeat 73 "o")))
                                        (str "runtime is leased by \"" (apply str (repeat 64 "o")) "\" (+9 chars);"))))))
+
+(deftest a-lease-refusal-carries-the-raw-and-the-shown-holder
+  (let [data (get-in (plan-call* (assoc snapshot :lease {:actor "b\u200bc" :until 1000})
+                                 "todo_add" {:text "x"} rw 10)
+                     [:refusal :error :data])]
+    (is (= {:actor "b\u200bc" :until 1000 :shown-actor "b\\u200bc"} data)
+        ":actor is the raw holder, as data; :shown-actor is what to display")))

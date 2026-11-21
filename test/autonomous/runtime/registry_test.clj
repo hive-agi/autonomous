@@ -98,4 +98,6 @@
         msg (get-in a [:error :message])]
     (is (= :leased (get-in a [:error :type])))
     (is (= "lease held by \"agent\\u202e\\u000a1\"" msg) "the holder is escaped and quoted")
-    (is (= "agent\u202e\n1" (get-in a [:error :data :actor])) "the lease data keeps the real actor")))
+    (is (= "agent\u202e\n1" (get-in a [:error :data :actor])) "the lease data keeps the raw actor, as data")
+    (is (= "agent\\u202e\\u000a1" (get-in a [:error :data :shown-actor]))
+        "beside it, :shown-actor is the holder as naming/shown-actor shows it")))

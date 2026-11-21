@@ -300,7 +300,8 @@
     (let [[verdict l] @decided]
       (if (= :granted verdict)
         (answer/ok l)
-        (answer/refusal :leased (str "lease held by " (naming/quoted-actor (:actor l))) l)))))
+        (answer/refusal :leased (str "lease held by " (naming/quoted-actor (:actor l)))
+                        (lease/refusal-data l))))))
 
 (defn release-lease!
   [actor]
