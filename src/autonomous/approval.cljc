@@ -461,18 +461,23 @@
 
 #?(:cljs nil
    :default
-   (defonce ^{:doc "L1 host: *in* as this namespace first loaded, outside any binding."}
-     root-in
-     *in*))
+   (defn root-in
+     "L1 host: the process's own reader of System/in, the root value of *in*,
+      resolved now: never a reader *in* is bound to (an nREPL session's, or
+      the one in force when this namespace loaded)."
+     []
+     #?(:bb      (alter-var-root #'*in* identity)
+        :cljw    (alter-var-root #'*in* identity)
+        :default (.getRawRoot #'*in*))))
 
 #?(:cljs nil
    :default
    (defn- stream-key
      "L1: the Terminal key of an asker: an explicit `stream`, else its
       `read-line` function, else System/in for no `in` or an `in` that is
-      the process's own *in* (root-in, which reads System/in), else `in`."
-     [stream read-line in]
-     (or stream read-line (if (or (nil? in) (identical? in root-in)) System/in in))))
+      the process's own reader of System/in (`root`, see root-in), else `in`."
+     [stream read-line in root]
+     (or stream read-line (if (or (nil? in) (identical? in root)) System/in in))))
 
 #?(:cljs nil
    :default
@@ -496,6 +501,7 @@
       Pass :stream System/in with a custom :read-line over System/in."
      ([] (stdin-asker {}))
      ([{:keys [in read-line stream out approver wait-ms] :or {approver "stdin" wait-ms 60000}}]
-      (let [stream (stream-key stream read-line in)]
-        (->StdinAsker (pump! (terminal-for stream read-line (line-reader (or in *in*)) out))
+      (let [root   (root-in)
+            stream (stream-key stream read-line in root)]
+        (->StdinAsker (pump! (terminal-for stream read-line (line-reader (or in root)) out))
                       stream approver wait-ms)))))

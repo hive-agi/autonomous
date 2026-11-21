@@ -345,8 +345,15 @@
     (is (identical? (:terminal a) (:terminal b)) "one System/in, one terminal")
     (is (identical? System/in (:stream a)))
     (testing "an explicit :in that is the root *in* is keyed on System/in too"
-      (let [c (approval/stdin-asker {:in approval/root-in :out *err*})]
-        (is (identical? (:terminal a) (:terminal c)))))))
+      (let [c (approval/stdin-asker {:in (approval/root-in) :out *err*})]
+        (is (identical? (:terminal a) (:terminal c)))))
+    (testing "the root reader is resolved when the asker is built, never a bound *in*"
+      (let [bound (BufferedReader. (StringReader. ""))]
+        (binding [*in* bound]
+          (is (not (identical? bound (approval/root-in))))
+          (is (identical? (:terminal a) (:terminal (approval/stdin-asker {:in (approval/root-in) :out *err*}))))
+          (is (not (identical? System/in (:stream (approval/stdin-asker {:in bound :out *err*}))))
+              "a bound reader that is not the root is its own stream"))))))
 
 (deftest a-second-asker-with-other-ports-is-refused
   (let [t (typist)]
