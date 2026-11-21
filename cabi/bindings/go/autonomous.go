@@ -7,14 +7,15 @@
 //	name, err := rt.Tool("calc/add",
 //	    `{:description "Add two integers" :input [:map [:a :int] [:b :int]]}`,
 //	    func(args map[string]any) (any, error) { ... })
-//	answer := rt.RPC(`{:op :call :tool "calc_add" :args {:a 2 :b 40} :scopes #{:write}}`)
+//	answer, err := rt.RPC(`{:op :call :tool "calc_add" :args {:a 2 :b 40} :scopes #{:write}}`)
 //
 // The jolt runtime inside the library is single-threaded: Start and every
 // method must run on the OS thread that called Start, and the library calls
 // tool handlers back on that thread. Go moves goroutines between threads,
 // so the goroutine using a Runtime must hold runtime.LockOSThread for good;
 // the simplest way is to lock main's thread in init (see example/README.md).
-// A Runtime refuses calls from any other thread with ErrWrongThread.
+// A call from any other thread is refused with ErrWrongThread and never
+// reaches the library.
 //
 // Build: libautonomous.so in ../../build (bb cabi), or set CGO_LDFLAGS to
 // -L<dir> -Wl,-rpath,<dir>. The executable exports autonomous_host_dispatch
@@ -31,13 +32,26 @@ package autonomous
 
 static long autonomous_go_tid(void) { return (long)syscall(SYS_gettid); }
 
-static int call_i1(void *f, const char *a) { return ((autonomous_set_app_fn)f)(a); }
-static long call_l1(void *f, const char *a) { return ((autonomous_journal_fn)f)(a); }
-static const char *call_s1(void *f, const char *a) { return ((autonomous_rpc_fn)f)(a); }
-static const char *call_s2(void *f, const char *a, const char *b) {
+// Each shim compares the calling thread with the runtime's and calls the
+// library only on a match, in one cgo call; *wrong is set otherwise.
+static int call_i1(long tid, int *wrong, void *f, const char *a) {
+  if (autonomous_go_tid() != tid) { *wrong = 1; return 0; }
+  return ((autonomous_set_app_fn)f)(a);
+}
+static long call_l1(long tid, int *wrong, void *f, const char *a) {
+  if (autonomous_go_tid() != tid) { *wrong = 1; return 0; }
+  return ((autonomous_journal_fn)f)(a);
+}
+static const char *call_s1(long tid, int *wrong, void *f, const char *a) {
+  if (autonomous_go_tid() != tid) { *wrong = 1; return NULL; }
+  return ((autonomous_rpc_fn)f)(a);
+}
+static const char *call_s2(long tid, int *wrong, void *f, const char *a, const char *b) {
+  if (autonomous_go_tid() != tid) { *wrong = 1; return NULL; }
   return ((autonomous_reg_tool_fn)f)(a, b);
 }
-static const char *call_s3(void *f, const char *a, const char *b, const char *c) {
+static const char *call_s3(long tid, int *wrong, void *f, const char *a, const char *b, const char *c) {
+  if (autonomous_go_tid() != tid) { *wrong = 1; return NULL; }
   return ((autonomous_ws_hello_fn)f)(a, b, c);
 }
 */
@@ -56,14 +70,14 @@ import (
 type Handler func(args map[string]any) (any, error)
 
 // ErrWrongThread is returned by a call made off the thread that started
-// the runtime.
+// the runtime; the library is not entered.
 var ErrWrongThread = errors.New("autonomous: called off the runtime's OS thread (hold runtime.LockOSThread)")
 
 // Runtime is the process's one libautonomous runtime.
 type Runtime struct {
-	tid                                   C.long
-	setApp, regTool, unregTool, journal   unsafe.Pointer
-	rpc, wsHello, wsKind, wsReply         unsafe.Pointer
+	tid                                 C.long
+	setApp, regTool, unregTool, journal unsafe.Pointer
+	rpc, wsHello, wsKind, wsReply       unsafe.Pointer
 }
 
 var (
@@ -71,12 +85,12 @@ var (
 	started   *Runtime
 	startErr  error
 
-	// handlers is touched only on the runtime's thread (registration and
-	// the library's dispatch callback), so it needs no lock.
 	handlers = map[string]Handler{}
 )
 
 func cs(s string) *C.char { return C.CString(s) }
+
+func free(p *C.char) { C.free(unsafe.Pointer(p)) }
 
 func text(p *C.char) string {
 	if p == nil {
@@ -87,7 +101,7 @@ func text(p *C.char) string {
 
 func lookup(name string) (unsafe.Pointer, error) {
 	n := cs(name)
-	defer C.free(unsafe.Pointer(n))
+	defer free(n)
 	p := C.jolt_lookup(n)
 	if p == nil {
 		return nil, fmt.Errorf("libautonomous has no export %s", name)
@@ -125,47 +139,50 @@ func Start() (*Runtime, error) {
 	return started, startErr
 }
 
-func (rt *Runtime) here() error {
-	if C.autonomous_go_tid() != rt.tid {
-		return ErrWrongThread
+func (rt *Runtime) s1(f unsafe.Pointer, a string) (string, error) {
+	ca := cs(a)
+	defer free(ca)
+	var wrong C.int
+	out := C.call_s1(rt.tid, &wrong, f, ca)
+	if wrong != 0 {
+		return "", ErrWrongThread
 	}
-	return nil
+	return text(out), nil
 }
 
-func (rt *Runtime) s1(f unsafe.Pointer, a string) (string, error) {
-	if err := rt.here(); err != nil {
-		return "", err
-	}
+func (rt *Runtime) i1(f unsafe.Pointer, a string) (int, error) {
 	ca := cs(a)
-	defer C.free(unsafe.Pointer(ca))
-	return text(C.call_s1(f, ca)), nil
+	defer free(ca)
+	var wrong C.int
+	out := C.call_i1(rt.tid, &wrong, f, ca)
+	if wrong != 0 {
+		return 0, ErrWrongThread
+	}
+	return int(out), nil
 }
 
 // Describe names and describes the app; the description is what an agent
 // reads first.
 func (rt *Runtime) Describe(name, description string) error {
-	if err := rt.here(); err != nil {
-		return err
-	}
 	info, _ := json.Marshal(map[string]string{"name": name, "description": description})
-	ci := cs(string(info))
-	defer C.free(unsafe.Pointer(ci))
-	C.call_i1(rt.setApp, ci)
-	return nil
+	_, err := rt.i1(rt.setApp, string(info))
+	return err
 }
 
 // Tool declares tool id ("calc/add", MCP name calc_add) from an EDN spec
 // with a malli :input (bb tool-spec turns a JSON spec into one) and runs it
 // with h. Answers the MCP name.
 func (rt *Runtime) Tool(id, specEDN string, h Handler) (string, error) {
-	if err := rt.here(); err != nil {
-		return "", err
-	}
-	handlers[id] = h
 	cid, cspec := cs(id), cs(specEDN)
-	defer C.free(unsafe.Pointer(cid))
-	defer C.free(unsafe.Pointer(cspec))
-	out := text(C.call_s2(rt.regTool, cid, cspec))
+	defer free(cid)
+	defer free(cspec)
+	handlers[id] = h
+	var wrong C.int
+	out := text(C.call_s2(rt.tid, &wrong, rt.regTool, cid, cspec))
+	if wrong != 0 {
+		delete(handlers, id)
+		return "", ErrWrongThread
+	}
 	var a struct {
 		Ok string `json:"ok"`
 	}
@@ -180,16 +197,18 @@ func (rt *Runtime) Tool(id, specEDN string, h Handler) (string, error) {
 // map[string]any{"kind": "calc/cleared", "by": "human"}. Answers its
 // sequence number.
 func (rt *Runtime) Journal(entry map[string]any) (int64, error) {
-	if err := rt.here(); err != nil {
-		return 0, err
-	}
 	b, err := json.Marshal(entry)
 	if err != nil {
 		return 0, err
 	}
 	ce := cs(string(b))
-	defer C.free(unsafe.Pointer(ce))
-	return int64(C.call_l1(rt.journal, ce)), nil
+	defer free(ce)
+	var wrong C.int
+	seq := C.call_l1(rt.tid, &wrong, rt.journal, ce)
+	if wrong != 0 {
+		return 0, ErrWrongThread
+	}
+	return int64(seq), nil
 }
 
 // RPC answers one EDN request in process (tests, local tooling) with EDN
@@ -198,14 +217,16 @@ func (rt *Runtime) RPC(requestEDN string) (string, error) { return rt.s1(rt.rpc,
 
 // WsHello is the first frame to send on a new websocket to the bridge.
 func (rt *Runtime) WsHello(token, runtimeID, label string) (string, error) {
-	if err := rt.here(); err != nil {
-		return "", err
-	}
 	a, b, c := cs(token), cs(runtimeID), cs(label)
-	defer C.free(unsafe.Pointer(a))
-	defer C.free(unsafe.Pointer(b))
-	defer C.free(unsafe.Pointer(c))
-	return text(C.call_s3(rt.wsHello, a, b, c)), nil
+	defer free(a)
+	defer free(b)
+	defer free(c)
+	var wrong C.int
+	out := C.call_s3(rt.tid, &wrong, rt.wsHello, a, b, c)
+	if wrong != 0 {
+		return "", ErrWrongThread
+	}
+	return text(out), nil
 }
 
 // WsKind says what a bridge frame asks: "request", "welcome", "refused",
