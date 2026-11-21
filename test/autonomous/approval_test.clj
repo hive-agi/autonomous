@@ -70,8 +70,17 @@
   (let [q (java.util.concurrent.LinkedBlockingQueue.)]
     {:read-line #(.take q) :type! #(.put q %)}))
 
-(defn- typed-asker [{:keys [read-line]}]
-  (approval/stdin-asker {:read-line read-line :out (StringWriter.) :approver "op"}))
+(defn- typed-asker
+  ([t] (typed-asker t (StringWriter.) "op"))
+  ([{:keys [read-line]} out approver]
+   (approval/stdin-asker {:read-line read-line :out out :approver approver})))
+
+(defn- decision [d] (:decision (deref d 1000 ::hung)))
+
+(defn- shown-ids
+  "The request numbers prompted on `out`, in order."
+  [out]
+  (mapv second (re-seq #"(?m)^\[(\d+)\] approve" (str out))))
 
 (deftest concurrent-calls-are-asked-one-at-a-time-in-order
   (let [t     (typist)
@@ -80,20 +89,46 @@
         b     (approval/ask! asker (assoc request :tool "b") 2000)]
     ((:type! t) "2 y")
     ((:type! t) "2 y")
-    (is (= :deny (:decision (deref a 1000 ::hung))) "request 1 read the first line, meant for 2")
-    (is (= :approve (:decision (deref b 1000 ::hung))) "request 2 is approved by its own line")))
+    (is (= :deny (decision a)) "request 1 read the first line, meant for 2")
+    (is (= :approve (decision b)) "request 2 is approved by its own line")))
 
-(deftest a-timed-out-request-is-withdrawn-and-never-takes-a-later-line
+(deftest two-askers-on-one-stream-share-its-queue-and-numbers
+  (let [t   (typist)
+        out (StringWriter.)
+        pay (typed-asker t out "ana")
+        rfd (typed-asker t out "bob")
+        a   (approval/ask! pay (assoc request :tool "pay") 2000)
+        b   (approval/ask! rfd (assoc request :tool "refund") 2000)]
+    ((:type! t) "1 y")
+    ((:type! t) "2 n")
+    (is (= :approve (decision a)) "request 1 got the line typed for it")
+    (is (= :deny (decision b)) "request 2 got its own line, not 1's")
+    (is (= ["1" "2"] (shown-ids out)) "one counter: no two requests share a number")))
+
+(deftest a-timed-out-request-expires-and-a-late-line-answers-nothing
   (let [t     (typist)
-        asker (typed-asker t)
+        out   (StringWriter.)
+        asker (typed-asker t out "op")
         a     (approval/ask! asker (assoc request :tool "a") 50)]
-    (is (= :timeout (:decision (deref a 1000 ::hung))))
-    (let [b (approval/ask! asker (assoc request :tool "b") 2000)
-          c (approval/ask! asker (assoc request :tool "c") 2000)]
-      ((:type! t) "2 n")
+    (is (= :timeout (decision a)))
+    (is (re-find #"request 1 expired" (str out)) "the terminal says so")
+    (let [b (approval/ask! asker (assoc request :tool "b") 2000)]
+      ((:type! t) "1 y")
+      ((:type! t) "2 y")
+      (is (= :approve (decision b)) "the line typed for 1 was spent on 1; 2 got its own")
+      (is (re-find #"request 1 expired; that line answered nothing" (str out))))))
+
+(deftest a-request-withdrawn-before-its-turn-is-never-prompted
+  (let [t     (typist)
+        out   (StringWriter.)
+        asker (typed-asker t out "op")
+        a     (approval/ask! asker (assoc request :tool "a") 2000)
+        b     (approval/ask! asker (assoc request :tool "b") 30)]
+    (is (= :timeout (decision b)))
+    ((:type! t) "1 y")
+    (is (= :approve (decision a)))
+    (Thread/sleep 50)
+    (is (= ["1"] (shown-ids out)) "2 expired while 1 was being answered")
+    (let [c (approval/ask! asker (assoc request :tool "c") 2000)]
       ((:type! t) "3 y")
-      ((:type! t) "3 y")
-      (is (= :timeout (:decision (deref a 10 ::hung))) "a late line never answers request 1")
-      (is (= :deny (:decision (deref b 1000 ::hung)))
-          "the stale reader of 1 ate \"2 n\"; request 2 then read \"3 y\", which is not its yes")
-      (is (= :approve (:decision (deref c 1000 ::hung))) "request 3 is approved by its own line"))))
+      (is (= :approve (decision c)) "no reader is left parked on the expired request"))))

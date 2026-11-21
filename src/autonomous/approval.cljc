@@ -195,45 +195,107 @@
   [id request]
   (str "[" id "] approve " (shown-request request) "? type \"" id " y\" to approve; anything else denies"))
 
+(defn- say!
+  "L1 Boundary: print `line` on writer `out`."
+  [out line]
+  #?(:cljs    (.write out (str line "\n"))
+     :default (binding [*out* out] (println line) (flush))))
+
+(defn- verdict
+  "L1 Promote: the Verdict of `approver` for typed `line` on request `id`."
+  [approver id line]
+  {:decision (if (approves? id line) :approve :deny) :approver approver})
+
+;; A Terminal is one input stream shared by every stdin asker on it: one
+;; request counter, one FIFO of waiting requests and at most one reader.
+
 #?(:cljs nil
    :default
-   (defn- read-verdict
-     "L1 Boundary: prompt request `id` on `out`, read one line, and answer
-      the Verdict of `approver` (see approves?)."
-     [{:keys [read-line! out approver]} id request]
-     (binding [*out* out] (println (prompt-line id request)) (flush))
-     {:decision (if (approves? id (read-line!)) :approve :deny) :approver approver}))
+   (defrecord Terminal [read-line! out state]))
+
+#?(:cljs nil
+   :default
+   (defonce ^:private terminals
+     (atom {})))
+
+#?(:cljs nil
+   :default
+   (defn- terminal-for
+     "L1 Boundary: the process-wide Terminal of input `stream`, made once
+      with `read-line!` and `out`; every asker on the stream shares it."
+     [stream read-line! out]
+     (get (swap! terminals #(if (contains? % stream) %
+                                (assoc % stream (->Terminal read-line! out
+                                                            (atom {:next 0 :queue [] :serving? false})))))
+          stream)))
+
+(defn- enqueued
+  "L1: terminal state `st` with request `entry` queued under the next
+   number, which `entry` carries as :id."
+  [st entry]
+  (let [id (str (inc (:next st)))]
+    (-> st (assoc :next (inc (:next st))) (update :queue conj (assoc entry :id id)))))
+
+(defn- dequeued
+  "L1: terminal state `st` without its first request; :serving? stays true
+   only while requests remain."
+  [st]
+  (let [q (subvec (:queue st) 1)] (assoc st :queue q :serving? (boolean (seq q)))))
+
+#?(:cljs nil
+   :default
+   (defn- serve-one!
+     "L1 Boundary: prompt and read the first queued request; a request that
+      expired while waiting, or while its line was being typed, is told so
+      and gets no Verdict from that line."
+     [{:keys [read-line! out state]}]
+     (let [{:keys [id p approver request]} (first (:queue @state))]
+       (when-not (realized? p)
+         (say! out (prompt-line id request))
+         (let [line (read-line!)]
+           (when-not (deliver p (verdict approver id line))
+             (say! out (str "request " id " expired; that line answered nothing")))))
+       (swap! state dequeued))))
 
 #?(:cljs nil
    :default
    (defn- serve!
-     "L1 Boundary: once request `prev` is done, deliver `p` the Verdict for
-      request `id` unless it was withdrawn first; then mark `done`."
-     [{:keys [withdrawn] :as asker} [prev done] p id request]
-     (try
-       (deref prev)
-       (when-not (contains? @withdrawn p) (deliver p (read-verdict asker id request)))
-       (finally (swap! withdrawn disj p) (deliver done true)))))
+     "L1 Boundary: the terminal's one reader: serve queued requests in order
+      until none is left."
+     [{:keys [state] :as terminal}]
+     (try (loop [] (when (:serving? (serve-one! terminal)) (recur)))
+          (catch Throwable _ (swap! state assoc :queue [] :serving? false)))))
 
 #?(:cljs nil
    :default
-   (defn- enqueue!
-     "L1 Boundary: [the previous request's done promise, this one's], so
-      requests are served one at a time in the order they were asked."
-     [tail]
-     (let [done (promise)]
-       [(first (swap-vals! tail (constantly done))) done])))
+   (defn- queued-id
+     "L1: the number of the request answering to promise `p` on `terminal`."
+     [{:keys [state]} p]
+     (some #(when (identical? p (:p %)) (:id %)) (:queue @state))))
 
 #?(:cljs nil
    :default
-   (defrecord StdinAsker [read-line! out approver counter tail withdrawn]
+   (defn- start-reader!
+     "L1 Boundary: queue `entry` on `terminal` and start its reader unless
+      one is running. Answers the request's number."
+     [{:keys [state] :as terminal} entry]
+     (let [[before after] (swap-vals! state #(assoc (enqueued % entry) :serving? true))]
+       (when-not (:serving? before) (future (serve! terminal)))
+       (:id (peek (:queue after))))))
+
+#?(:cljs nil
+   :default
+   (defrecord StdinAsker [terminal approver]
      Asker
-     (-ask! [this request]
-       (let [p (promise) turn (enqueue! tail) id (str (swap! counter inc))]
-         (future (serve! this turn p id request))
+     (-ask! [_ request]
+       (let [p (promise)]
+         (start-reader! terminal {:p p :approver approver :request request})
          p))
      Withdraw
-     (-withdraw! [_ p] (swap! withdrawn conj p))))
+     (-withdraw! [_ p]
+       (let [id (queued-id terminal p)]
+         (when (and id (not (realized? p)) (deliver p ::withdrawn))
+           (say! (:out terminal) (str "request " id " expired")))))))
 
 #?(:cljs nil
    :default
@@ -245,13 +307,17 @@
 #?(:cljs nil
    :default
    (defn stdin-asker
-     "L1 adapter (clj): asks on a terminal, one request at a time in call
-      order, each numbered; only \"<n> y\" approves request n. A timed-out
-      request is withdrawn: never prompted once withdrawn, never answered.
-      Options :in (a BufferedReader, default *in*) or :read-line (a
-      zero-argument function), :out (default *err*), :approver (default
-      \"stdin\")."
+     "L1 adapter (clj): asks on a terminal. Every stdin asker on one input
+      stream shares one process-wide queue, counter and reader: requests are
+      prompted one at a time in call order, each numbered, and only
+      \"<n> y\" approves request n. A timed-out request is withdrawn and the
+      terminal says it expired; a line typed for it answers nothing.
+      Options :in (a BufferedReader, default *in*), or :read-line (a
+      zero-argument function) with :stream (its identity, default the
+      function), :out (default *err*), :approver (default \"stdin\")."
      ([] (stdin-asker {}))
-     ([{:keys [in read-line out approver] :or {approver "stdin"}}]
-      (->StdinAsker (or read-line (line-reader (or in *in*))) (or out *err*) approver
-                    (atom 0) (atom (resolved true)) (atom #{})))))
+     ([{:keys [in read-line stream out approver] :or {approver "stdin"}}]
+      (let [in (or in *in*)]
+        (->StdinAsker (terminal-for (or stream read-line in) (or read-line (line-reader in))
+                                    (or out *err*))
+                      approver)))))
