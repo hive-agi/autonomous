@@ -51,22 +51,32 @@
     :rf.error/coeffect-exception
     :rf.error/flow-eval-exception})
 
-(defn- applied-state
-  "Pure: :not-applied when every error `records` reports is a pre-commit
-   failure of the dispatched event `event-id` in frame `target` and that
-   frame's app-db is the same value `before` and `after`; else
-   :maybe-applied. The :errors stream carries every frame's errors and the
-   dispatch drains what its effects dispatch, so nothing weaker proves the
-   dispatch changed nothing."
-  [records event-id target before after]
-  (if (and (identical? before after)
-           (every? (fn [{:keys [error frame] :as record}]
-                     (and (contains? pre-commit-errors error)
-                          (= event-id (:event-id record))
-                          (= target frame)))
-                   records))
-    :not-applied
-    :maybe-applied))
+(defn- dispatch-state
+  "Pure: :app-db-unchanged when the failure belongs to the root dispatch
+   alone and frame `target`'s app-db is the same value `before` and
+   `after`; else :maybe-applied. The root dispatch alone means `processed`
+   (the :events records of the call) is exactly one event, the dispatched
+   `event-id` in `target`, which did not settle :ok, and every error in
+   `records` is a pre-commit failure of that event in that frame. A
+   re-dispatch of the same event id by an effect is a second processed
+   event, so it is :maybe-applied: that first event's effects ran. Even
+   :app-db-unchanged proves only the target frame's app-db; an interceptor
+   or coeffect may still have acted, so it never means safe to retry."
+  [records processed event-id target before after]
+  (let [[root & more] processed]
+    (if (and (identical? before after)
+             (some? root)
+             (empty? more)
+             (= event-id (:event-id root))
+             (= target (:frame root))
+             (not= :ok (:outcome root))
+             (every? (fn [{:keys [error frame] :as record}]
+                       (and (contains? pre-commit-errors error)
+                            (= event-id (:event-id record))
+                            (= target frame)))
+                     records))
+      :app-db-unchanged
+      :maybe-applied)))
 
 (def ^:private exception-classes
   "Fixed names by exception constructor, most specific first. A handler
@@ -81,15 +91,15 @@
 
 (defn- exception-class
   "Pure: the fixed class name of exception `e` (nil when there is none),
-   \"a non-Error value\" for a thrown value no constructor matches."
+   \"an unrecognised exception\" for a thrown value no constructor matches."
   [e]
   (when (some? e)
     (or (some (fn [[ctor nm]] (when (instance? ctor e) nm)) exception-classes)
-        "a non-Error value")))
+        "an unrecognised exception")))
 
 (def ^:private state-messages
-  {:not-applied   "app-db was not changed"
-   :maybe-applied "the dispatch may have changed app-db"})
+  {:app-db-unchanged "the target frame's app-db is unchanged; effects may have run"
+   :maybe-applied    "the dispatch may have changed app-db"})
 
 (defn- handler-error
   "Pure: the :re-frame/handler-error refusal for re-frame2 error `record`.
@@ -110,21 +120,27 @@
   "dispatch-sync `event` (in `frame` when given) and throw the first error
    re-frame2 reported while it ran. re-frame2 does not throw from a failing
    handler; it emits on the :errors listener stream, so this listens there
-   for the length of the call. The stream carries every frame's errors and
-   the call drains the events its effects dispatch, so the refusal says
-   whether app-db may already have changed (see applied-state)."
+   for the length of the call. Both that stream and :events carry every
+   frame and the whole cascade the call drains, so it also listens on
+   :events, to tell the root dispatch from a re-dispatch of the same
+   event, and the refusal's :state says what is known (see
+   dispatch-state)."
   [event frame]
-  (let [id     (keyword "autonomous.re-frame2" (str "dispatch-" (random-uuid)))
-        errors (atom [])
-        target (or frame (try (rf/current-frame-id) (catch :default _ nil)))
-        before (when target (rf/app-db-value target))]
+  (let [id        (keyword "autonomous.re-frame2" (str "dispatch-" (random-uuid)))
+        errors    (atom [])
+        processed (atom [])
+        target    (or frame (try (rf/current-frame-id) (catch :default _ nil)))
+        before    (when target (rf/app-db-value target))]
     (rf/register-listener! :errors id #(swap! errors conj %))
+    (rf/register-listener! :events id #(swap! processed conj %))
     (try
       (if frame (rf/dispatch-sync event {:frame frame}) (rf/dispatch-sync event))
-      (finally (rf/unregister-listener! :errors id)))
+      (finally
+        (rf/unregister-listener! :errors id)
+        (rf/unregister-listener! :events id)))
     (when-let [record (first @errors)]
-      (throw (handler-error record (applied-state @errors (first event) target before
-                                                  (when target (rf/app-db-value target))))))))
+      (throw (handler-error record (dispatch-state @errors @processed (first event) target before
+                                                   (when target (rf/app-db-value target))))))))
 
 (def host
   "The kernel Host for re-frame2."

@@ -14,7 +14,12 @@
 (use-fixtures :each (ts/make-reset-runtime-fixture {:adapter plain-atom/adapter
                                                     :ambient-frame nil}))
 
+(def ^:private charges
+  "An effect outside every frame's app-db: what :rf2/charge has done."
+  (atom []))
+
 (defn- register-handlers! []
+  (reset! charges [])
   (rf/reg-event :rf2/add (fn [{:keys [db]} [_ text]] {:db (update db :items (fnil conj []) text)}))
   (rf/reg-event :rf2/boom (fn [_ _] (throw (ex-info "boom" {}))))
   (rf/reg-event :rf2/leak (fn [_ _] (throw (js/Error. "token=s3cr3t-leak from https://remote.example"))))
@@ -23,6 +28,12 @@
   (rf/reg-fx :rf2/explode (fn [_ _] (throw (ex-info "fx says s3cr3t" {}))))
   (rf/reg-event :rf2/commit-then-fx-throw
                 (fn [{:keys [db]} [_ text]] {:db (assoc db :committed text) :fx [[:rf2/explode true]]}))
+  (rf/reg-fx :rf2/charge (fn [_ amount] (swap! charges conj amount)))
+  (rf/reg-event :rf2/pay
+                (fn [_ [_ text]]
+                  (if (= "again" text)
+                    (throw (ex-info "declined s3cr3t" {}))
+                    {:fx [[:rf2/charge text] [:dispatch [:rf2/pay "again"]]]})))
   (rf/reg-event :rf2/later (fn [{:keys [db]} [_ text]] {:db (assoc db :later text)}))
   (rf/reg-fx :rf2/destroy-frame (fn [_ frame] (rf/destroy-frame! frame)))
   (rf/reg-event :rf2/self-destroy (fn [_ [_ frame]] {:fx [[:rf2/destroy-frame frame]]}))
@@ -122,14 +133,16 @@
                                     :input [:map [:text {:optional true} :string]]
                                     :args->event (fn [{:keys [text]}] [event-id (or text "x")])}))
 
-(deftest a-handler-that-throws-before-commit-is-refused-as-not-applied
+(def ^:private secret #"s3cr3t|remote\.example|token=|declined|boom")
+
+(deftest a-handler-that-throws-before-commit-is-refused-as-app-db-unchanged
   (in-runtime
    (fn []
      (tool! :rf2/boom :a/boom :app/a)
      (let [{:keys [type message data]} (:error (call "a_boom" {}))]
        (is (= :re-frame/handler-error type))
-       (is (= "not-applied" (name (:state data))))
-       (is (re-find #"app-db was not changed" message))
+       (is (= "app-db-unchanged" (name (:state data))))
+       (is (re-find #"the target frame's app-db is unchanged; effects may have run" message))
        (is (nil? (:committed (rf/app-db-value :app/a))))))))
 
 (deftest a-cascade-that-commits-and-then-errors-is-refused-as-maybe-applied
@@ -144,30 +157,51 @@
          (is (= "kept" (:committed (rf/app-db-value :app/a))) "the commit stood")))
      (testing "the event commits, then its own fx handler throws"
        (tool! :rf2/commit-then-fx-throw :b/fx :app/b)
-       (let [{:keys [type message data]} (:error (call "b_fx" {:text "kept"}))]
+       (let [answer (call "b_fx" {:text "kept"})
+             {:keys [type message data]} (:error answer)]
          (is (= :re-frame/handler-error type))
          (is (= "maybe-applied" (name (:state data))))
          (is (re-find #"may have changed app-db" message))
-         (is (not (re-find #"s3cr3t" message)))
+         (is (not (re-find secret (pr-str answer))) (pr-str answer))
          (is (= "kept" (:committed (rf/app-db-value :app/b)))))))))
+
+(deftest an-effect-that-re-dispatches-the-same-event-is-refused-as-maybe-applied
+  (in-runtime
+   (fn []
+     (testing "no :db change, an effect outside app-db runs, then the same event id throws"
+       (tool! :rf2/pay :a/pay :app/a)
+       (let [before (rf/app-db-value :app/a)
+             answer (call "a_pay" {:text "10.00"})
+             {:keys [type message data]} (:error answer)]
+         (is (= :re-frame/handler-error type))
+         (is (= :rf2/pay (:event-id data)) "the error names the dispatched event id")
+         (is (identical? before (rf/app-db-value :app/a)) "the target frame's app-db did not change")
+         (is (= ["10.00"] @charges) "and yet the charge ran")
+         (is (= "maybe-applied" (name (:state data)))
+             "the error belongs to the re-dispatch, not the root dispatch")
+         (is (re-find #"may have changed app-db" message))
+         (is (not (re-find secret (pr-str answer))) (pr-str answer)))))))
 
 (deftest a-refusal-carries-the-exception-class-never-its-message
   (in-runtime
    (fn []
      (tool! :rf2/leak :a/leak :app/a)
      (tool! :rf2/boom :a/boom :app/a)
-     (let [leak (:error (call "a_leak" {}))
-           boom (:error (call "a_boom" {}))]
+     (let [leak-answer (call "a_leak" {})
+           boom-answer (call "a_boom" {})
+           leak        (:error leak-answer)
+           boom        (:error boom-answer)]
        (is (= :re-frame/handler-error (:type leak)))
        (is (= (str "re-frame2 reported :rf.error/handler-exception for :rf2/leak (Error);"
-                   " app-db was not changed")
+                   " the target frame's app-db is unchanged; effects may have run")
               (:message leak))
            "fixed text and the class, never the handler's own message")
-       (is (not (re-find #"s3cr3t|remote\.example|token=" (pr-str (:data leak)))))
+       (is (not (re-find #"s3cr3t|remote\.example|token=" (pr-str leak-answer))) (pr-str leak-answer))
        (is (= "Error" (:exception-class (:data leak))))
        (is (= (str "re-frame2 reported :rf.error/handler-exception for :rf2/boom (ExceptionInfo);"
-                   " app-db was not changed")
+                   " the target frame's app-db is unchanged; effects may have run")
               (:message boom)))
+       (is (not (re-find #"\"boom\"" (pr-str boom-answer))) (pr-str boom-answer))
        (is (= "ExceptionInfo" (:exception-class (:data boom))))))))
 
 (deftest a-frame-call-inside-another-frame-scope-targets-its-own-frame
