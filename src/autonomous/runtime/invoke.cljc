@@ -72,21 +72,44 @@
   [a]
   (if (answer/ok? a) (answer/ok (wire/->wire (:ok a))) a))
 
-(defn- settle-later!
-  "Park thenable `x`; its value, through `project` (raw -> Answer), becomes
-   the parked answer and a journal entry (:autonomous/settled), so the
-   ledger knows how an async call ended. The entry follows the app's
-   CallDetail as it is when the call settles."
+(defn- completed
+  "L2 Pipeline: the Answer of a settled (non-thenable) value `x`: an
+   Answer the invoke-kind method marks complete keeps its variant, Ok
+   through `project`; any other value is a tool payload for `project`.
+   Wire-normalized either way."
   [x project]
+  (if (invocation-answer? x)
+    (normalize (answer/bind x project))
+    (normalize (project x))))
+
+(defn- guarded
+  "L2 Pipeline: `finish` (Answer -> Answer) that never throws: when it
+   does, a refusal falls back to itself without :data (the value finish
+   could not make safe), any other Answer to itself."
+  [finish]
+  (fn [a]
+    (try (finish a)
+         (catch #?(:clj Throwable :cljs :default) _
+           (if (answer/refused? a) (update a :error dissoc :data) a)))))
+
+(defn- settle-later!
+  "Park thenable `x`; what it resolves to, `completed` through `project`
+   (so a marked Answer keeps its variant, as `settle` keeps it), then
+   `finish` (Answer -> Answer, already guarded), becomes the parked answer
+   and a journal entry (:autonomous/settled), so the ledger knows how an
+   async call ended. A failure goes through `finish` too. The entry
+   follows the app's CallDetail as it is when the call settles."
+  [x project finish]
   (let [id      (registry/park!)
         settle! (fn [a]
-                  (registry/settle! id a)
-                  (registry/record! (journal/settled-entry id a (:call-detail (registry/snapshot)))))]
+                  (let [a (finish a)]
+                    (registry/settle! id a)
+                    (registry/record! (journal/settled-entry id a (:call-detail (registry/snapshot))))))]
     #?(:cljs    (-> ^js x
-                    (.then (fn [v] (settle! (normalize (project v)))))
+                    (.then (fn [v] (settle! (completed v project))))
                     (.catch (fn [e] (settle! (answer/from-exception e)))))
        :default (future
-                  (settle! (try (normalize (project (deref x)))
+                  (settle! (try (completed (deref x) project)
                                 (catch Throwable t
                                   (answer/from-exception (unwrap-deref-failure t)))))))
     (answer/pending id)))
@@ -94,24 +117,36 @@
 (defn settle
   "L2 Pipeline: a plain return becomes Ok, a thenable becomes Pending,
    and an Answer the invoke-kind method marks complete
-   (invocation-answer?) keeps its variant. Tool values are opaque, so an
-   :ok key in one is not unwrapped. `project` (raw -> Answer, default
-   answer/ok) maps every Ok value, direct or settled later, before wire
-   normalization."
+   (invocation-answer?) keeps its variant, returned directly or as what a
+   thenable resolves to. Tool values are opaque, so an :ok key in one is
+   not unwrapped. `project` (raw -> Answer, default answer/ok) maps every
+   Ok value, direct or settled later, before wire normalization.
+   `finish` (Answer -> Answer, default identity) maps the final Answer,
+   direct or settled later, refusals included; if it throws, a refusal
+   is kept without its :data, so a call always settles."
   ([x] (settle x answer/ok))
-  ([x project]
-   (cond
-     (invocation-answer? x) (normalize (answer/bind x project))
-     (thenable? x)          (settle-later! x project)
-     :else                  (normalize (project x)))))
+  ([x project] (settle x project identity))
+  ([x project finish]
+   (let [finish (guarded finish)]
+     (if (thenable? x)
+       (settle-later! x project finish)
+       (finish (completed x project))))))
 
 (defn- terminal
   "L2 Pipeline: the chain's terminal over context {:tool :args :grant}:
    use! wrappers around invoke-kind, settled through the tool's output
-   projection (autonomous.decorator/project-output)."
+   projection (autonomous.decorator/project-output). What the invocation
+   throws becomes its refusal here, so the tool's refusal projection
+   (autonomous.decorator/project-refusal) sees it as it sees a refusal
+   answered or settled later."
   [{:keys [tool args grant] :as ctx}]
-  (settle ((chain/handler ctx invoke-kind) tool args grant)
-          (partial decorator/project-output tool)))
+  (let [finish (partial decorator/project-refusal tool)]
+    (try
+      (settle ((chain/handler ctx invoke-kind) tool args grant)
+              (partial decorator/project-output tool)
+              finish)
+      (catch #?(:clj Throwable :cljs :default) e
+        ((guarded finish) (answer/from-exception e))))))
 
 (defn- run-invoke
   "L2 Pipeline: the Answer of `plan` run through call chain `links`.
