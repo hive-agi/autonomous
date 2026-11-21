@@ -139,13 +139,14 @@
   (boolean (re-matches #"([A-Za-z_*+!?<>-][A-Za-z0-9_*+!?<>.-]*/)?[A-Za-z_*+!?<>-][A-Za-z0-9_*+!?<>.-]*" s)))
 
 (defn shown-key
-  "L1: one path element as a human is shown it: a plain keyword or symbol
-   as printed; any other as (keyword \"...\") or (symbol \"...\") with
+  "L1: one path element as a human is shown it: a plain keyword as
+   printed, a plain symbol quoted ('amount, so it never reads as a bare
+   name beside :amount); any other as (keyword \"...\") or (symbol \"...\") with
    every character but [A-Za-z0-9_.-] escaped; any other key as shown-value."
   [k]
   (let [text (cond (keyword? k) (subs (str k) 1) (symbol? k) (str k))]
     (cond (nil? text)        (shown-value k)
-          (plain-name? text) (pr-str k)
+          (plain-name? text) (str (when (symbol? k) "'") (pr-str k))
           :else              (str "(" (if (keyword? k) "keyword" "symbol") " \"" (strict-text text) "\")"))))
 
 (defn- arg-line
@@ -348,15 +349,20 @@
    :default
    (defn- pump!
      "L1 Boundary: once per terminal, a daemon thread moving every line read
-      into the terminal's `lines` queue, so no request waits on a read. It
-      reads until end of input, for the life of the process; at end of
-      input it marks the terminal :eof (every request still waiting, and
-      every later one, is then denied) and lets the stream's terminal go."
-     [{:keys [read-line! lines pumping state]} stream]
+      into the terminal's `lines` queue, so no request waits on a read.
+      Started when the asker is built, so a line already buffered is read
+      into the queue, and discarded by the next prompt, rather than read
+      after that prompt. It reads until end of input, for the life of the
+      process; at end of input it marks the terminal :eof: every request
+      still waiting, and every later one on the stream, is then denied at
+      once. The terminal stays the stream's after end of input, so an asker
+      built later on the stream shares it (and is denied) instead of
+      starting a second reader. Answers `terminal`."
+     [{:keys [read-line! lines pumping state] :as terminal}]
      (when (compare-and-set! pumping false true)
        (daemon! #(do (loop [] (when-let [l (read-line!)] (.put lines l) (recur)))
-                     (swap! state assoc :eof? true)
-                     (swap! terminals dissoc stream))))))
+                     (swap! state assoc :eof? true))))
+     terminal))
 
 #?(:cljs nil
    :default
@@ -419,8 +425,7 @@
    (defn- start-server!
      "L1 Boundary: queue `entry` on `terminal` and start its server on a
       daemon thread unless one is running."
-     [{:keys [state] :as terminal} stream entry]
-     (pump! terminal stream)
+     [{:keys [state] :as terminal} entry]
      (let [[before _] (swap-vals! state #(assoc (enqueued % entry) :serving? true))]
        (when-not (:serving? before) (daemon! #(serve! terminal))))))
 
@@ -442,7 +447,7 @@
      Asker
      (-ask! [_ request]
        (let [p (promise)]
-         (start-server! terminal stream {:p p :approver approver :request request :wait-ms wait-ms})
+         (start-server! terminal {:p p :approver approver :request request :wait-ms wait-ms})
          p))
      Withdraw
      (-withdraw! [_ answer]
@@ -457,18 +462,23 @@
 
 #?(:cljs nil
    :default
-   (defonce ^{:doc "L1 host: *in* as this namespace first loaded, outside any binding."}
-     root-in
-     *in*))
+   (defn root-in
+     "L1 host: the process's own reader of System/in, the root value of *in*,
+      resolved now: never a reader *in* is bound to (an nREPL session's, or
+      the one in force when this namespace loaded)."
+     []
+     #?(:bb      (alter-var-root #'*in* identity)
+        :cljw    (alter-var-root #'*in* identity)
+        :default (.getRawRoot #'*in*))))
 
 #?(:cljs nil
    :default
    (defn- stream-key
      "L1: the Terminal key of an asker: an explicit `stream`, else its
       `read-line` function, else System/in for no `in` or an `in` that is
-      the process's own *in* (root-in, which reads System/in), else `in`."
-     [stream read-line in]
-     (or stream read-line (if (or (nil? in) (identical? in root-in)) System/in in))))
+      the process's own reader of System/in (`root`, see root-in), else `in`."
+     [stream read-line in root]
+     (or stream read-line (if (or (nil? in) (identical? in root)) System/in in))))
 
 #?(:cljs nil
    :default
@@ -492,6 +502,7 @@
       Pass :stream System/in with a custom :read-line over System/in."
      ([] (stdin-asker {}))
      ([{:keys [in read-line stream out approver wait-ms] :or {approver "stdin" wait-ms 60000}}]
-      (let [stream (stream-key stream read-line in)]
-        (->StdinAsker (terminal-for stream read-line (line-reader (or in *in*)) out)
+      (let [root   (root-in)
+            stream (stream-key stream read-line in root)]
+        (->StdinAsker (pump! (terminal-for stream read-line (line-reader (or in root)) out))
                       stream approver wait-ms)))))
