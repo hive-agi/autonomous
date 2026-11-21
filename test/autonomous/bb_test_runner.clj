@@ -34,6 +34,7 @@
     autonomous.runtime.intercept-test
     autonomous.surface-transform-test
     autonomous.re-frame.model-trifecta-test
+    autonomous.re-frame.model-frame-test
     autonomous.openapi-test
     autonomous.openapi-derive-test
     autonomous.openapi-surface-test

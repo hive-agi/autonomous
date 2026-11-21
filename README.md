@@ -193,9 +193,12 @@ clojure -M:test unit                                     # JVM suite
 bb test                                                  # babashka suite
 bb e2e                                                   # live swarm story from a bb bridge
 bb cabi && bb cabi-rust && bb cabi-e2e                   # libautonomous, C smoke, Rust app live (needs jolt)
-npm install
-clojure -M:cljs -m shadow.cljs.devtools.cli compile test && node target/cljs-test/test.js
+bb test-cljs                                             # ClojureScript suite on re-frame 1 (node)
+bb test-rf2                                              # autonomous.re-frame2 against real re-frame2 (node)
 ```
+
+`bb test-cljs` and `bb test-rf2` are the ClojureScript gate; both run
+`npm ci` first when `node_modules` is absent.
 
 The `:integration` suite (`clojure -M:test integration`) needs live runtimes:
 compile and watch the `:e2e` build, start two `node target/e2e/main.js`, then

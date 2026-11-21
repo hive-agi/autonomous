@@ -54,3 +54,9 @@
    observer can tell an agent's dispatch from the app's own."
   [event grant]
   (vary-meta event assoc :autonomous/actor (:actor grant)))
+
+(defn frame-problem
+  "nil when `frame` is absent or a frame-id keyword, else why it is not."
+  [frame]
+  (when-not (or (nil? frame) (keyword? frame))
+    (str "a re-frame2 :frame is a frame-id keyword, got " (pr-str frame))))
