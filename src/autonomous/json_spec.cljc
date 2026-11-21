@@ -81,20 +81,47 @@
   ([id message data]
    (answer/refusal :invalid-tool (str "tool " (or id "(no id)") " " message) data)))
 
+(def property-keys
+  "The malli property keys a JSON spec may use: plain data malli reads as
+   data. Any other key (:decode/*, :encode/*, :gen/*, :error/fn, :registry,
+   :default-fn, ...) may carry code malli hands to sci, so it is refused.
+   Keys in the json-schema namespace are advertised data and allowed."
+  #{:optional :min :max :title :description :closed :default :error/message :dispatch})
+
+(defn- allowed-property?
+  "L1 Promote: true when property `k` = `v` is plain data a JSON spec may
+   carry: a key of property-keys or the json-schema namespace, holding no
+   code. :dispatch is a keyword only, :error/message a string only."
+  [[k v]]
+  (and (keyword? k)
+       (or (contains? property-keys k) (= "json-schema" (namespace k)))
+       (case k
+         :dispatch      (keyword? v)
+         :error/message (string? v)
+         (not (some seq? (tree-seq coll? seq v))))))
+
+(defn- bad-properties
+  "L1 Promote: [key value] of the first property in `props` a JSON spec
+   may not carry, or nil."
+  [props]
+  (first (remove allowed-property? props)))
+
 (defn- code-in
-  "L1 Promote: the first piece of `form` that is code rather than a schema:
-   a :fn schema ([:fn ...] or a bare :fn where a schema stands), or a list
-   (EDN's form for a call, which malli may evaluate); nil when there is
-   none. :fn as a value, e.g. inside [:enum ...], is data, not code."
+  "L1 Promote: the first piece of `form` that is code rather than a schema,
+   or nil. Fails closed: a :fn schema, a list (EDN's form for a call), and
+   any property outside property-keys (a code-bearing one like :dispatch
+   with a string, :decode/string) all count, the property as {key value}.
+   :enum and := children are values, not schemas."
   [form]
-  (cond
-    (= :fn form)                                 :fn
-    (seq? form)                                  form
-    (and (vector? form) (= :fn (first form)))    form
-    (and (vector? form) (#{:enum :=} (first form))) nil
-    (map? form)                                  (some code-in (vals form))
-    (coll? form)                                 (some code-in form)
-    :else                                        nil))
+  (let [props (fn [m] (when-let [[k v] (bad-properties m)] {k v}))]
+    (cond
+      (= :fn form)                                    :fn
+      (seq? form)                                     form
+      (map? form)                                     (props form)
+      (and (vector? form) (= :fn (first form)))       form
+      (and (vector? form) (#{:enum :=} (first form))) (when (map? (second form)) (props (second form)))
+      (coll? form)                                    (some code-in form)
+      :else                                           nil)))
 
 (defn- edn-schema
   "L1 Promote: Ok malli form read from EDN text `s`, or a refusal; blank
@@ -111,7 +138,8 @@
         #?(:clj (instance? Exception form) :cljs (instance? js/Error form))
         (invalid id (str field " is not readable EDN") {:cause (ex-message form)})
         code
-        (invalid id (str field " carries code (" (pr-str code) "); a JSON spec may not compile functions")
+        (invalid id (str field " carries code (" (pr-str code) "); a JSON spec may use only plain-data properties "
+                         (pr-str (sort property-keys)) " and :json-schema/*, and no functions")
                  {:code (pr-str code)})
         :else
         (answer/ok form)))))

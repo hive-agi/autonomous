@@ -171,6 +171,32 @@
     (testing "keywords that merely look like code stay schemas"
       (is (answer/ok? (js/->tool-spec (assoc spec "input" "[:map [:f :keyword] [:g [:enum :fn :x]]]")))))))
 
+(deftest only-plain-data-properties-pass-the-code-guard
+  (let [refused (fn [input] (get-in (js/->tool-spec {"id" "a" "description" "d" "input" input}) [:error :data :code]))]
+    (testing "the review's probes: code in a string under a code-bearing key"
+      (is (= "{:dispatch \"(fn [x] (System/exit 0))\"}"
+             (refused "[:map [:a [:multi {:dispatch \"(fn [x] (System/exit 0))\"} [:k :int]]]]")))
+      (is (= "#:decode{:string \"(fn [x] x)\"}"
+             (refused "[:map [:a [:string {:decode/string \"(fn [x] x)\"}]]]"))))
+    (testing "every other key outside the allowlist fails closed"
+      (doseq [input ["[:map [:a [:string {:encode/json \"(fn [x] x)\"}]]]"
+                     "[:map [:a [:string {:gen/fmap \"(fn [x] x)\"}]]]"
+                     "[:map [:a {:error/fn \"(fn [_ _] 1)\"} :int]]"
+                     "[:map [:a [:int {:default-fn \"(fn [] 1)\"}]]]"
+                     "[:map {:registry {:x [:int]}} [:a :x]]"
+                     "[:map [:a [:int {:made-up 1}]]]"
+                     "[:map [:a [:int {:error/message (fn [_] 1)}]]]"
+                     "[:map [:a [:int {:json-schema/example (System/exit 0)}]]]"
+                     "[:map [:e [:enum {:decode/string \"(fn [x] x)\"} :a :b]]]"]]
+        (is (some? (refused input)) input))))
+  (testing "plain data stays accepted"
+    (doseq [input ["[:map [:a {:optional true :description \"d\" :json-schema/example 3} [:int {:min 1 :max 9}]]]"
+                   "[:map [:s [:string {:min 1 :error/message \"too short\"}]]]"
+                   "[:map {:closed true :title \"T\"} [:n [:int {:default 3}]]]"
+                   "[:map [:t [:multi {:dispatch :type} [:x [:map [:type [:= :x]]]] [:y [:map [:type [:= :y]]]]]]]"
+                   "[:map [:e [:enum {:title \"E\"} \"(fn [] 1)\" :fn]]]"]]
+      (is (answer/ok? (js/->tool-spec {"id" "a" "description" "d" "input" input})) input))))
+
 (defn- temp-json
   "A temp file holding JSON text `s`."
   [s]
