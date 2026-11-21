@@ -45,16 +45,28 @@
    [:fn {:error/message "supply :source-kind with :derive, :kind with :codec, or both"}
     paired-ports?]])
 
+(def guard-marker
+  "The :data key every refusal the SPI guard makes for a broken port
+   carries, set to true, so a caller tells the guard's refusal from the
+   port's own refusal of the same type."
+  :autonomous.spi/guard)
+
+(defn guard-refusal?
+  "True when Answer `a` is a refusal the SPI guard made for a broken port."
+  [a]
+  (true? (get-in a [:error :data guard-marker])))
+
 (defn- guard-answer
-  "L3 boundary: diagnose a broken port without letting it throw."
+  "L3 boundary: diagnose a broken port without letting it throw. The
+   refusal carries `guard-marker`."
   [type message schema f]
   (try
     (let [a (f)]
       (if (and (m/validate schema a) (= 1 (count (select-keys a [:ok :error :pending]))))
         a
-        (answer/refusal type message)))
+        (answer/refusal type message {guard-marker true})))
     (catch #?(:clj Throwable :cljs :default) e
-      (answer/refusal type message {:cause (ex-message e)}))))
+      (answer/refusal type message {guard-marker true :cause (ex-message e)}))))
 
 (defn encode-call
   "L3 Codec: encode a call, containing exceptions and non-Answers."
