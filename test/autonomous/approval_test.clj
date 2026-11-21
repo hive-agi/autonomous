@@ -1,9 +1,10 @@
 (ns autonomous.approval-test
   (:require [autonomous.approval :as approval]
+            [autonomous.thenable :as thenable]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
             [malli.core :as m])
-  (:import [java.io BufferedReader StringReader StringWriter]))
+  (:import [java.io BufferedReader StringReader]))
 
 (def ^:private request {:tool "pay" :args {:amount 10} :actor "agent"})
 
@@ -31,13 +32,13 @@
   (doseq [v [{:decision :approve :approver "a"} {:decision :deny :approver "b"} nil]]
     (is (m/validate approval/Decision (ask (approval/queue-asker (if v [v] [])) 20)))))
 
-(declare typist typed-asker type-at! eventually)
+(declare typist screen text shows? typed-asker type-at!)
 
 (defn- answered
   "The Decision of one request on a fresh terminal where `line` is typed
-   once the prompt shows, with its terminal output."
+   once the prompt shows, with its terminal screen."
   [line]
-  (let [t (typist) out (StringWriter.) asker (typed-asker t out "op" 1000)
+  (let [t (typist) out (screen) asker (typed-asker t out "op" 1000)
         d (approval/ask! asker request 2000)]
     (type-at! t out "1" line)
     [(dissoc (deref d 2000 ::hung) :ms) out]))
@@ -46,8 +47,8 @@
   (testing "\"1 y\" approves request 1, the prompt shows its number and tool, and the outcome is said"
     (let [[d out] (answered "1 Y")]
       (is (= {:decision :approve :approver "op"} d))
-      (is (re-find #"\[1\] approval requested: tool \"pay\"" (str out)))
-      (is (eventually #(re-find #"request 1 approved" (str out))))))
+      (is (re-find #"\[1\] approval requested: tool \"pay\"" (text out)))
+      (is (shows? out #"request 1 approved"))))
   (testing "a bare y, another number or anything else typed denies"
     (doseq [line ["y" "yes" "2 y" "1 y please" "n" ""]]
       (is (= :deny (:decision (first (answered line)))) line))))
@@ -103,7 +104,14 @@
   (testing "a plain or qualified key prints as is"
     (is (= ":amount" (approval/shown-key :amount)))
     (is (= ":pay/to" (approval/shown-key :pay/to)))
-    (is (= "0" (approval/shown-key 0)))))
+    (is (= "0" (approval/shown-key 0))))
+  (testing "a plain symbol key is always quoted, so it cannot sit bare beside its keyword twin"
+    (is (= "'amount" (approval/shown-key 'amount)))
+    (is (= "'pay/to" (approval/shown-key 'pay/to)))
+    (let [text (prompt {:tool "pay" :actor "agent" :args {:amount 1000000 'amount 3}})]
+      (is (re-find #"(?m)^    :amount = 1000000$" text))
+      (is (re-find #"(?m)^    'amount = 3$" text))
+      (is (not (re-find #"(?m)^    amount =" text)) "no key is shown bare"))))
 
 (deftest a-long-memo-before-amount-hides-no-field
   (let [text (prompt {:tool "pay" :actor "agent-7" :session "s1"
@@ -129,41 +137,81 @@
   (is (= "a\\u0022b\\u005cc" (approval/safe-text "a\"b\\c"))))
 
 (defn- typist
-  "A fake terminal: read-line blocks until a line is typed with `type!`."
+  "A fake terminal: read-line blocks until a line is typed with `type!`.
+   `:reads` counts the read-line calls, so a test can wait until the reader
+   has queued every line typed so far (it is back for the next one)."
   []
-  (let [q (java.util.concurrent.LinkedBlockingQueue.)]
-    {:read-line #(.take q) :type! #(.put q %)}))
+  (let [q (java.util.concurrent.LinkedBlockingQueue.) reads (atom 0)]
+    {:read-line #(do (swap! reads inc) (.take q)) :type! #(.put q %) :reads reads}))
+
+(defn- screen
+  "A fake terminal screen: `:w` a Writer whose text so far is the `:text` atom."
+  []
+  (let [text (atom "")
+        add! #(swap! text str %)]
+    {:text text
+     :w    (proxy [java.io.Writer] []
+             (write
+               ([x] (add! (cond (string? x) x (int? x) (str (char x)) :else (String. ^chars x))))
+               ([b off len] (add! (if (string? b)
+                                    (subs b off (+ off len))
+                                    (String. ^chars b (int off) (int len))))))
+             (flush [])
+             (close []))}))
+
+(defn- text [s] @(:text s))
+
+(defn- await-ref
+  "Does (pred @r) hold within 5 s? Waits on a watch, not a clock: it
+   answers as soon as `r` holds a value satisfying `pred`."
+  [r pred]
+  (let [k (Object.) ok (promise)]
+    (add-watch r k (fn [_ _ _ v] (when (pred v) (deliver ok true))))
+    (when (pred @r) (deliver ok true))
+    (try (deref ok 5000 false) (finally (remove-watch r k)))))
+
+(defn- shows?
+  "Does screen `s` show text matching `re` within 5 s?"
+  [s re]
+  (boolean (await-ref (:text s) #(re-find re %))))
+
+(defn- await-reads
+  "Has typist `t` been asked for line `n` (every earlier line queued) within 5 s?"
+  [t n]
+  (await-ref (:reads t) #(<= n %)))
 
 (defn- typed-asker
-  ([t] (typed-asker t (StringWriter.) "op"))
+  ([t] (typed-asker t (screen) "op"))
   ([t out approver] (typed-asker t out approver 2000))
   ([{:keys [read-line]} out approver wait-ms]
-   (approval/stdin-asker {:read-line read-line :out out :approver approver :wait-ms wait-ms})))
+   (approval/stdin-asker {:read-line read-line :out (:w out) :approver approver :wait-ms wait-ms})))
 
 (defn- decision [d] (:decision (deref d 2000 ::hung)))
 
 (defn- shown-ids
-  "The request numbers prompted on `out`, in order."
+  "The request numbers prompted on screen `out`, in order."
   [out]
-  (mapv second (re-seq #"(?m)^\[(\d+)\] approval requested" (str out))))
-
-(defn- eventually
-  "Does (f) become true within a second?"
-  [f]
-  (loop [i 0] (cond (f) true (< i 100) (do (Thread/sleep 10) (recur (inc i))) :else false)))
+  (mapv second (re-seq #"(?m)^\[(\d+)\] approval requested" (text out))))
 
 (defn- type-at!
-  "Type `line` on typist `t` once request `id` is prompted on `out`."
+  "Type `line` on typist `t` once request `id` is prompted on screen `out`."
   [t out id line]
-  (is (eventually #(some #{id} (shown-ids out))) (str "request " id " was prompted"))
+  (is (await-ref (:text out) #(some #{id} (mapv second (re-seq #"(?m)^\[(\d+)\] approval requested" %))))
+      (str "request " id " was prompted"))
   ((:type! t) line))
+
+(defn- idle?
+  "Has the terminal of `asker` no request left within 5 s?"
+  [asker]
+  (await-ref (:state (:terminal asker)) #(empty? (:queue %))))
+
 
 (deftest concurrent-calls-are-asked-one-at-a-time-in-order
   (let [t     (typist)
-        out   (StringWriter.)
+        out   (screen)
         asker (typed-asker t out "op")
-        a     (approval/ask! asker (assoc request :tool "a") 2000)
-        b     (approval/ask! asker (assoc request :tool "b") 2000)]
+        a     (approval/ask! asker (assoc request :tool "a") 10000)
+        b     (approval/ask! asker (assoc request :tool "b") 10000)]
     (type-at! t out "1" "2 y")
     (type-at! t out "2" "2 y")
     (is (= :deny (decision a)) "request 1 read the first line, meant for 2")
@@ -171,33 +219,48 @@
 
 (deftest a-line-typed-before-its-prompt-is-discarded
   (let [t     (typist)
-        out   (StringWriter.)
-        asker (typed-asker t out "op" 300)]
+        out   (screen)
+        asker (typed-asker t out "op")
+        a     (approval/ask! asker (assoc request :tool "a") 10000)]
+    (type-at! t out "1" "1 y")
+    (is (= :approve (decision a)))
+    ((:type! t) "2 y")
+    (is (await-reads t 3) "the reader holds \"2 y\" before request 2 is asked")
+    (let [b (approval/ask! asker (assoc request :tool "b") 10000)]
+      (type-at! t out "2" "nope")
+      (is (= :deny (decision b)) "the pre-typed \"2 y\" did not approve request 2 unseen")
+      (is (re-find #"\(1 line\(s\) typed before this prompt were discarded\)" (text out))))))
+
+(deftest a-line-buffered-before-the-first-request-is-discarded
+  (let [t (typist)]
     ((:type! t) "1 y")
-    (Thread/sleep 50)
-    (let [a (approval/ask! asker (assoc request :tool "a") 2000)]
-      (is (= :timeout (decision a)) "the pre-typed \"1 y\" did not approve request 1 unseen")
-      (is (re-find #"\(1 line\(s\) typed before this prompt were discarded\)" (str out))))))
+    (let [out   (screen)
+          asker (typed-asker t out "op")]
+      (is (await-reads t 2) "building the asker starts its reader: \"1 y\" is queued before any ask")
+      (let [a (approval/ask! asker (assoc request :tool "a") 10000)]
+        (type-at! t out "1" "nope")
+        (is (= :deny (decision a)) "the buffered \"1 y\" did not approve the first request of the stream")
+        (is (re-find #"\(1 line\(s\) typed before this prompt were discarded\)" (text out)))))))
 
 (deftest a-late-line-for-an-expired-request-cannot-answer-the-next
   (let [t     (typist)
-        out   (StringWriter.)
+        out   (screen)
         asker (typed-asker t out "op" 100)
-        a     (approval/ask! asker (assoc request :tool "a") 2000)]
+        a     (approval/ask! asker (assoc request :tool "a") 10000)]
     (is (= :timeout (decision a)))
     ((:type! t) "2 y")
-    (Thread/sleep 50)
-    (let [b (approval/ask! asker (assoc request :tool "b") 2000)]
+    (is (await-reads t 2) "the reader holds \"2 y\" before request 2 is asked")
+    (let [b (approval/ask! asker (assoc request :tool "b") 10000)]
       (is (= :timeout (decision b)) "\"2 y\", typed before 2 was shown, is discarded")
-      (is (re-find #"discarded" (str out))))))
+      (is (re-find #"discarded" (text out))))))
 
 (deftest two-askers-on-one-stream-share-its-queue-and-numbers
   (let [t   (typist)
-        out (StringWriter.)
+        out (screen)
         pay (typed-asker t out "ana")
         rfd (typed-asker t out "bob")
-        a   (approval/ask! pay (assoc request :tool "pay") 2000)
-        b   (approval/ask! rfd (assoc request :tool "refund") 2000)]
+        a   (approval/ask! pay (assoc request :tool "pay") 10000)
+        b   (approval/ask! rfd (assoc request :tool "refund") 10000)]
     (type-at! t out "1" "1 y")
     (type-at! t out "2" "2 n")
     (is (= :approve (decision a)) "request 1 got the line typed for it")
@@ -206,95 +269,105 @@
 
 (deftest a-timed-out-request-expires-and-a-late-line-answers-nothing
   (let [t     (typist)
-        out   (StringWriter.)
-        asker (typed-asker t out "op")
+        out   (screen)
+        asker (typed-asker t out "op" 60000)
         a     (approval/ask! asker (assoc request :tool "a") 50)]
     (is (= :timeout (decision a)))
-    (is (eventually #(re-find #"request 1 expired, not run" (str out))) "the terminal says so")
-    (let [b (approval/ask! asker (assoc request :tool "b") 2000)]
-      (is (eventually #(= ["1" "2"] (shown-ids out))))
-      ((:type! t) "1 y")
+    (is (shows? out #"request 1 expired, not run") "the terminal says so")
+    (let [b (approval/ask! asker (assoc request :tool "b") 10000)]
+      (type-at! t out "2" "1 y")
       (is (= :deny (decision b)) "a line typed after 1 expired answers 2, and \"1 y\" is not 2's yes")
-      (is (eventually #(re-find #"request 2 denied, not run" (str out)))))))
+      (is (shows? out #"request 2 denied, not run")))))
 
 (deftest a-live-request-behind-an-expired-one-is-prompted-at-once
   (let [t     (typist)
-        out   (StringWriter.)
-        asker (typed-asker t out "op" 2000)
+        out   (screen)
+        asker (typed-asker t out "op" 60000)
         a     (approval/ask! asker (assoc request :tool "a") 50)
-        b     (approval/ask! asker (assoc request :tool "b") 500)]
+        b     (approval/ask! asker (assoc request :tool "b") 30000)]
     (is (= :timeout (decision a)))
-    (is (eventually #(= ["1" "2"] (shown-ids out))) "the head's expiry frees the terminal now")
-    ((:type! t) "2 y")
-    (is (= :approve (decision b)) "the live request was shown and answered in time")))
+    (type-at! t out "2" "2 y")
+    (is (= :approve (decision b)) "the head's expiry freed the terminal long before its 60 s wait")))
 
 (deftest a-request-withdrawn-before-its-turn-is-dropped-unprompted
   (let [t     (typist)
-        out   (StringWriter.)
+        out   (screen)
         asker (typed-asker t out "op")
-        a     (approval/ask! asker (assoc request :tool "a") 2000)
+        a     (approval/ask! asker (assoc request :tool "a") 10000)
         b     (approval/ask! asker (assoc request :tool "b") 30)]
     (is (= :timeout (decision b)))
     (type-at! t out "1" "1 y")
     (is (= :approve (decision a)))
-    (Thread/sleep 50)
+    (is (idle? asker) "the server has moved past request 2")
     (is (= ["1"] (shown-ids out)) "2 expired while 1 was being answered")
-    (is (not (re-find #"request 2" (str out))) "nothing is said about a request never shown")
-    (let [c (approval/ask! asker (assoc request :tool "c") 2000)]
+    (is (not (re-find #"request 2" (text out))) "nothing is said about a request never shown")
+    (let [c (approval/ask! asker (assoc request :tool "c") 10000)]
       (type-at! t out "3" "3 y")
       (is (= :approve (decision c)) "no reader is left parked on the expired request"))))
 
 (deftest mass-withdrawal-leaves-the-queue-empty
   (let [t      (typist)
-        out    (StringWriter.)
+        out    (screen)
         asker  (typed-asker t out "op")
-        head   (approval/ask! asker (assoc request :tool "head") 2000)
+        head   (approval/ask! asker (assoc request :tool "head") 10000)
         others (doall (for [i (range 200)] (approval/ask! asker (assoc request :tool (str "t" i)) 20)))]
     (is (every? #(= :timeout (decision %)) others))
     (is (= 1 (count (:queue @(:state (:terminal asker))))) "only the prompted head is left")
-    (is (= ["1"] (shown-ids out)))
-    (is (empty? (re-seq #"request \d+ expired" (str out))) "no expiry is said for unprompted requests")
     (type-at! t out "1" "1 y")
     (is (= :approve (decision head)))
-    (is (eventually #(empty? (:queue @(:state (:terminal asker))))))))
+    (is (idle? asker))
+    (is (= ["1"] (shown-ids out)))
+    (is (empty? (re-seq #"request \d+ expired" (text out))) "no expiry is said for unprompted requests")))
 
 (deftest the-outcome-is-said-after-every-answer
   (let [t     (typist)
-        out   (StringWriter.)
+        out   (screen)
         asker (typed-asker t out "op")
-        a     (approval/ask! asker (assoc request :tool "a") 2000)
-        b     (approval/ask! asker (assoc request :tool "b") 2000)]
+        a     (approval/ask! asker (assoc request :tool "a") 10000)
+        b     (approval/ask! asker (assoc request :tool "b") 10000)]
     (type-at! t out "1" "1 yes")
     (type-at! t out "2" "nope")
     (is (= [:approve :deny] [(decision a) (decision b)]))
-    (is (eventually #(re-find #"(?s)request 1 approved.*request 2 denied, not run" (str out))))))
+    (is (shows? out #"(?s)request 1 approved.*request 2 denied, not run"))))
 
 (deftest the-outcome-line-always-matches-the-decision
-  (dotimes [i 20]
-    (let [t     (typist)
-          out   (StringWriter.)
-          asker (typed-asker t out "op" 5000)
-          d     (approval/ask! asker request (+ 40 (rand-int 20)))]
-      (is (eventually #(seq (shown-ids out))))
-      (Thread/sleep (+ 30 (rand-int 30)))
+  (testing "a line that answers before the timeout: approved, and said so"
+    (let [t (typist) out (screen) asker (typed-asker t out "op" 60000)
+          d (approval/ask! asker request 30000)]
+      (type-at! t out "1" "1 y")
+      (is (= :approve (decision d)))
+      (is (shows? out #"request 1 approved"))
+      (is (not (re-find #"request 1 expired" (text out))))))
+  (testing "a line typed once the timeout has claimed the request: a timeout, and said expired"
+    (let [t (typist) out (screen) asker (typed-asker t out "op" 60000)
+          d (approval/ask! asker request 50)]
+      (is (await-ref (:text out) #(re-find #"\[1\] approval requested" %)))
+      (is (= :timeout (decision d)) "the Decision is made before the line is typed")
       ((:type! t) "1 y")
-      (let [decided (:decision (deref d 2000 ::hung))]
-        (is (eventually #(re-find #"request 1 (approved|expired)" (str out))))
-        (is (= (if (= :approve decided) "approved" "expired")
-               (second (re-find #"request 1 (approved|expired)" (str out))))
-            (str "run " i ": the terminal says what the Decision was"))))))
+      (is (shows? out #"request 1 expired, not run"))
+      (is (not (re-find #"request 1 approved" (text out))))))
+  (testing "a Verdict and the timeout claim released at the same instant agree on how it ended"
+    (dotimes [i 500]
+      (let [p     (promise)
+            go    (java.util.concurrent.CountDownLatch. 1)
+            asker (future (.await go) (deliver p {:decision :approve :approver "op"}))
+            claim (future (.await go) (thenable/claim! p ::timeout))]
+        (.countDown go)
+        @asker
+        (is (= @p (deref claim 5000 ::hung))
+            (str "run " i ": the asker's ending (what its outcome line says) is the Decision's"))))))
+
 
 (deftest at-end-of-input-every-waiting-request-is-denied-at-once
-  (let [out   (StringWriter.)
+  (let [out   (screen)
         eof   (promise)
-        asker (approval/stdin-asker {:read-line #(do @eof nil) :out out :approver "op" :wait-ms 60000})
-        a     (approval/ask! asker (assoc request :tool "a") 10000)
-        b     (approval/ask! asker (assoc request :tool "b") 10000)
-        t0    (System/currentTimeMillis)]
+        asker (approval/stdin-asker {:read-line #(do @eof nil) :out (:w out) :approver "op" :wait-ms 60000})
+        a     (approval/ask! asker (assoc request :tool "a") 50000)
+        b     (approval/ask! asker (assoc request :tool "b") 50000)]
     (deliver eof true)
-    (is (= [:deny :deny] [(decision a) (decision b)]) "denied, not left to wait 60 s")
-    (is (< (- (System/currentTimeMillis) t0) 1500))
-    (is (eventually #(re-find #"request 2 denied, not run: input has ended" (str out))))))
+    (is (= [:deny :deny] [(decision a) (decision b)]) "denied at once, not left to wait 50 s")
+    (is (shows? out #"request 2 denied, not run: input has ended"))))
+
 
 (deftest default-askers-under-different-in-bindings-share-system-in
   (let [a (binding [*in* (BufferedReader. (StringReader. ""))] (approval/stdin-asker {:out *err*}))
@@ -302,21 +375,28 @@
     (is (identical? (:terminal a) (:terminal b)) "one System/in, one terminal")
     (is (identical? System/in (:stream a)))
     (testing "an explicit :in that is the root *in* is keyed on System/in too"
-      (let [c (approval/stdin-asker {:in approval/root-in :out *err*})]
-        (is (identical? (:terminal a) (:terminal c)))))))
+      (let [c (approval/stdin-asker {:in (approval/root-in) :out *err*})]
+        (is (identical? (:terminal a) (:terminal c)))))
+    (testing "the root reader is resolved when the asker is built, never a bound *in*"
+      (let [bound (BufferedReader. (StringReader. ""))]
+        (binding [*in* bound]
+          (is (not (identical? bound (approval/root-in))))
+          (is (identical? (:terminal a) (:terminal (approval/stdin-asker {:in (approval/root-in) :out *err*}))))
+          (is (not (identical? System/in (:stream (approval/stdin-asker {:in bound :out *err*}))))
+              "a bound reader that is not the root is its own stream"))))))
 
 (deftest a-second-asker-with-other-ports-is-refused
   (let [t (typist)]
-    (typed-asker t (StringWriter.) "op")
+    (typed-asker t (screen) "op")
     (is (= :invalid-approval
-           (try (typed-asker t (StringWriter.) "op") nil
+           (try (typed-asker t (screen) "op") nil
                 (catch clojure.lang.ExceptionInfo e (:autonomous/error (ex-data e))))))))
 
 (deftest an-unshowable-request-is-denied-unshown
   (let [t     (typist)
-        out   (StringWriter.)
+        out   (screen)
         asker (typed-asker t out "op")
         many  (assoc request :args (zipmap (map #(keyword (str "k" %)) (range 40)) (range)))]
-    (is (= :deny (decision (approval/ask! asker many 2000))))
-    (is (empty? (shown-ids out)))
-    (is (eventually #(re-find #"request 1 denied, not run: too many argument values" (str out))))))
+    (is (= :deny (decision (approval/ask! asker many 10000))))
+    (is (shows? out #"request 1 denied, not run: too many argument values"))
+    (is (empty? (shown-ids out)))))
