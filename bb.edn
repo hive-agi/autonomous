@@ -55,6 +55,22 @@
   cabi-rust {:doc  "Build the Rust example app over libautonomous (cabi/examples/rust)"
              :task (shell {:dir "cabi/examples/rust"} "cargo" "build" "--release")}
 
+  cabi-go {:doc  "Build and run the Go (cgo) example over libautonomous (cabi/bindings/go, after bb cabi); fails on a wrong answer"
+           :task (do (shell {:dir "cabi/bindings/go/example"} "go" "vet" "./" "../")
+                     (shell {:dir "cabi/bindings/go"} "go" "test" "-count=1" "./")
+                     (shell {:dir "cabi/bindings/go/example"} "go" "build" "-o" "../../../build/go-example" ".")
+                     (shell {:dir "cabi/build"} "./go-example"))}
+
+  cabi-zig {:doc  "Build and run the Zig example over libautonomous (cabi/bindings/zig, after bb cabi); fails on a wrong answer"
+            :task (shell {:dir "cabi/bindings/zig"} "zig" "build" "test" "run"
+                         "--prefix" "../../build/zig-out" "--cache-dir" "../../build/zig-cache")}
+
+  cabi-bindings {:doc  "libautonomous and every binding example that builds here: C smoke, Go, Zig, Rust"
+                 :depends [cabi cabi-go cabi-zig cabi-rust]}
+
+  tool-spec {:doc  "Print a JSON tool-spec file as EDN specs for autonomous_reg_tool: FILE.json (autonomous.json-spec)"
+             :task (apply (requiring-resolve 'autonomous.json-spec.load/-main) *command-line-args*)}
+
   cabi-e2e {:doc  "Live: the Rust example dials a ws-only bb bridge; agents call its tools over MCP HTTP (doc/cabi.md)"
             :task (exec 'autonomous.e2e.cabi-runner/-main)}
 

@@ -45,6 +45,7 @@
     autonomous.openapi-pure-strata-test
     autonomous.asyncapi-core-test
     autonomous.asyncapi-source-test
+    autonomous.json-spec-test
     autonomous.bb-mcp.mount-test])
 
 (defn -main [& _]

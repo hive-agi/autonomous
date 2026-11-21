@@ -84,13 +84,19 @@
 
 (defn pointer-get
   "L1 Promote: value at JSON Pointer `pointer` (\"/components/schemas/X\")
-   in `doc`, or ::missing."
+   in `doc`, or ::missing. \"\" is the whole document; anything else must
+   start with /, so a plain-name fragment (an #anchor) is ::missing rather
+   than the whole document."
   [doc pointer]
-  (reduce (fn [node token]
-            (let [c (child node (unescape-token token))]
-              (if (= ::missing c) (reduced ::missing) c)))
-          doc
-          (rest (str/split pointer #"/" -1))))
+  (cond
+    (= "" pointer)                     doc
+    (not (str/starts-with? pointer "/")) ::missing
+    :else
+    (reduce (fn [node token]
+              (let [c (child node (unescape-token token))]
+                (if (= ::missing c) (reduced ::missing) c)))
+            doc
+            (rest (str/split pointer #"/" -1)))))
 
 ;; -----------------------------------------------------------------------------
 ;; Which documents a document reaches
