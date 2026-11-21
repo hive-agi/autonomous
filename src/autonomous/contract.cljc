@@ -183,10 +183,13 @@
 (def tool-decorators
   "The Tool -> Tool decorators decorators-preserve-schemas applies, by name.
    The approval asker never answers: the law is about schemas, no call runs."
-  {:require-scope    (decorator/require-scope :contract/read)
-   :redact-output    (decorator/redact-output [[:secret]])
-   :require-approval (decorator/require-approval {:asker (approval/queue-asker [])
-                                                  :timeout-ms 1})})
+  {:require-scope      (decorator/require-scope :contract/read)
+   :redact-output      (decorator/redact-output [[:secret]])
+   :require-approval   (decorator/require-approval {:asker (approval/queue-asker [])
+                                                    :timeout-ms 1})
+   :provider-allowlist (decorator/provider-allowlist {:path [:provider]
+                                                      :providers [{:code "contract-sim"}]
+                                                      :allowed ["contract-sim"]})})
 
 (defn- decorate-tool
   "L3 Promote: apply every tool decorator to every tool."
@@ -207,8 +210,8 @@
 
 (defn decorators-preserve-schemas
   "L3 Contract: the `tool-decorators` (require-scope, redact-output,
-   require-approval) and prefix-names preserve a valid Surface and every
-   tool's :input and :output schemas."
+   require-approval, provider-allowlist) and prefix-names preserve a
+   valid Surface and every tool's :input and :output schemas."
   [adapter fixture]
   (answer-receipt->check :decorators-preserve-schemas
     (answer/bind (surface-answer adapter fixture)

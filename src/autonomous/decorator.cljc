@@ -98,16 +98,102 @@
   [x]
   (if (thenable/thenable? x) (thenable/chain x strip-approval) (strip-approval x)))
 
+(def ^:private ProviderAllowlist
+  "L1: the options of provider-allowlist, after :allowed is made a set."
+  [:map
+   [:path [:vector {:min 1} [:or :keyword :string :int]]]
+   [:providers [:vector {:min 1} [:map [:code [:string {:min 1}]]
+                                  [:name {:optional true} [:string {:min 1}]]]]]
+   [:allowed [:set {:min 1} [:string {:min 1}]]]])
+
+(defn- allowlist-problem
+  "L1: what is wrong with allowlist options `al`, nil when nothing is: a
+   shape problem, or an :allowed code no provider has."
+  [al]
+  (if-let [e (m/explain ProviderAllowlist al)]
+    (me/humanize e)
+    (not-empty (remove (set (map :code (:providers al))) (:allowed al)))))
+
+(defn provider-allowlist
+  "L1 Tool -> Tool: the value at arg path `:path` (e.g. [:provider]) must
+   name a provider whose code is in `:allowed`. `:providers` lists the
+   providers the service resolves, [{:code str :name str}], so the value
+   is read the way the service reads it: a code exactly, else a name
+   ignoring ASCII case. Whitespace, another case of a code, a number, a
+   non-ASCII character or no value at all names no provider.
+
+   A call naming an allowed provider runs at once, past any
+   require-approval gate. Any other call goes to the tool's
+   require-approval gate when it has one, and is refused
+   :provider-not-allowed when it has none. Scopes are checked before
+   both, so the order is scope, then allowlist or approval, whatever the
+   order of the decorators. Throws ex-info :autonomous/error
+   :invalid-allowlist on a bad option or an :allowed code with no
+   provider."
+  [{:keys [path providers allowed] :as opts}]
+  (let [colls?  (and (sequential? path) (sequential? providers) (coll? allowed) (not (map? allowed)))
+        al      (when colls? {:path (vec path) :providers (vec providers) :allowed (set allowed)})
+        problem (if colls? (allowlist-problem al) "path, providers and allowed must be collections")]
+    (when problem
+      (throw (ex-info (str "provider-allowlist: invalid options: " (pr-str problem))
+                      {:autonomous/error :invalid-allowlist :problem problem :opts opts})))
+    (fn [tool] (assoc tool ::allowlist al))))
+
+(def ^:private ascii-lower
+  "L1: each ASCII capital letter to its small letter, nothing else."
+  (zipmap "ABCDEFGHIJKLMNOPQRSTUVWXYZ" "abcdefghijklmnopqrstuvwxyz"))
+
+(defn- fold-ascii
+  "L1: string `s` with its ASCII capitals made small, whatever the locale."
+  [s]
+  (apply str (map #(get ascii-lower % %) s)))
+
+(defn resolve-provider
+  "L1: the :code of the provider of `providers` that value `v` names: the
+   one whose code equals `v`, else the one whose name equals it ignoring
+   ASCII case; nil when none does or `v` is not a string of printable
+   ASCII. Narrower than a Unicode case fold on purpose: a value read
+   differently here and at the service can only fail to be allowed."
+  [providers v]
+  (when (and (string? v) (re-matches #"[\x20-\x7E]+" v))
+    (or (some #(when (= v (:code %)) (:code %)) providers)
+        (let [folded (fold-ascii v)]
+          (some #(when (and (:name %) (= folded (fold-ascii (:name %)))) (:code %)) providers)))))
+
+(defn- allowlisted?
+  "L1: does `args` name an allowed provider at the allowlist's path?"
+  [{:keys [path providers allowed]} args]
+  (contains? allowed (resolve-provider providers (get-in args path))))
+
+(defn- not-allowed
+  "L1: the complete refusal of a call whose provider allowlist `al` does
+   not allow, naming the path and what it accepts."
+  [{:keys [path providers allowed]}]
+  (answer/complete
+   (answer/refusal :provider-not-allowed
+                   (str "the provider at " (pr-str path) " is not one this tool may use")
+                   {:path path
+                    :allowed (vec (sort (mapcat (juxt :code :name)
+                                                (filter (comp allowed :code) providers))))})))
+
 (defn gate
   "L1 Pipeline: (run) for a tool without require-approval; else a thenable
    of the complete Answer the human's Decision leads to (see
    require-approval), carrying that Decision as :autonomous/approval. The
-   human sees the args with CallDetail `redact` paths masked."
+   human sees the args with CallDetail `redact` paths masked. A tool with
+   a provider-allowlist runs (run) at once for an allowed provider and
+   treats any other call as gated, refused :provider-not-allowed when it
+   has no approval gate."
   [tool args grant redact run]
-  (if-let [{:keys [asker timeout-ms]} (::approval tool)]
-    (thenable/chain (approval/ask! asker (approval-request tool args grant redact) timeout-ms)
-                    (partial decided run))
-    (unstamped (run))))
+  (let [al       (::allowlist tool)
+        approval (::approval tool)]
+    (cond
+      (and al (allowlisted? al args)) (unstamped (run))
+      approval (let [{:keys [asker timeout-ms]} approval]
+                 (thenable/chain (approval/ask! asker (approval-request tool args grant redact) timeout-ms)
+                                 (partial decided run)))
+      al       (not-allowed al)
+      :else    (unstamped (run)))))
 
 (defn each-tool
   "L1 lift: Tool -> Tool fn `f` as a Surface -> Surface fn applying it to
