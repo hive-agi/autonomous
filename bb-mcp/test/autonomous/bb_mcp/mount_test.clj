@@ -126,9 +126,22 @@
         up  {:status :up :at (- now 1000)}
         old {:status :up :at 1}
         dn  {:status :down :at (- now 10)}]
-    (is (= {"t" :down} (fa/status-by-target {["t" "me"] own ["t" "b"] up} "me" now)) "own look wins")
+    (is (= {"t" :up} (fa/status-by-target {["t" "me"] {:status :up :at 1} ["t" "b"] dn} "me" now))
+        "the addon's own :up wins, however old")
+    (is (= {"t" :up} (fa/status-by-target {["t" "me"] own ["t" "b"] up} "me" now))
+        "a fresh :up by anyone outranks the addon's own :down")
+    (is (= {"t" :down} (fa/status-by-target {["t" "me"] own ["t" "b"] old} "me" now))
+        "the addon's own look outranks a stale :up")
     (is (= {"t" :up} (fa/status-by-target {["t" "a"] up ["t" "b"] dn} "me" now)) "a fresh :up beats a newer :down")
     (is (= {"t" :down} (fa/status-by-target {["t" "a"] old ["t" "b"] dn} "me" now)) "a stale :up does not")))
+
+(deftest an-addon-without-its-own-credential-is-not-down-forever
+  (let [now     100000
+        refused {:status :down :at (- now 5) :error {:type :channel/credential-missing}}]
+    (is (= {"t" :up} (fa/status-by-target {["t" "me"] refused ["t" "b"] {:status :up :at (- now 500)}} "me" now))
+        "a fresh :up by another agent outranks the addon's own credential refusal")
+    (is (= {"t" :up} (fa/status-by-target {["t" "me"] refused ["t" "b"] {:status :up :at 1}} "me" now))
+        "even a stale :up: a credential refusal says nothing about the target")))
 
 (deftest addon-tools-become-bb-mcp-tools
   (let [m     [(started two-apps)]

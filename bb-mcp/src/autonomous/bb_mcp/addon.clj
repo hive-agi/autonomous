@@ -18,6 +18,7 @@
             [autonomous.domain.answer :as answer]
             [autonomous.mcp.protocol :as p]
             [autonomous.mcp.server :as server]
+            [clojure.string :as str]
             [hive-addon.protocol :as addon]))
 
 (def addon-id-value "autonomous.fleet")
@@ -85,20 +86,42 @@
    the addon's own actor has not looked at it."
   60000)
 
+(defn- credential-refusal?
+  "True when probe `pr` is a refusal of the prober's own credential
+   (:channel/credential-*): it says nothing about the target."
+  [pr]
+  (let [t (get-in pr [:error :type])]
+    (boolean (and (keyword? t) (= "channel" (namespace t))
+                  (str/starts-with? (name t) "credential-")))))
+
+(defn- tier
+  "The weight of probe `pr` by `by` for a target's health, higher wins:
+   3 the addon's own :up, 2 a fresh :up by anyone, 1 the addon's own look,
+   0 any other, and -1 a refusal of the prober's own credential, which
+   says nothing about the target."
+  [actor now by pr]
+  (let [up?    (= :up (:status pr))
+        fresh? (< (- now (:at pr 0)) fresh-up-ms)
+        own?   (= actor by)]
+    (cond
+      (credential-refusal? pr) -1
+      (and own? up?)           3
+      (and up? fresh?)         2
+      own?                     1
+      :else                    0)))
+
 (defn- rank
-  "Sort key of probe `pr` for a target's health, best last: the addon's
-   own `actor`'s probe first, then an :up within fresh-up-ms of `now`,
-   then the newest."
+  "Sort key of probe entry `[[tid by] pr]` for a target's health, best
+   last: its tier, then the newest."
   [actor now [[_tid by] pr]]
-  [(if (= actor by) 1 0)
-   (if (and (= :up (:status pr)) (< (- now (:at pr 0)) fresh-up-ms)) 1 0)
-   (:at pr 0)])
+  [(tier actor now by pr) (:at pr 0)])
 
 (defn status-by-target
   "Pure: {target-id status} of the fleet's last probes, kept per [target
    actor], seen by the addon's `actor` at `now`. One agent refused by a
-   remote never flaps the target's health: the addon's own look decides,
-   else a fresh :up by anyone, else the newest probe."
+   remote never flaps the target's health: the addon's own :up, then a
+   fresh :up by anyone, then the addon's own look, then the newest probe;
+   a refusal of a prober's own credential ranks below all of them."
   [last-probes actor now]
   (let [best (fn [entries] (last (sort-by (partial rank actor now) entries)))]
     (->> (group-by ffirst last-probes)
