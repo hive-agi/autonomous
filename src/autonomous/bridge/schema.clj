@@ -65,8 +65,9 @@
       (url/bearer-allowed? (:url target))))
 
 (def CredentialPolicy
-  "Remote credential references by caller actor, with an optional :default."
-  [:map-of [:or :string [:= :default]] CredentialReference])
+  "Remote credential references by caller actor, with an optional :default.
+   Never empty: a present but empty policy would read as no policy at all."
+  [:map-of {:min 1} [:or :string [:= :default]] CredentialReference])
 
 (def HttpTarget
   "A remote app reached by URL over MCP-over-HTTP (its own /mcp, the handler
@@ -81,7 +82,10 @@
     [:token-env {:optional true} :string]
     [:token {:optional true} no-literal-token]
     [:credentials {:optional true} CredentialPolicy]
-    [:timeout-ms {:optional true} [:int {:min 100}]]]
+    [:timeout-ms {:optional true} [:int {:min 100}]]
+    [:ttl-ms {:optional true} [:int {:min 0}]]
+    [:stream-retry-ms {:optional true} [:int {:min 0}]]
+    [:lock-wait-ms {:optional true} [:int {:min 1}]]]
    [:fn {:error/message "a bearer token rides https, or plain http to this host only"}
     bearer-transport-ok?]])
 

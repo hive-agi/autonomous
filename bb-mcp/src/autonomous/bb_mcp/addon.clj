@@ -18,6 +18,7 @@
             [autonomous.domain.answer :as answer]
             [autonomous.mcp.protocol :as p]
             [autonomous.mcp.server :as server]
+            [clojure.string :as str]
             [hive-addon.protocol :as addon]))
 
 (def addon-id-value "autonomous.fleet")
@@ -33,10 +34,13 @@
                  (remove (fn [[k _]] (contains? routing-keys k))))
         params))
 
-(defn- actor-of
-  "Who acts: the host's stamp (:_actor), else the addon's default actor."
+(defn actor-of
+  "Pure over `st`: who acts. The host's keyword stamp (:_actor) only, else
+   the addon's default actor. A caller-supplied string \"_actor\" is never
+   read: it would let an agent name the addon's own actor, its credential
+   and its health vote."
   [st params]
-  (str (or (get params :_actor) (get params "_actor") (:actor @st))))
+  (str (or (get params :_actor) (:actor @st))))
 
 (defn- session-of
   "The session `actor` speaks with, opened on first use."
@@ -77,24 +81,70 @@
   [st]
   (server/tools-fingerprint (:srv @st) (session-of st (:actor @st))))
 
-(defn- latest-by-target
-  "{target-id status} of the fleet's last probes, which are kept per view
-   (target, actor, scopes, runtime): a target's status is that of its most
-   recent probe by any view, an :up one winning a tie. One agent refused by
-   a remote thus degrades nobody once another agent reaches it later."
-  [last-probes]
-  (let [rank   (fn [pr] [(:at pr 0) (if (= :up (:status pr)) 1 0)])
-        newest (reduce (fn [acc [tid pr]]
-                         (if (and (acc tid) (neg? (compare (rank pr) (rank (acc tid))))) acc (assoc acc tid pr)))
-                       {} last-probes)]
-    (into (sorted-map) (map (fn [[tid pr]] [tid (:status pr)])) newest)))
+(def fresh-up-ms
+  "How long an :up probe of a target by any agent keeps it healthy, when
+   the addon's own actor has not looked at it."
+  60000)
+
+(defn- credential-refusal?
+  "True when probe `pr` is a refusal of the prober's own credential
+   (:channel/credential-*): it says nothing about the target."
+  [pr]
+  (let [t (get-in pr [:error :type])]
+    (boolean (and (keyword? t) (= "channel" (namespace t))
+                  (str/starts-with? (name t) "credential-")))))
+
+(defn- tier
+  "The weight of probe `pr` by `by` for a target's health, higher wins:
+   3 the addon's own :up, 2 a fresh :up by anyone, 1 the addon's own look,
+   0 any other, and -1 a refusal of the prober's own credential, which
+   says nothing about the target."
+  [actor now by pr]
+  (let [up?    (= :up (:status pr))
+        fresh? (< (- now (:at pr 0)) fresh-up-ms)
+        own?   (= actor by)]
+    (cond
+      (credential-refusal? pr) -1
+      (and own? up?)           3
+      (and up? fresh?)         2
+      own?                     1
+      :else                    0)))
+
+(defn- rank
+  "Sort key of probe entry `[[tid by] pr]` for a target's health, best
+   last: its tier, then the newest."
+  [actor now [[_tid by] pr]]
+  [(tier actor now by pr) (:at pr 0)])
+
+(defn status-by-target
+  "Pure: {target-id status} of the fleet's last probes, kept per [target
+   actor], seen by the addon's `actor` at `now`. One agent refused by a
+   remote never flaps the target's health: the addon's own :up, then a
+   fresh :up by anyone, then the addon's own look, then the newest probe;
+   a refusal of a prober's own credential ranks below all of them."
+  [last-probes actor now]
+  (let [best (fn [entries] (last (sort-by (partial rank actor now) entries)))]
+    (->> (group-by ffirst last-probes)
+         (map (fn [[tid entries]] [tid (:status (second (best entries)))]))
+         (into (sorted-map)))))
+
+(defn probes-by-actor
+  "Pure: the fleet's `view-probes` ([[view-key Probe] ...] from
+   fleet/last-probes-by-view, a view-key being [target-id actor scopes
+   runtime]) as {[target-id actor] Probe}, the newest probe of each pair."
+  [view-probes]
+  (reduce (fn [acc [[tid actor] p]]
+            (let [k [tid actor]]
+              (if (< (:at (acc k) -1) (:at p 0)) (assoc acc k p) acc)))
+          {} view-probes))
 
 (defn- health-of
-  "Health from the last look at every target (see `latest-by-target`): :ok
+  "Health from the last look at every target (see `status-by-target`): :ok
    all up (or none looked at yet), :degraded some down or slow. :details
    :status is keyed by target id."
-  [srv]
-  (let [status (latest-by-target (fleet/last-probes (:fleet srv)))]
+  [srv actor]
+  (let [views  (fleet/last-probes-by-view (:fleet srv))
+        status (status-by-target (probes-by-actor views) actor (System/currentTimeMillis))]
     {:status  (if (every? #{:up} (vals status)) :ok :degraded)
      :details {:apps (get-in srv [:fleet :order]) :status status}}))
 
@@ -125,9 +175,9 @@
     (if (= :active (:lifecycle @state)) (tool-defs state) []))
   (schema-extensions [_] {})
   (health [_]
-    (let [{:keys [lifecycle srv error]} @state]
+    (let [{:keys [lifecycle srv error actor]} @state]
       (if (= :active lifecycle)
-        (health-of srv)
+        (health-of srv actor)
         {:status :down :details {:lifecycle lifecycle :error error}})))
   (excluded-tools [_] #{})
   (hooks [_]

@@ -78,18 +78,54 @@
   [token]
   (if token {"authorization" (str "Bearer " token)} {}))
 
+(def max-shown-actor
+  "The most characters of a caller-supplied actor a message repeats."
+  64)
+
+(def ^:private unshown-ranges
+  "Code point ranges a message must not repeat: line and paragraph
+   separators, the bidi controls and marks that could reorder a log line
+   (U+061C, U+200E-200F, U+202A-202E, U+2066-2069), and the zero-width
+   characters that hide text (U+200B-200D, U+FEFF)."
+  [[0x061C 0x061C] [0x200B 0x200F] [0x2028 0x202E] [0x2066 0x2069] [0xFEFF 0xFEFF]])
+
+(defn- unshown?
+  "True for code point `cp` a message must not repeat: a control character
+   or one in unshown-ranges."
+  [cp]
+  (or (Character/isISOControl (int cp))
+      (some (fn [[lo hi]] (<= lo cp hi)) unshown-ranges)))
+
+(defn- code-points
+  "The code points of `s`, so a surrogate pair is one element, never two."
+  [^String s]
+  (loop [i 0 out []]
+    (if (< i (count s))
+      (let [cp (.codePointAt s (int i))] (recur (+ i (Character/charCount cp)) (conj out cp)))
+      out)))
+
+(defn shown-actor
+  "Pure: `actor` as a refusal message may repeat it: control, separator,
+   bidi and zero-width characters dropped, then cut at max-shown-actor
+   code points, so a surrogate pair is never split."
+  [actor]
+  (let [cps (take max-shown-actor (remove unshown? (code-points (str actor))))]
+    (apply str (map #(String. (Character/toChars (int %))) cps))))
+
 (defn- selected-reference
   "Ok of `grant`'s credential reference on `target`, nil for a target with
-   no credential configuration at all. A target that configures
-   :credentials fails closed: an actor matching no entry, with no :default
-   and no legacy :token-env, is refused naming only actor and target id."
+   no credential configuration at all. A target that carries the
+   :credentials key fails closed, even when it is empty: an actor matching
+   no entry, with no :default and no legacy :token-env, is refused naming
+   only the shown actor and the target id."
   [target grant]
-  (let [reference (credential-reference target grant)]
-    (if (and (nil? reference) (seq (:credentials target)))
+  (let [reference (credential-reference target grant)
+        actor     (shown-actor (:actor grant))]
+    (if (and (nil? reference) (some? (:credentials target)))
       (answer/refusal :channel/credential-missing
-                      (str "no credential is configured for agent " (:actor grant)
+                      (str "no credential is configured for agent " actor
                            " on " (:target/id target) ", and no :default: refusing to go anonymous")
-                      {:actor (:actor grant) :target (:target/id target)})
+                      {:actor actor :target (:target/id target)})
       (answer/ok reference))))
 
 (defn identity
