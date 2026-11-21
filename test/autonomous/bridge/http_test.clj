@@ -90,9 +90,10 @@
 (deftype StubClient [state streams]
   port/IHttpClient
   (-request! [_ req]
-    (if-let [actor (actor-of req)]
-      (on-post state actor req)
-      (json-response 401 {:error "no token"})))
+    (cond
+      (nil? (actor-of req))      (json-response 401 {:error "no token"})
+      (= :delete (:method req))  {:ok {:status 200 :headers {} :body ""}}
+      :else                      (on-post state (actor-of req) req)))
   (-open-stream! [_ req sink]
     (let [actor (actor-of req)]
       (swap! streams assoc actor sink)
@@ -679,6 +680,26 @@
 (deftest a-dead-stream-is-reopened-on-the-next-look-rate-limited
   (is (= 2 (stream-opens-after-a-drop 0)) "the next look reopens the ended stream")
   (is (= 1 (stream-opens-after-a-drop 60000)) "not again within the retry interval"))
+
+(deftest an-old-stream-ending-after-a-renewal-keeps-the-new-one
+  (let [[client state _] (open-stub)
+        sinks (atom [])
+        spy   (reify port/IHttpClient
+                (-request! [_ req] (port/-request! client req))
+                (-open-stream! [_ req sink] (swap! sinks conj sink) (port/-open-stream! client req sink)))
+        c     (channel/make (assoc target :credentials (credential-policy) :credential-source (source)
+                                   :stream-retry-ms 0 :ttl-ms 0 :http/client spy))
+        look  #(manifest-as c "agent-a" #{:read})]
+    (look)
+    (swap! state update :sessions dissoc "sid-agent-a")
+    (is (answer/ok? (look)) "the forgotten session is renewed")
+    (is (= 2 (count @sinks)) "the renewal opened a second stream")
+    ((:close! (first @sinks)))
+    (look)
+    (is (= 2 (count @sinks)) "the old stream's end left the new stream held")
+    ((:close! (second @sinks)))
+    (look)
+    (is (= 3 (count @sinks)) "the new stream's own end is still noticed")))
 
 (deftest a-remote-without-a-stream-is-not-asked-again
   (let [[client _ _] (open-stub)

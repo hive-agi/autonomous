@@ -81,15 +81,10 @@
   [ch actor token]
   (swap! (:sessions ch) forgotten actor token))
 
-(defn- opened-stream
-  "Answer `r` of opening stream `token`, its Ok tagged with the token; a
-   stream that already ended (`closed` delivered) is a refusal, so a dead
-   stream is never recorded as held."
-  [r token closed]
-  (cond
-    (not (answer/ok? r)) r
-    (realized? closed)   (answer/refusal :channel/stream-ended "the remote stream ended at once")
-    :else                (update r :ok assoc :stream-id token)))
+(defn- tagged
+  "Answer `r` of opening a stream, its Ok tagged with the stream's `token`."
+  [r token]
+  (if (answer/ok? r) (update r :ok assoc :stream-id token) r))
 
 (def ^:private no-stream-status
   "The status of a remote that offers no event stream at all."
@@ -106,12 +101,18 @@
 
 (defn- listen!
   "Hold `ses`'s event stream: a list_changed marks `actor`'s listing stale.
-   The session records the outcome once the attempt completes."
+   The session records the outcome once the attempt completes. The stream
+   is known by its own token, so its end forgets only itself, never a
+   newer stream; an end that came before the record is applied after it."
   [ch client credentials target grant ses]
   (let [actor  (:actor grant)
+        token  (Object.)
+        ended  (promise)
         on-msg (fn [msg] (when (rpc/list-changed? msg) (swap! (slot ch actor) mark-stale)))
-        r      (ses/open-stream! client credentials target grant ses on-msg #(forget-stream! ch actor))]
-    (swap! (:sessions ch) update actor listened r (now))))
+        r      (ses/open-stream! client credentials target grant ses on-msg
+                                 #(do (deliver ended true) (forget-stream! ch actor token)))]
+    (swap! (:sessions ch) update actor listened (tagged r token) (now))
+    (when (realized? ended) (forget-stream! ch actor token))))
 
 (def stream-retry-ms
   "The least time between two attempts to hold one actor's event stream."
