@@ -154,10 +154,20 @@
           value redactions))
 
 (defn redact-output
-  "L1 Tool -> Tool: mask existing output paths (vectors of keys/indices)
-   the way the journal masks args (autonomous.domain.journal/redact-paths).
-   The default replacement is the string \"<redacted>\". Choose a different
-   replacement if that would violate the tool's declared output schema.
+  "L1 Tool -> Tool: mask output paths (vectors of keys/indices) the way
+   the journal masks args (autonomous.domain.journal/redact-paths): a
+   missing key or index adds nothing, and a path that stops at a string,
+   a set or a number masks that whole value. The default replacement is
+   the string \"<redacted>\". Choose a different replacement if that
+   would violate the tool's declared output schema.
+
+   Masking is deliberately broad, so a field whose schema is a union
+   needs a replacement valid for every branch it can hold: with
+   [:balance [:or :int [:map [:cents :int]]]] and the path
+   [:balance :cents], an output {:balance 0} has its number masked
+   whole, and a string replacement then fails :int, refusing the call
+   :output/invalid-redaction. Pick a replacement every branch accepts,
+   or declare the field in terms that admit it.
 
    Paths address the output in WIRE form (autonomous.domain.wire/->wire):
    a lazy seq or list is a vector there, so [:accounts 0 :token] reaches
@@ -202,8 +212,9 @@
    :data of every refusal the tool's own invocation answers: what its
    handler or codec refuses with, what it throws (the ex-data minus
    :autonomous/error, autonomous.domain.answer/from-exception), and how an
-   async result fails. The path [] replaces the whole :data. The default
-   replacement is \"<redacted>\".
+   async result fails. The path [] replaces the whole :data, and a path
+   that stops at a string, a set or a number masks that whole value, as
+   in the journal. The default replacement is \"<redacted>\".
 
    The data is already in wire form when the paths apply. Refusals the
    runtime itself makes before the tool runs (scopes, arguments, leases)

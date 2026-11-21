@@ -104,6 +104,13 @@
       (is (= {:ok {:accounts [{:token "<redacted>"}]}} (call tool-name {}))
           (str "the secret never reaches the wire through " id)))))
 
+(deftest an-output-path-that-stops-at-a-string-masks-it-whole
+  (a/reg-tool :t/session {:description "Session" :read-only? true
+                          :handler (fn [_ _] {:user "ana" :set-cookie "sid=s3cret"})})
+  (a/decorate! (decorator/each-tool (decorator/redact-output [[:set-cookie 0]])))
+  (is (= {:ok {:user "ana" :set-cookie "<redacted>"}} (call "t_session" {}))
+      "one cookie string where a vector of cookies was expected never reaches the agent"))
+
 (deftest a-redaction-that-breaks-the-output-schema-is-refused
   (a/decorate! (decorator/each-tool (decorator/redact-output [[:token]] 0)))
   (is (= :output/invalid-redaction (get-in (call "t_account" {}) [:error :type]))))
@@ -158,23 +165,25 @@
   (is (= "<redacted>" (get-in (call "t_login" {:mode "throw"}) [:error :data]))
       "the empty path replaces the whole data"))
 
-(deftest a-refusal-path-through-a-string-or-a-set-masks-nothing-and-never-hangs
+(deftest a-refusal-path-that-stops-at-a-string-or-a-set-masks-it-and-never-hangs
   (a/reg-tool :t/cookie {:description "Cookie" :read-only? true
                          :input [:map [:mode :string]]
                          :handler (fn [{:keys [mode]} _]
-                                    (let [e (ex-info "denied" {:set-cookie "sid=s3cret" :tags #{"a"}})]
+                                    (let [e (ex-info "denied" {:set-cookie "sid=s3cret" :tags #{"s3cret"}})]
                                       (if (= mode "later") (future (throw e)) (throw e))))})
   (a/journal-calls! {:errors? true})
   (a/decorate! (decorator/each-tool (decorator/redact-refusal [[:set-cookie 0] [:tags 0]])))
-  (is (= {:set-cookie "sid=s3cret" :tags #{"a"}}
-         (get-in (call "t_cookie" {:mode "now"}) [:error :data]))
-      "a step into a string or a set is an absent path, as the journal treats it")
-  (let [{:keys [pending]} (call "t_cookie" {:mode "later"})
-        settled (poll-until-settled pending)]
-    (is (= :tool-threw (get-in settled [:error :type])) "the async call settles, never stays Pending")
-    (is (some #(and (= :autonomous/settled (:kind %)) (= pending (:pending %)))
-              (:entries (:ok (a/rpc {:op :journal :since 0}))))
-        "and its settled entry is written")))
+  (let [masked {:set-cookie "<redacted>" :tags "<redacted>"}]
+    (is (= masked (get-in (call "t_cookie" {:mode "now"}) [:error :data]))
+        "a string where a vector of cookies was expected, and a set, are masked whole")
+    (let [{:keys [pending]} (call "t_cookie" {:mode "later"})
+          settled (poll-until-settled pending)]
+      (is (= :tool-threw (get-in settled [:error :type])) "the async call settles, never stays Pending")
+      (is (= masked (get-in settled [:error :data])) "and its data is masked the same way")
+      (let [entries (:entries (:ok (a/rpc {:op :journal :since 0})))]
+        (is (some #(and (= :autonomous/settled (:kind %)) (= pending (:pending %))) entries)
+            "its settled entry is written")
+        (is (not (str/includes? (pr-str entries) "s3cret")) "and the journal never holds the secret")))))
 
 (deftest a-refusal-projection-that-throws-drops-the-data-and-still-settles
   (let [boom (fn [_ a] (if (answer/refused? a) (throw (ex-info "projection broke" {})) a))]
