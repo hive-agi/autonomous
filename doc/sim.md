@@ -53,6 +53,14 @@ an allowed provider, so each goes to the human (or is refused):
 - `ſicoobsim` or any other non-ASCII look-alike
 - a missing value
 
+The service decodes JSON with Go's `encoding/json`, which matches keys
+case-insensitively (with Unicode simple folding: `K` is `k`, `ſ` is
+`s`). So when any map along `:path` holds a second key, keyword or
+string, that folds like the path's key (`{:provider "sicoob-sim"
+:Provider "756"}`), the call is refused `:provider-ambiguous`. This
+happens whether or not there is an approval gate, because the human
+would be shown one provider while the service read the other.
+
 The match is narrower than the service's on purpose: a value read
 differently on the two sides can only fail to be allowed, never let the
 real bank through.

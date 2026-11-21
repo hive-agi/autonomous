@@ -88,6 +88,37 @@
   (is (= :provider-not-allowed
          (:outcome (last (filter #(= :autonomous/call (:kind %)) (:entries (:ok (a/rpc {:op :journal})))))))))
 
+(deftest a-key-a-json-decoder-folds-onto-the-path-is-refused
+  (a/reg-tool :charge {:description "Create a charge, the body sent whole"
+                       :input [:map [:body [:map [:provider :any]]]]
+                       :handler (fn [args _] (swap! runs conj (:body args)) {:sent (:body args)})})
+  (let [asker (approval/queue-asker (repeat 10 {:decision :approve :approver "ana"}))
+        nested (decorator/provider-allowlist {:path [:body :provider] :providers providers
+                                              :allowed ["sicoob-sim"]})]
+    (a/decorate! (a/each-tool (comp nested (decorator/require-approval {:asker asker :timeout-ms 1000}))))
+    (doseq [sibling [:Provider "Provider" :PROVIDER "PROVIDER" "provider" (keyword "PROVİDER")
+                     "pROVIDER"]
+            :let [body (assoc {:provider "sicoob-sim"} sibling "756")]
+            :when (not= sibling :provider)]
+      (let [r (a/rpc (merge rw {:op :call :tool "charge" :args {:body body}}))]
+        (is (= :provider-ambiguous (get-in r [:error :type])) (pr-str sibling))))
+    (is (empty? @(:requests asker)) "no human was shown one provider while the service would read another")
+    (is (empty? @runs) "nothing was sent"))
+  (testing "the Kelvin sign and the long s fold like k and s, as Go folds them"
+    (is (decorator/ambiguous-path? [:bank-key] {:bank-key "sicoob-sim" (keyword "ban\u212a-key") "756"}))
+    (is (decorator/ambiguous-path? [:bank-key] {:bank-key "sicoob-sim" "BAN\u212a-\u212aEY" "756"}))
+    (is (decorator/ambiguous-path? [:sim] {:sim "sicoob-sim" "\u017fIM" "756"})))
+  (testing "a folding key at an outer level is refused too"
+    (is (decorator/ambiguous-path? [:body :provider] {:body {:provider "sicoob-sim"} "BODY" {:provider "756"}})))
+  (testing "unrelated keys are fine"
+    (is (not (decorator/ambiguous-path? [:body :provider] {:body {:provider "sicoob-sim" :amount 1 :providers 2}})))))
+
+(deftest go-folds-the-kelvin-sign-and-the-long-s
+  (is (= (decorator/json-fold "k") (decorator/json-fold "\u212a")))
+  (is (= (decorator/json-fold "s") (decorator/json-fold "\u017f")))
+  (is (= (decorator/json-fold "provider") (decorator/json-fold "PROVIDER")))
+  (is (not= (decorator/json-fold "provider") (decorator/json-fold "provider_"))))
+
 (deftest scope-is-checked-first-in-either-order
   (doseq [[label d] [["allowlist outside" (comp allowlist (decorator/require-scope :payments))]
                      ["allowlist inside" (comp (decorator/require-scope :payments) allowlist)]]]

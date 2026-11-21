@@ -165,6 +165,60 @@
   [{:keys [path providers allowed]} args]
   (contains? allowed (resolve-provider providers (get-in args path))))
 
+(defn- fold-code-point
+  "L1 host: code point `cp` as Go's encoding/json folds it to match a key
+   to a field: the upper case of its lower case (simple mappings on the
+   JVM; on cljs the first code point of the full mappings, which folds at
+   least as much)."
+  [cp]
+  #?(:cljs    (.codePointAt (.toUpperCase (.toLowerCase (js/String.fromCodePoint cp))) 0)
+     :default (Character/toUpperCase (Character/toLowerCase (int cp)))))
+
+(defn json-fold
+  "L1: string `s` folded code point by code point (fold-code-point), as a
+   vector: two keys a case-insensitive JSON decoder matches to one field
+   fold equal. \"provider\" and \"PROVIDER\" fold equal, as K (Kelvin
+   sign) folds like K and ſ (long s) like S."
+  [s]
+  (loop [i 0 acc []]
+    (if (< i (count s))
+      (let [cp #?(:cljs (.codePointAt s i) :default (Character/codePointAt ^CharSequence s (int i)))]
+        (recur (+ i (if (> cp 0xFFFF) 2 1)) (conj acc (fold-code-point cp))))
+      acc)))
+
+(defn- key-text
+  "L1: map key `k` as the JSON key it is sent as; nil for other keys."
+  [k]
+  (cond (keyword? k) (subs (str k) 1)
+        (string? k)  k))
+
+(defn- shadowed-key?
+  "L1: does map `m` hold a key other than `k` that folds like it?"
+  [m k]
+  (when-let [t (and (map? m) (key-text k))]
+    (let [f (json-fold t)]
+      (boolean (some #(and (not= % k) (= f (some-> (key-text %) json-fold))) (keys m))))))
+
+(defn ambiguous-path?
+  "L1: does some map along `path` in `args` hold, beside the path's own
+   key, another key (keyword or string) a case-insensitive JSON decoder
+   reads as that key? Then the service may read a value the allowlist did
+   not, so the call names no provider safely."
+  [path args]
+  (loop [m args [k & more :as ks] path]
+    (cond (empty? ks)           false
+          (shadowed-key? m k)   true
+          :else                 (recur (get m k) more))))
+
+(defn- ambiguous
+  "L1: the complete refusal of a call whose provider path is ambiguous."
+  [{:keys [path]}]
+  (answer/complete
+   (answer/refusal :provider-ambiguous
+                   (str "the args carry more than one key a JSON decoder reads as "
+                        (pr-str path) "; send the provider once, under that exact key")
+                   {:path path})))
+
 (defn- not-allowed
   "L1: the complete refusal of a call whose provider allowlist `al` does
    not allow, naming the path and what it accepts."
@@ -183,11 +237,15 @@
    human sees the args with CallDetail `redact` paths masked. A tool with
    a provider-allowlist runs (run) at once for an allowed provider and
    treats any other call as gated, refused :provider-not-allowed when it
-   has no approval gate."
+   has no approval gate. Args with two keys along the provider path that
+   fold alike (ambiguous-path?) are refused :provider-ambiguous, approval
+   gate or not: the human would see one provider and the service read the
+   other."
   [tool args grant redact run]
   (let [al       (::allowlist tool)
         approval (::approval tool)]
     (cond
+      (and al (ambiguous-path? (:path al) args)) (ambiguous al)
       (and al (allowlisted? al args)) (unstamped (run))
       approval (let [{:keys [asker timeout-ms]} approval]
                  (thenable/chain (approval/ask! asker (approval-request tool args grant redact) timeout-ms)
