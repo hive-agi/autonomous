@@ -48,7 +48,8 @@
     autonomous.asyncapi-core-test
     autonomous.asyncapi-source-test
     autonomous.json-spec-test
-    autonomous.bb-mcp.mount-test])
+    autonomous.bb-mcp.mount-test
+    sim.control-test])
 
 (defn -main [& _]
   (apply require suites)
