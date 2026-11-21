@@ -129,21 +129,21 @@
          (into (sorted-map)))))
 
 (defn probes-by-actor
-  "Pure: the fleet's `views` ({view-key {:probe Probe ..}}, a view-key
-   being [target-id actor scopes runtime]) as {[target-id actor] Probe},
-   the newest probe of each pair."
-  [views]
-  (reduce (fn [acc [[tid actor] v]]
-            (let [k [tid actor] p (:probe v)]
+  "Pure: the fleet's `view-probes` ([[view-key Probe] ...] from
+   fleet/last-probes-by-view, a view-key being [target-id actor scopes
+   runtime]) as {[target-id actor] Probe}, the newest probe of each pair."
+  [view-probes]
+  (reduce (fn [acc [[tid actor] p]]
+            (let [k [tid actor]]
               (if (< (:at (acc k) -1) (:at p 0)) (assoc acc k p) acc)))
-          {} views))
+          {} view-probes))
 
 (defn- health-of
   "Health from the last look at every target (see `status-by-target`): :ok
    all up (or none looked at yet), :degraded some down or slow. :details
    :status is keyed by target id."
   [srv actor]
-  (let [views  @(get-in srv [:fleet :last])
+  (let [views  (fleet/last-probes-by-view (:fleet srv))
         status (status-by-target (probes-by-actor views) actor (System/currentTimeMillis))]
     {:status  (if (every? #{:up} (vals status)) :ok :degraded)
      :details {:apps (get-in srv [:fleet :order]) :status status}}))

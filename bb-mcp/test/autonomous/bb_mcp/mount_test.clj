@@ -137,9 +137,15 @@
 
 (deftest views-fold-to-the-newest-probe-per-target-and-actor
   (is (= {["t" "a"] {:status :up :at 9} ["t" "b"] {:status :down :at 3}}
-         (fa/probes-by-actor {["t" "a" #{:read} nil]        {:probe {:status :down :at 4}}
-                              ["t" "a" #{:read :write} nil] {:probe {:status :up :at 9}}
-                              ["t" "b" #{:read} nil]        {:probe {:status :down :at 3}}}))))
+         (fa/probes-by-actor [[["t" "a" #{:read} nil]        {:status :down :at 4}]
+                              [["t" "a" #{:read :write} nil] {:status :up :at 9}]
+                              [["t" "b" #{:read} nil]        {:status :down :at 3}]])))
+  (testing "it reads the fleet through its accessor"
+    (let [srv (fleet-server [["todo" (app "todo" ["todo_add"])]])]
+      (bf/probe (:fleet srv) (s/open-session "x" {:actor "a" :scopes #{:read}}))
+      (is (= [["todo" "a"]] (keys (fa/probes-by-actor (bf/last-probes-by-view (:fleet srv))))))
+      (is (= #{"todo"} (set (map first (bf/last-probes (:fleet srv)))))
+          "the per-target accessor still answers what it did"))))
 
 (deftest an-addon-without-its-own-credential-is-not-down-forever
   (let [now     100000

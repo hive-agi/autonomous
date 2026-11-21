@@ -172,6 +172,13 @@
   [f]
   (map (fn [[[tid] v]] [tid (:probe v)]) @(:last f)))
 
+(defn last-probes-by-view
+  "[[view-key probe] ...]: the latest look of every view the fleet keeps, a
+   view-key being [target-id actor scopes runtime], for a reader that must
+   tell one agent's look from another's."
+  [f]
+  (map (fn [[k v]] [k (:probe v)]) @(:last f)))
+
 (defn surface
   "What `session` sees of the fleet now: {:app :tools :resources :apps
    :probes :fingerprint}."
