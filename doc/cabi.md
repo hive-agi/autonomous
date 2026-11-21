@@ -34,8 +34,18 @@ threaded, `-fPIC` build of the Chez version jolt was made with, found at
 ```sh
 bb cabi        # cabi/build/libautonomous.so, then the C smoke test (16 checks)
 bb cabi-rust   # the Rust example app
+bb cabi-go     # the Go (cgo) example: registers a tool, dispatches calls, prints answers
+bb cabi-zig    # the same in Zig (zig build run)
+bb cabi-bindings  # all of the above in one go
 bb cabi-e2e    # live: the Rust app dials a bb bridge, agents call it over MCP
 ```
+
+| language | binding | example |
+|---|---|---|
+| C | `cabi/include/autonomous.h` | `cabi/examples/c/smoke.c` |
+| Rust | `cabi/bindings/rust` (crate) | `cabi/examples/rust` |
+| Go | `cabi/bindings/go` (cgo package) | `cabi/bindings/go/example`, see its README for `runtime.LockOSThread` |
+| Zig | `cabi/bindings/zig/autonomous.zig` | `cabi/bindings/zig/example`, `zig build run` |
 
 The library is about 30 MB: it carries the jolt runtime, its GC, malli and
 the autonomous runtime. It builds in about a minute.
@@ -79,6 +89,32 @@ A tool spec:
  :scopes      #{:write}}     ; optional; any keyword the app invents
 ```
 
+### The same spec as JSON
+
+An author who does not write Clojure can describe tools in JSON instead
+(`autonomous.json-spec`). `input` and `output` are either a JSON Schema
+object or a string of malli EDN; `$ref`s resolve within the file, so tools
+can share `$defs`. A file holds one tool, an array of them, or
+`{"tools": [...]}`:
+
+```json
+{"$defs": {"Sku": {"type": "string", "minLength": 1}},
+ "tools": [{"id": "inventory/receive",
+            "description": "Receive qty units of sku into stock.",
+            "input": {"type": "object",
+                      "properties": {"sku": {"$ref": "#/$defs/Sku"},
+                                     "qty": {"type": "integer", "minimum": 1}},
+                      "required": ["sku", "qty"]},
+            "readOnly": false,
+            "scopes": ["write"]}]}
+```
+
+`bb tool-spec tools.json` prints each tool as `id<TAB>edn-spec`: the text
+`autonomous_reg_tool` takes, so the ABI is the same for both forms. In a
+Clojure host, `autonomous.json-spec.load/register-file!` registers the file
+with a handler per tool id. An invalid spec is refused with what to fix
+(`:invalid-tool`), never half-registered for want of a handler.
+
 ## The loop
 
 Every language does the same few steps (the Rust example,
@@ -112,8 +148,12 @@ serves it (see [websocket.md](websocket.md)).
 
 ## What is still open
 
-- Bindings: the header plus a C smoke test and a Rust app exist; Go (cgo),
-  Zig and a JSON-only spec form are next.
+- Bindings: C, Rust, Go and Zig. The Go and Zig examples run in process
+  (`autonomous_rpc`); only the Rust app dials a bridge (`bb cabi-e2e`). The
+  ABI takes EDN specs; a JSON spec reaches it through `bb tool-spec`, not
+  through a JSON export of its own.
+- The host dispatcher sees the args only, not the caller's grant (actor,
+  scopes), which autonomous.js already passes.
 - The library is one process-wide runtime; the per-instance runtime of the
   surface work could give each embedder several.
 - Size: 30 MB per app. A thin, library-free client (the frame protocol
