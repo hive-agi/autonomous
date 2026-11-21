@@ -131,7 +131,7 @@
               {:description "Create a Pix charge" :input [:map [:provider :string] [:amount :string]]
                :handler (fn [args _] {:created (:provider args)})})
   (let [asker (approval/queue-asker [{:decision :deny :approver "pedro"}])]
-    (a/decorate! (a/each-tool (persona/money-guard asker)))
+    (a/decorate! (persona/money-guard asker {:tools #{"payment_createPixCharge"}}))
     (let [g {:actor "persona-1" :scopes [:read :write :payment/money]}]
       (is (= {:ok {:created "sicoob-sim"}} (call g "payment_createPixCharge" {:provider "sicoob-sim" :amount "1.27"})))
       (is (empty? @(:requests asker)))
@@ -141,3 +141,19 @@
       (is (= :forbidden (get-in (call {:actor "p" :scopes [:write]} "payment_createPixCharge"
                                       {:provider "sicoob-sim" :amount "1"}) [:error :type]))))
     (is (:ok (call "sim_state" {})) "the sim tools themselves are not money tools")))
+
+(deftest the-persona-guard-refuses-to-guard-a-tool-that-is-not-there
+  (let [asker (approval/queue-asker [])]
+    (testing "the default money-tools are not registered here, so nothing would be guarded"
+      (let [e (try (a/decorate! (persona/money-guard asker)) nil
+                   (catch clojure.lang.ExceptionInfo e e))]
+        (is (some? e) "decorate! throws")
+        (is (= ["payment_createBoleto" "payment_createPixCharge"]
+               (:missing (ex-data (or (ex-cause e) e)))))))
+    (testing "one name of several missing is enough to refuse"
+      (a/reg-tool :payment/createPixCharge {:description "Create a Pix charge" :input [:map [:provider :string]]
+                                            :handler (fn [args _] args)})
+      (is (thrown? clojure.lang.ExceptionInfo (a/decorate! (persona/money-guard asker))))
+      (is (= {:ok {:provider "756"}}
+             (call {:actor "p" :scopes [:write]} "payment_createPixCharge" {:provider "756"}))
+          "the refused decoration left the surface as it was; the caller sees it is unguarded"))))

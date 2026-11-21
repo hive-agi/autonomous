@@ -78,11 +78,22 @@ providers, or an `:allowed` code that no provider has throws
 - `persona-allowed`: `["sicoob-sim"]`. Add `card-sim` here, and to
   `providers`, once the service has it.
 - `money-tools`: the MCP names that move money.
-- `money-guard`: the composition above, applied to those tools only.
+- `money-guard`: a Surface -> Surface decorator that applies the
+  composition above to those tools only. It throws
+  `:sim/money-tool-missing` when a listed name is not on the surface, so
+  a renamed or unregistered tool is never left unguarded while the guard
+  looks installed. Install it after the payment tools are registered.
 
 ```clojure
-(a/decorate! (a/each-tool (sim.persona/money-guard asker)))
+(a/decorate! (sim.persona/money-guard asker))
 ```
+
+`providers` must match the payment service's `knownProviders` (code and
+name) exactly. A provider the service registers but this list omits
+fails closed: the allowlist resolves nothing for it, so a call naming it
+goes to the human. sisf-payment does not register `sicoob-sim` yet
+(main 57d290d). Until it does, a call naming `sicoob-sim` passes the
+allowlist and is refused by the service.
 
 The real bank, `756`/`Sicoob`, stays behind a human, for a real canary
 payment.

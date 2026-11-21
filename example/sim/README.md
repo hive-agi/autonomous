@@ -12,7 +12,7 @@ kubectl -n funeraria-francana-staging port-forward svc/staging-sicoob-sim 18099:
 
 ```clojure
 (sim.control/install! {:base-url "http://127.0.0.1:18099"})
-(autonomous.core/decorate! (autonomous.core/each-tool (sim.persona/money-guard asker)))
+(autonomous.core/decorate! (sim.persona/money-guard asker)) ; after the payment tools are registered
 ```
 
 See [doc/sim.md](../../doc/sim.md) for the allowlist rules, the
