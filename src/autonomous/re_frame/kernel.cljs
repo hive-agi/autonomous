@@ -60,7 +60,8 @@
 
 (defn event-call
   "L3 Pipeline: dispatch an encoded event in the tool's frame and produce
-   its declared result."
+   its declared result. The frame is checked again before the result is
+   read: the handler or its effects may have destroyed it."
   [host tool args event grant]
   (let [frame (usable-frame host (:frame tool))]
     (when-not ((:registered? host) :event (first event) frame)
@@ -68,7 +69,7 @@
     (if (:async? tool)
       (do ((:dispatch host) (model/tag-event event grant) frame) {:queued (wire/->wire event)})
       (do ((:dispatch-sync host) (model/tag-event event grant) frame)
-          (result-of host tool args event frame)))))
+          (result-of host tool args event (usable-frame host frame))))))
 
 (defn subscription-call
   "L3 Pipeline: read an encoded query in the tool's frame."

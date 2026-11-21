@@ -18,6 +18,8 @@
   (rf/reg-event :rf2/add (fn [{:keys [db]} [_ text]] {:db (update db :items (fnil conj []) text)}))
   (rf/reg-event :rf2/boom (fn [_ _] (throw (ex-info "boom" {}))))
   (rf/reg-event :rf2/later (fn [{:keys [db]} [_ text]] {:db (assoc db :later text)}))
+  (rf/reg-fx :rf2/destroy-frame (fn [_ frame] (rf/destroy-frame! frame)))
+  (rf/reg-event :rf2/self-destroy (fn [_ [_ frame]] {:fx [[:rf2/destroy-frame frame]]}))
   (rf/reg-sub :rf2/items (fn [db _] (get db :items [])))
   (rf/make-frame {:id :app/a})
   (rf/make-frame {:id :app/b}))
@@ -84,6 +86,21 @@
        (add-tool! :a/add :app/a)
        (rf/destroy-frame! :app/a)
        (is (= :re-frame/unknown-frame (get-in (call "a_add" {:text "x"}) [:error :type])))))))
+
+(deftest a-frame-destroyed-by-its-own-handler-is-refused-not-read-as-empty
+  (in-runtime
+   (fn []
+     (doseq [[tool-id result] [[:a/path {:result-path [:items]}]
+                               [:a/db {:result (fn [db _] {:db db})}]
+                               [:a/sub {:result-sub [:rf2/items]}]]]
+       (rf/make-frame {:id :app/a})
+       (adapter/reg-event-tool :rf2/self-destroy
+                               (merge {:tool-id tool-id :description "Destroy my frame" :frame :app/a
+                                       :args->event (fn [_] [:rf2/self-destroy :app/a])}
+                                      result))
+       (let [answer (call (str (namespace tool-id) "_" (name tool-id)) {})]
+         (is (not (contains? (set (rf/frame-ids)) :app/a)) "the handler's fx destroyed frame a")
+         (is (= :re-frame/unknown-frame (get-in answer [:error :type])) (pr-str tool-id)))))))
 
 (deftest a-throwing-handler-leaves-no-frame-behind
   (in-runtime
