@@ -260,6 +260,18 @@
     (is (= [:approve :deny] [(decision a) (decision b)]))
     (is (eventually #(re-find #"(?s)request 1 approved.*request 2 denied, not run" (str out))))))
 
+(deftest at-end-of-input-every-waiting-request-is-denied-at-once
+  (let [out   (StringWriter.)
+        eof   (promise)
+        asker (approval/stdin-asker {:read-line #(do @eof nil) :out out :approver "op" :wait-ms 60000})
+        a     (approval/ask! asker (assoc request :tool "a") 10000)
+        b     (approval/ask! asker (assoc request :tool "b") 10000)
+        t0    (System/currentTimeMillis)]
+    (deliver eof true)
+    (is (= [:deny :deny] [(decision a) (decision b)]) "denied, not left to wait 60 s")
+    (is (< (- (System/currentTimeMillis) t0) 1500))
+    (is (eventually #(re-find #"request 2 denied, not run: input has ended" (str out))))))
+
 (deftest default-askers-under-different-in-bindings-share-system-in
   (let [a (binding [*in* (BufferedReader. (StringReader. ""))] (approval/stdin-asker {:out *err*}))
         b (binding [*in* (BufferedReader. (StringReader. ""))] (approval/stdin-asker {:out *err*}))]

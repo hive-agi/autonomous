@@ -323,30 +323,35 @@
          :approve     "approved"
          :deny        "denied, not run"
          ::unshowable "denied, not run: too many argument values to show"
+         ::eof        "denied, not run: input has ended"
          "expired, not run")))
 
 #?(:cljs nil
    :default
    (defn- pump!
      "L1 Boundary: once per terminal, a daemon thread moving every line read
-      into the terminal's `lines` queue, so no request waits on a read. At
-      end of input the stream's terminal is let go."
-     [{:keys [read-line! lines pumping]} stream]
+      into the terminal's `lines` queue, so no request waits on a read. It
+      reads until end of input, for the life of the process; at end of
+      input it marks the terminal :eof (every request still waiting, and
+      every later one, is then denied) and lets the stream's terminal go."
+     [{:keys [read-line! lines pumping state]} stream]
      (when (compare-and-set! pumping false true)
        (daemon! #(do (loop [] (when-let [l (read-line!)] (.put lines l) (recur)))
+                     (swap! state assoc :eof? true)
                      (swap! terminals dissoc stream))))))
 
 #?(:cljs nil
    :default
    (defn- await-line
      "L1 Boundary: the first line typed within `ms` while promise `p` is still
-      undelivered, or nil; looks again every 50 ms."
-     [{:keys [lines]} p ms]
+      undelivered, ::eof once input has ended, or nil; looks again every 50 ms."
+     [{:keys [lines state]} p ms]
      (let [deadline (+ (now-ms) ms)]
        (loop []
          (let [left (- deadline (now-ms))]
            (when (and (pos? left) (not (realized? p)))
              (or (.poll lines (min 50 left) java.util.concurrent.TimeUnit/MILLISECONDS)
+                 (when (:eof? @state) ::eof)
                  (recur))))))))
 
 #?(:cljs nil
@@ -363,12 +368,12 @@
    (defn- answer!
      "L1 Boundary: discard every line typed before this prompt (saying how
       many), prompt request `entry` on `terminal`, and deliver its Verdict
-      for the next line, or ::expired when no line comes in its :wait-ms or
-      it is withdrawn first."
+      for the next line: ::eof once input has ended, ::expired when no line
+      comes in its :wait-ms or it is withdrawn first."
      [{:keys [out] :as terminal} {:keys [id p approver request wait-ms]}]
      (apply say! out (concat (discarded-lines! terminal) (prompt-lines id request)))
      (let [line (await-line terminal p wait-ms)]
-       (deliver p (if line (verdict approver id line) ::expired)))))
+       (deliver p (case line nil ::expired ::eof ::eof (verdict approver id line))))))
 
 #?(:cljs nil
    :default
