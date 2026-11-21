@@ -194,6 +194,7 @@ bb e2e                                                   # live swarm story from
 bb cabi && bb cabi-rust && bb cabi-e2e                   # libautonomous, C smoke, Rust app live (needs jolt)
 npm install
 clojure -M:cljs -m shadow.cljs.devtools.cli compile test && node target/cljs-test/test.js
+clojure -M:cljs-rf2 -m shadow.cljs.devtools.cli compile rf2-test && node target/cljs-rf2-test/test.js  # against re-frame2
 ```
 
 The `:integration` suite (`clojure -M:test integration`) needs live runtimes:

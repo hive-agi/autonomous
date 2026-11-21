@@ -11,8 +11,7 @@
    Origin     who caused an event: :agent (dispatched through a tool, the
               actor rides on the event's metadata) or :app (the human, a
               timer, a server push)."
-  (:require [autonomous.domain.wire :as wire]
-            [clojure.string :as str]))
+  (:require [autonomous.domain.wire :as wire]))
 
 (def redacted "<redacted>")
 
@@ -57,16 +56,7 @@
   (vary-meta event assoc :autonomous/actor (:actor grant)))
 
 (defn frame-problem
-  "nil when `frame` is absent or a re-frame2 frame id (a keyword, as the
-   hive-cljs dialect takes :frame), else why it is not one."
+  "nil when `frame` is absent or a frame-id keyword, else why it is not."
   [frame]
   (when-not (or (nil? frame) (keyword? frame))
     (str "a re-frame2 :frame is a frame-id keyword, got " (pr-str frame))))
-
-(defn js-path
-  "The keys from the global object down to var `sym` in a ClojureScript
-   build that keeps names (not :advanced), e.g. 're-frame.frame/*current-frame*
-   is [\"re_frame\" \"frame\" \"_STAR_current_frame_STAR_\"]."
-  [sym]
-  (conj (mapv #(str (munge %)) (str/split (namespace sym) #"\."))
-        (str (munge (name sym)))))

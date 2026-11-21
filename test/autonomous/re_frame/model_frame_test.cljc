@@ -14,9 +14,3 @@
     (doseq [bad ["app/main" 'app/main [:app/main] {:id :app/main} 1]]
       (is (string? (model/frame-problem bad)) (pr-str bad))
       (is (re-find #"frame-id keyword" (model/frame-problem bad))))))
-
-(deftest js-paths-follow-the-cljs-munging
-  (is (= ["re_frame" "frame" "_STAR_current_frame_STAR_"]
-         (model/js-path 're-frame.frame/*current-frame*)))
-  (is (= ["re_frame" "core" "app_db_value"]
-         (model/js-path 're-frame.core/app-db-value))))
