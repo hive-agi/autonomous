@@ -92,7 +92,11 @@
 
 (defn- eval!
   "L3 Boundary: the Answer of evaluating `code` on the channel's
-   connection, serialized, reconnecting once; never throws."
+   connection, serialized, reconnecting once; never throws. A transport
+   exception shows only the allowlisted text of autonomous.bridge.failure.
+   An ex-info is exempt and keeps its message and data: it is the app's
+   own deliberate refusal (an :autonomous/error), raised in the runtime
+   this bridge evaluates in, not text a remote echoed back."
   [{:keys [conn] :as channel} code]
   (locking conn
     (try (attempt-twice! channel code)
