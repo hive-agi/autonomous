@@ -213,6 +213,17 @@ Two stores ship:
   never reads a stale cache.
 - `expose-db!` registers app-db as the resource `re-frame://app-db`, limited
   to `:paths` when given, with `:redact` paths shown as `<redacted>`.
+- re-frame2 keeps one app-db per frame and refuses a bare `subscribe` outside
+  a frame. Its apps load `autonomous.re-frame2` instead. It has
+  `reg-event-tool`, `reg-sub-tool` and `expose-db!` (not yet `observe-events!`
+  or `install-dev-tools!`), and each also takes `:frame`, a frame-id keyword such as `:app/main`. A
+  call then goes through re-frame2's frame-targeted API: `dispatch` and
+  `dispatch-sync` with `{:frame f}`, `subscribe-once` with `{:frame f}`, and
+  `app-db-value`. A frame that is not registered when the call runs is
+  refused with `:re-frame/unknown-frame`, never read as an empty app-db.
+  Without `:frame`, the ambient frame (`with-frame`, `frame-provider`) is
+  used. `autonomous.re-frame` has no frames and refuses `:frame` with
+  `:re-frame/no-frames`.
 - `observe-events!` journals every re-frame event with its origin: `:agent`
   when a tool dispatched it (the actor rides on the event's metadata), `:app`
   otherwise. Event arguments are kept only with `:payloads? true`, since they

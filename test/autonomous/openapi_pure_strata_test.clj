@@ -7,7 +7,8 @@
             [autonomous.openapi.derive :as derive]
             [autonomous.openapi.doc :as doc]
             [autonomous.openapi.schema :as schema]
-            [clojure.test :refer [deftest is testing]]))
+            [clojure.test :refer [deftest is testing]]
+            [autonomous.domain.answer :as answer]))
 
 ;; -----------------------------------------------------------------------------
 ;; doc
@@ -75,6 +76,105 @@
     (is (= [:map [:a [:any]] [:b {:optional true} [:any]]]
            (all-of {"allOf" [{"properties" {"a" {}} "required" ["a"]} {"type" "object" "properties" {"b" {}}}]} {})))
     (is (= [:and [:string] [:int]] (all-of {"allOf" [{"type" "string"} {"type" "integer"}]} {})))))
+
+(deftest problems-find-every-place-read-as-any
+  (is (= [] (schema/problems {"type" "object" "properties" {"a" {"type" ["string" "null"]}}})))
+  (is (= [{:problem :unknown-type :type ["integr"] :path ["properties" "a"]}
+          {:problem :unresolved-ref :ref "#/x" :path ["items" "oneOf" 0]}
+          {:problem :cycle :ref "#/n" :path ["additionalProperties"]}]
+         (schema/problems {"properties" {"a" {"type" "integr"}}
+                           "items" {"oneOf" [{"x-autonomous-unresolved" "#/x"}]}
+                           "additionalProperties" {"x-autonomous-cycle" "#/n"}})))
+  (is (= [] (schema/problems {"enum" [{"type" "nope"}] "default" {"type" "nope"}}))
+      "data keys are values, not subschemas"))
+
+(deftest derivation-refuses-an-input-schema-that-fails-open
+  (let [doc  (fn [schema] {"paths" {"/a" {"post" {"operationId" "op"
+                                                  "requestBody" {"content" {"application/json" {"schema" schema}}}
+                                                  "responses" {"200" {"description" "ok"}}}}}
+                           "components" {"schemas" {"N" {"type" "object" "properties" {"n" {"$ref" "#/components/schemas/N"}}}}}})
+        derive* (fn [schema] (openapi/derive-tools (doc schema) {:expose {"op" {}}}))]
+    (is (= "operation op input schema: $ref #/components/schemas/Typo does not resolve"
+           (get-in (derive* {"type" "object" "properties" {"x" {"$ref" "#/components/schemas/Typo"}}}) [:error :message])))
+    (is (= :openapi/unresolved-schema
+           (get-in (derive* {"type" "object" "properties" {"x" {"type" "integr"}}}) [:error :type])))
+    (is (= :openapi/unresolved-schema
+           (get-in (openapi/derive-tools {"paths" {"/a" {"get" {"operationId" "op"
+                                                                "parameters" [{"name" "q" "in" "query" "schema" {"$ref" "http://evil/x.json#/y"}}]
+                                                                "responses" {"200" {"description" "ok"}}}}}}
+                                         {:expose {"op" {}}})
+                   [:error :type]))
+        "a parameter's schema is checked too")
+    (testing "a recursive schema is legal OpenAPI and still derives"
+      (is (some? (:ok (derive* {"$ref" "#/components/schemas/N"})))))))
+
+(defn- body-op
+  "A one-operation document whose JSON body is `schema`, with components."
+  [schema]
+  {"paths" {"/a" {"post" {"operationId" "op"
+                          "requestBody" {"required" true "content" {"application/json" {"schema" schema}}}
+                          "responses" {"200" {"description" "ok"}}}}}
+   "components" {"schemas" {"Id"   {"type" "string" "format" "uuid"}
+                            "Base" {"type" "object" "properties" {"id" {"$ref" "#/components/schemas/Id"}}}}}})
+
+(defn- derive-body
+  [schema & [opts]]
+  (openapi/derive-tools (body-op schema) (merge {:expose {"op" {}}} opts)))
+
+(deftest lenient-schemas-restores-the-old-any-derivation
+  (doseq [[why schema] [["a non-standard type" {"type" "object" "properties" {"f" {"type" "file"}}}]
+                        ["an int alias" {"type" "object" "properties" {"n" {"type" "int"}}}]
+                        ["a float alias" {"type" "object" "properties" {"n" {"type" "float"}}}]
+                        ["any" {"type" "object" "properties" {"x" {"type" "any"}}}]
+                        ["an anchor ref" {"type" "object" "properties" {"x" {"$ref" "#node"}}}]
+                        ["an absolute URL ref" {"type" "object" "properties" {"x" {"$ref" "https://h/s.json#/X"}}}]]]
+    (testing why
+      (is (= :openapi/unresolved-schema (get-in (derive-body schema) [:error :type])) "strict by default")
+      (let [input (-> (derive-body schema {:lenient-schemas? true}) :ok first second :input)]
+        (is (= :map (first input)))
+        (is (= [:any] (last (second input))) "the construct reads as :any again")))))
+
+(deftest an-anchor-fragment-is-not-the-whole-document
+  (let [d {"x" {"type" "string"}}]
+    (is (= ::doc/missing (doc/pointer-get d "node")))
+    (is (= d (doc/pointer-get d "")))
+    (is (= {"type" "string"} (doc/pointer-get d "/x")))
+    (is (= {"x-autonomous-unresolved" "#node"} (doc/resolved (doc/bundle d) {"$ref" "#node"})))))
+
+(deftest valid-constructs-derive-under-the-strict-default
+  (let [schema {"type" "object"
+                "required" ["ref" "kind"]
+                "properties"
+                {"ref"      {"$ref" "#/components/schemas/Id"}
+                 "sibling"  {"$ref" "#/components/schemas/Id" "description" "an id, described here"}
+                 "multi"    {"type" ["string" "integer"]}
+                 "nullable" {"type" "string" "nullable" true}
+                 "maybe31"  {"type" ["string" "null"]}
+                 "all"      {"allOf" [{"$ref" "#/components/schemas/Base"} {"properties" {"n" {"type" "integer"}}}]}
+                 "one"      {"oneOf" [{"type" "string"} {"type" "integer"}]}
+                 "any"      {"anyOf" [{"type" "boolean"} {"$ref" "#/components/schemas/Id"}]}
+                 "dict"     {"type" "object" "additionalProperties" {"type" "integer"}}
+                 "fmt"      {"format" "date-time"}
+                 "type"     {"type" "string" "description" "a property named type"}
+                 "kind"     {"type" "string" "enum" ["a" "b"] "default" "a"}
+                 "fixed"    {"const" 3}}}
+        a     (derive-body schema)
+        input (-> a :ok first second :input)
+        by-k  (into {} (map (fn [[k & more]] [k (last more)])) (rest input))]
+    (is (answer/ok? a) (pr-str a))
+    (is (= [:string] (by-k :ref)))
+    (is (= [:string {:description "an id, described here"}] (by-k :sibling)))
+    (is (= [:or [:int] [:string]] (by-k :multi)))
+    (is (= [:maybe [:string]] (by-k :nullable)))
+    (is (= [:maybe [:string]] (by-k :maybe31)))
+    (is (= [:map [:id {:optional true} [:string]] [:n {:optional true} [:int]]] (by-k :all)))
+    (is (= [:or [:string] [:int]] (by-k :one)))
+    (is (= [:or [:boolean] [:string]] (by-k :any)))
+    (is (= [:map-of [:or :keyword :string] [:int]] (by-k :dict)))
+    (is (= [:any] (by-k :fmt)) "format alone constrains nothing and is not refused")
+    (is (= [:string {:description "a property named type"}] (by-k :type)))
+    (is (= [:enum {:json-schema/default "a"} "a" "b"] (by-k :kind)))
+    (is (= [:= 3] (by-k :fixed)))))
 
 ;; -----------------------------------------------------------------------------
 ;; codec

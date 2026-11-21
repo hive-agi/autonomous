@@ -126,6 +126,59 @@
                                             (s-of {"a_x" (input-tool strict)})))
         "the one schema value seen twice is one tool")))
 
+(deftest a-property-registry-is-part-of-the-form
+  (let [local [:map {:registry {::amount [:int {:min 0}]}} [:amount ::amount]]
+        rec   [:schema {:registry {::node [:map [:kids [:vector [:ref ::node]]]]}} ::node]
+        merges? (fn [k make] (answer/ok? (surface/merge-surfaces
+                                          (s-of {"a_x" (:ok (affordance/->tool :a/x {:description "x" :handler (fn [_ _] 1) k (make)}))})
+                                          (s-of {"a_x" (:ok (affordance/->tool :a/x {:description "x" :handler (fn [_ _] 1) k (make)}))}))))]
+    (is (merges? :input #(m/schema local)) "two compilations of an input with a property registry are one tool")
+    (is (merges? :output #(m/schema local)) "and of an output")
+    (is (merges? :output #(m/schema rec)) "a recursive :ref through a property registry")
+    (is (merges? :input #(m/schema [:map {:registry {::a :int}} [:x [:map {:registry {::b ::a}} [:y ::b]]]]))
+        "nested property registries, each naming the other's type")
+    (is (not (merges? :input #(m/schema [:map [:n :int]] {::other-option true})))
+        "an option other than :registry is never accounted for")
+    (is (not (merges? :input #(m/schema [:map {:registry {::a :my/amount}} [:x ::a]]
+                                        {:registry (merge (m/default-schemas)
+                                                          {:my/amount (m/-simple-schema {:type :my/amount :pred int?})})})))
+        "a property registry does not account for an options registry under it")
+    (is (not (merges? :input #(m/schema [:map [:n :int]]
+                                        {:registry (merge (m/default-schemas)
+                                                          {:int (m/-simple-schema {:type :int :pred string?})})})))
+        "an options registry that redefines a default type")
+    (is (not (merges? :input #(m/schema [:map [:n :int]] {:registry (m/default-schemas)})))
+        "an options registry is compared by identity even when it rebuilds the defaults: its entries are new values")))
+
+(defn- amount-type [pred] (m/-simple-schema {:type :my/amount :pred pred}))
+
+(deftest a-property-registry-value-whose-form-hides-its-validator-clashes
+  (let [strict  #(and (int? %) (< % 100))
+        opts    (fn [p] {:registry (merge (m/default-schemas) {:my/amount (amount-type p)})})
+        input   #(:ok (affordance/->tool :a/x {:description "x" :handler (fn [_ _] 1) :input %}))
+        clashes? (fn [mk] (= :name-clash (get-in (surface/merge-surfaces (s-of {"a_x" (input (mk strict))})
+                                                                         (s-of {"a_x" (input (mk int?))}))
+                                                 [:error :type])))]
+    (doseq [[why mk value] [["A: a compiled schema built with an options registry, as a property-registry value"
+                             (fn [p] (m/schema [:map {:registry {::a (m/schema [:map [:amount :my/amount]] (opts p))}} [:x ::a]]))
+                             {:x {:amount 5000}}]
+                            ["B: an IntoSchema object as a property-registry value"
+                             (fn [p] (m/schema [:map {:registry {:my/amount (amount-type p)}} [:amount :my/amount]]))
+                             {:amount 5000}]
+                            ["H: as A, reached through [:ref ::n]"
+                             (fn [p] (m/schema [:schema {:registry {::n (m/schema [:map [:amount :my/amount]] (opts p))}}
+                                                [:map [:x [:ref ::n]]]]))
+                             {:x {:amount 5000}}]]]
+      (is (= (m/form (mk strict)) (m/form (mk int?))) (str why ": the forms are equal"))
+      (is (not= (m/validate (mk strict) value) (m/validate (mk int?) value)) (str why ": they validate differently"))
+      (is (clashes? mk) (str why ": so they clash, never a silent merge")))))
+
+(deftest an-unreadable-options-registry-is-foreign-and-never-throws
+  (let [input #(:ok (affordance/->tool :a/x {:description "x" :handler (fn [_ _] 1) :input %}))
+        mk    #(m/schema [:map [:n :int]] {:registry nil})
+        r     (surface/merge-surfaces (s-of {"a_x" (input (mk))}) (s-of {"a_x" (input (mk))}))]
+    (is (= :name-clash (get-in r [:error :type])) "a nil registry is foreign: compared by identity, refused as a clash")))
+
 (deftest regexes-that-differ-only-in-flags-clash
   (let [ci (java.util.regex.Pattern/compile "^a+$" java.util.regex.Pattern/CASE_INSENSITIVE)
         cs (java.util.regex.Pattern/compile "^a+$")]

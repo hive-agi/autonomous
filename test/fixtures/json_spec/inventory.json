@@ -1,0 +1,33 @@
+{
+  "$defs": {
+    "Sku": {"type": "string", "minLength": 1, "description": "Stock keeping unit"}
+  },
+  "tools": [
+    {
+      "id": "inventory/receive",
+      "description": "Receive qty units of sku into stock. Answers the new on-hand count.",
+      "input": {
+        "type": "object",
+        "properties": {
+          "sku": {"$ref": "#/$defs/Sku"},
+          "qty": {"type": "integer", "minimum": 1},
+          "note": {"type": "string"}
+        },
+        "required": ["sku", "qty"]
+      },
+      "output": {
+        "type": "object",
+        "properties": {"sku": {"$ref": "#/$defs/Sku"}, "on_hand": {"type": "integer"}},
+        "required": ["sku", "on_hand"]
+      },
+      "scopes": ["write"]
+    },
+    {
+      "id": "inventory/stock",
+      "description": "Every sku and its on-hand count.",
+      "input": "[:map]",
+      "readOnly": true,
+      "annotations": {"idempotentHint": true}
+    }
+  ]
+}
