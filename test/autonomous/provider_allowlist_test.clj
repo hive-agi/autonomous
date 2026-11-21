@@ -176,15 +176,56 @@
 
 (defn- ascii-lower [s] (apply str (map #(if (<= (int \A) (int %) (int \Z)) (char (+ 32 (int %))) %) s)))
 
+(def ^:private look-alikes
+  "Code points a Unicode case fold (Go's EqualFold, Java's
+   equalsIgnoreCase) maps onto an ASCII letter of the sim's name, plus
+   fullwidth forms and a dotless i, keyed by the letter they stand in for."
+  {\s [\u017f "\uff53" "\uff33"]              ; long s, fullwidth s and S
+   \S [\u017f "\uff33"]
+   \k [\u212a "\uff4b"]                       ; Kelvin sign, fullwidth k
+   \i [\u0131 \u0130 "\uff49"]                ; dotless i, dotted I, fullwidth i
+   \m ["\uff4d"]
+   \o ["\uff4f" \u03bf]                       ; fullwidth o, Greek omicron
+   \c ["\uff43" \u0441]                       ; fullwidth c, Cyrillic es
+   \b ["\uff42"]
+   \- ["\uff0d" \u2010]})
+
+(def ^:private swapped
+  "The sim's code or name with one or more letters replaced by a look-alike."
+  (gen/let [base  (gen/elements ["sicoob-sim" "SicoobSim" "sicoobsim"])
+            picks (gen/vector (gen/elements (range 1000)) (count base))
+            swaps (gen/vector gen/boolean (count base))]
+    (let [s (apply str (map (fn [ch pick swap?]
+                              (let [alts (get look-alikes (Character/toLowerCase (char ch)) (get look-alikes ch))]
+                                (if (and swap? (seq alts)) (str (nth alts (mod pick (count alts)))) (str ch))))
+                            base picks swaps))]
+      (if (= s base) (str (subs s 0 1) "\u212a" (subs s 1)) s))))
+
 (def ^:private spelling
-  "Strings near the sim's code and name: case flips, padding, a code point
-   swapped, plus arbitrary strings."
+  "Strings near the sim's code and name: case flips, padding, code points
+   swapped for look-alikes, plus arbitrary strings."
   (gen/one-of [gen/string
                gen/string-ascii
+               swapped
+               swapped
                (gen/let [base (gen/elements ["sicoob-sim" "SicoobSim" "756" "Sicoob"])
                          flips (gen/vector gen/boolean (count base))
                          pad (gen/elements ["" " " "\t" "\u00a0" "\u200b" "%20"])]
                  (str pad (apply str (map #(if %2 (str/upper-case (str %1)) (str %1)) base flips)) pad))]))
+
+(deftest the-generator-reaches-look-alikes-a-unicode-fold-would-accept
+  (let [sample (gen/sample swapped 300)]
+    (is (some #(.equalsIgnoreCase "sicoobsim" ^String %) (remove #(re-matches #"[\x20-\x7E]+" %) sample))
+        "a resolver folding with Unicode rules would allow some of them")))
+
+(deftest a-unicode-folding-resolver-is-caught
+  (let [mutant (fn [providers v]
+                 (when (string? v)
+                   (or (some #(when (= v (:code %)) (:code %)) providers)
+                       (some #(when (and (:name %) (.equalsIgnoreCase ^String (:name %) ^String v)) (:code %)) providers))))
+        r (tc/quick-check 500 (prop/for-all [s spelling]
+                                (= (mutant providers s) (decorator/resolve-provider providers s))))]
+    (is (not (:pass? r)) "the property distinguishes the mutant from the real resolver")))
 
 (deftest only-the-service-spellings-of-an-allowed-provider-are-allowed
   (let [r (tc/quick-check 500
