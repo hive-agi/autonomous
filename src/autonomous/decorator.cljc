@@ -98,16 +98,184 @@
   [x]
   (if (thenable/thenable? x) (thenable/chain x strip-approval) (strip-approval x)))
 
+(def ^:private ProviderAllowlist
+  "L1: the options of provider-allowlist, after :allowed is made a set."
+  [:map
+   [:path [:vector {:min 1} [:or :keyword :string :int]]]
+   [:providers [:vector {:min 1} [:map [:code [:string {:min 1}]]
+                                  [:name {:optional true} [:string {:min 1}]]]]]
+   [:allowed [:set {:min 1} [:string {:min 1}]]]])
+
+(declare fold-ascii)
+
+(defn- allowlist-problem
+  "L1: what is wrong with allowlist options `al`, nil when nothing is: a
+   shape problem; a code or name that is not printable ASCII (the
+   service folds Unicode wider than an ASCII fold, so such a provider
+   could be reached by a value read differently here); two providers
+   with one code; two names that fold alike (the service's name lookup
+   walks a Go map, so which one it answers is unspecified); a name that
+   folds like another provider's code; or an :allowed code no provider
+   has."
+  [al]
+  (if-let [e (m/explain ProviderAllowlist al)]
+    (me/humanize e)
+    (let [ps    (:providers al)
+          codes (map :code ps)
+          texts (remove nil? (mapcat (juxt :code :name) ps))
+          pairs (for [p ps q ps :when (and (:name p) (not= (:code p) (:code q)))] [p q])]
+      (or (not-empty (for [t texts :when (not (re-matches #"[\x20-\x7E]+" t))] {:not-ascii t}))
+          (not-empty (for [[c n] (frequencies codes) :when (< 1 n)] {:duplicate-code c}))
+          (not-empty (for [[p q] pairs :when (= (fold-ascii (:name p)) (fold-ascii (:code q)))]
+                       {:name (:name p) :folds-like-code (:code q)}))
+          (not-empty (for [[p q] pairs :when (and (:name q) (= (fold-ascii (:name p)) (fold-ascii (:name q))))]
+                       {:names-fold-alike [(:name p) (:name q)]}))
+          (not-empty (remove (set codes) (:allowed al)))))))
+
+(defn provider-allowlist
+  "L1 Tool -> Tool: the value at arg path `:path` (e.g. [:provider]) must
+   name a provider whose code is in `:allowed`. `:providers` lists the
+   providers the service resolves, [{:code str :name str}], so the value
+   is read the way the service reads it: a code exactly, else a name
+   ignoring ASCII case. Whitespace, another case of a code, a number, a
+   non-ASCII character or no value at all names no provider.
+
+   A call naming an allowed provider runs at once, past any
+   require-approval gate. Any other call goes to the tool's
+   require-approval gate when it has one, and is refused
+   :provider-not-allowed when it has none. Scopes are checked before
+   both, so the order is scope, then allowlist or approval, whatever the
+   order of the decorators. Throws ex-info :autonomous/error
+   :invalid-allowlist on a bad option or an :allowed code with no
+   provider, and when applied to a tool that already carries a
+   different allowlist: a later decoration never widens (or silently
+   replaces) the first."
+  [{:keys [path providers allowed] :as opts}]
+  (let [colls?  (and (sequential? path) (sequential? providers) (coll? allowed) (not (map? allowed)))
+        al      (when colls? {:path (vec path) :providers (vec providers) :allowed (set allowed)})
+        problem (if colls? (allowlist-problem al) "path, providers and allowed must be collections")]
+    (when problem
+      (throw (ex-info (str "provider-allowlist: invalid options: " (pr-str problem))
+                      {:autonomous/error :invalid-allowlist :problem problem :opts opts})))
+    (fn [tool]
+      (when-let [held (::allowlist tool)]
+        (when (not= held al)
+          (throw (ex-info (str "provider-allowlist: tool " (:name tool) " already has a provider "
+                               "allowlist; a second one would replace it")
+                          {:autonomous/error :invalid-allowlist :tool (:name tool)
+                           :held (:allowed held) :offered (:allowed al)}))))
+      (assoc tool ::allowlist al))))
+
+(def ^:private ascii-lower
+  "L1: each ASCII capital letter to its small letter, nothing else."
+  (zipmap "ABCDEFGHIJKLMNOPQRSTUVWXYZ" "abcdefghijklmnopqrstuvwxyz"))
+
+(defn- fold-ascii
+  "L1: string `s` with its ASCII capitals made small, whatever the locale."
+  [s]
+  (apply str (map #(get ascii-lower % %) s)))
+
+(defn resolve-provider
+  "L1: the :code of the provider of `providers` that value `v` names: the
+   one whose code equals `v`, else the one whose name equals it ignoring
+   ASCII case; nil when none does or `v` is not a string of printable
+   ASCII. Narrower than a Unicode case fold on purpose: a value read
+   differently here and at the service can only fail to be allowed."
+  [providers v]
+  (when (and (string? v) (re-matches #"[\x20-\x7E]+" v))
+    (or (some #(when (= v (:code %)) (:code %)) providers)
+        (let [folded (fold-ascii v)]
+          (some #(when (and (:name %) (= folded (fold-ascii (:name %)))) (:code %)) providers)))))
+
+(defn- allowlisted?
+  "L1: does `args` name an allowed provider at the allowlist's path?"
+  [{:keys [path providers allowed]} args]
+  (contains? allowed (resolve-provider providers (get-in args path))))
+
+(defn wire-key
+  "L1: map key `k` as a JSON encoder writes it: a string as is, a
+   keyword or symbol by its NAME only (clojure.data.json drops the
+   namespace, so :x/Provider is written \"Provider\"); nil for any other
+   key, which has no agreed wire text."
+  [k]
+  (cond (string? k)                     k
+        (or (keyword? k) (symbol? k))   (name k)))
+
+(defn- ascii-key?
+  "L1: is `t` a key text of printable ASCII only?"
+  [t]
+  (boolean (and (string? t) (re-matches #"[\x20-\x7E]*" t))))
+
+(defn- shadowed-key?
+  "L1: is the key `k` of map `m` not the only one a case-insensitive JSON
+   decoder could read as it? True when some key of `m` has no wire text
+   (wire-key), or a non-ASCII wire text (Go's simple folding maps far
+   more code points than an ASCII fold, so those keys fail closed), or
+   when a key other than `k` writes a text equal to `k`'s ignoring ASCII
+   case, a duplicate included."
+  [m k]
+  (when (map? m)
+    (let [texts (map wire-key (keys m))
+          own   (fold-ascii (str (wire-key k)))]
+      (boolean
+       (or (nil? (wire-key k))
+           (not-every? ascii-key? texts)
+           (< 1 (count (filter #(= own (fold-ascii %)) texts))))))))
+
+(defn ambiguous-path?
+  "L1: could a case-insensitive JSON decoder read, in some map along
+   `path` in `args`, another key as the path's own? Keys are compared as
+   the encoder writes them (wire-key); a map with a key that has no wire
+   text or a non-ASCII one counts as ambiguous. Then the service may read
+   a value the allowlist did not, so the call names no provider safely."
+  [path args]
+  (loop [m args [k & more :as ks] path]
+    (cond (empty? ks)           false
+          (shadowed-key? m k)   true
+          :else                 (recur (get m k) more))))
+
+(defn- ambiguous
+  "L1: the complete refusal of a call whose provider path is ambiguous."
+  [{:keys [path]}]
+  (answer/complete
+   (answer/refusal :provider-ambiguous
+                   (str "the args carry more than one key a JSON decoder reads as "
+                        (pr-str path) "; send the provider once, under that exact key")
+                   {:path path})))
+
+(defn- not-allowed
+  "L1: the complete refusal of a call whose provider allowlist `al` does
+   not allow, naming the path and what it accepts."
+  [{:keys [path providers allowed]}]
+  (answer/complete
+   (answer/refusal :provider-not-allowed
+                   (str "the provider at " (pr-str path) " is not one this tool may use")
+                   {:path path
+                    :allowed (vec (sort (mapcat (juxt :code :name)
+                                                (filter (comp allowed :code) providers))))})))
+
 (defn gate
   "L1 Pipeline: (run) for a tool without require-approval; else a thenable
    of the complete Answer the human's Decision leads to (see
    require-approval), carrying that Decision as :autonomous/approval. The
-   human sees the args with CallDetail `redact` paths masked."
+   human sees the args with CallDetail `redact` paths masked. A tool with
+   a provider-allowlist runs (run) at once for an allowed provider and
+   treats any other call as gated, refused :provider-not-allowed when it
+   has no approval gate. Args with two keys along the provider path that
+   fold alike (ambiguous-path?) are refused :provider-ambiguous, approval
+   gate or not: the human would see one provider and the service read the
+   other."
   [tool args grant redact run]
-  (if-let [{:keys [asker timeout-ms]} (::approval tool)]
-    (thenable/chain (approval/ask! asker (approval-request tool args grant redact) timeout-ms)
-                    (partial decided run))
-    (unstamped (run))))
+  (let [al       (::allowlist tool)
+        approval (::approval tool)]
+    (cond
+      (and al (ambiguous-path? (:path al) args)) (ambiguous al)
+      (and al (allowlisted? al args)) (unstamped (run))
+      approval (let [{:keys [asker timeout-ms]} approval]
+                 (thenable/chain (approval/ask! asker (approval-request tool args grant redact) timeout-ms)
+                                 (partial decided run)))
+      al       (not-allowed al)
+      :else    (unstamped (run)))))
 
 (defn each-tool
   "L1 lift: Tool -> Tool fn `f` as a Surface -> Surface fn applying it to

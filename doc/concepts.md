@@ -155,7 +155,11 @@ to one.
 
 A **lease** gives one actor exclusive write access to one runtime until a
 time. Other actors keep reading; their calls to tools that are not read-only
-are refused with `:leased`, naming the holder. `autonomous_lease` takes
+are refused with `:leased`, naming the holder. The refusal's `:data` is the
+lease: `:actor` is the holder's raw actor, data for code to compare, never
+text to display (it may hold control, bidi or zero-width characters).
+Display `:shown-actor` beside it, the holder as `naming/shown-actor` shows
+it, or the refusal's message. `autonomous_lease` takes
 `ttl_seconds` (default 60, at most 3600); the holder may call it again to
 renew. `autonomous_release` ends it, and releasing a lease you do not hold
 changes nothing. Taking and releasing a lease need `:write`.

@@ -33,7 +33,8 @@
             [autonomous.domain.wire :as wire]
             [autonomous.mcp.server :as server]
             [autonomous.mcp.stdio :as stdio]
-            [autonomous.bridge.fleet :as fleet]))
+            [autonomous.bridge.fleet :as fleet]
+            [autonomous.domain.naming :as naming]))
 
 ;; HTTP and token minting load on demand: they need hashing and an HTTP
 ;; server, which ClojureWasm does not have, while stdio serving needs neither.
@@ -94,6 +95,18 @@
   [cfg]
   (merge (:http cfg) {:tokens (:tokens cfg) :anonymous (anonymous-grant cfg)}))
 
+(defn http-banner
+  "Pure: the stderr line announcing HTTP for `cfg` on `port`. Without
+   tokens it names the anonymous actor as naming/quoted-actor shows it, so
+   a configured actor (AUTONOMOUS_ACTOR or --actor) with a control, bidi or
+   zero-width character is escaped, never written to the terminal."
+  [cfg port]
+  (str "autonomous: MCP on http://" (get-in cfg [:http :bind] "127.0.0.1") ":" port "/mcp"
+       (if (seq (:tokens cfg))
+         " (bearer tokens required)"
+         (str " (loopback, no tokens, acting as "
+              (naming/quoted-actor (:actor (anonymous-grant cfg))) ")"))))
+
 (defn- serve-http!
   "Start HTTP for `cfg`, announce it on stderr and block until the process
    is told to end. Answers the exit code when it cannot start."
@@ -102,11 +115,7 @@
     (if (answer/refused? h)
       (do (err "autonomous serve:" (get-in h [:error :message])) 3)
       (do (stop-on-exit! (get-in h [:ok :stop!]))
-          (err (str "autonomous: MCP on http://" (get-in cfg [:http :bind] "127.0.0.1")
-                    ":" (get-in h [:ok :port]) "/mcp"
-                    (if (seq (:tokens cfg))
-                      " (bearer tokens required)"
-                      (str " (loopback, no tokens, acting as " (:actor (anonymous-grant cfg)) ")"))))
+          (err (http-banner cfg (get-in h [:ok :port])))
           @(promise)))))
 
 (defn- serve [args]

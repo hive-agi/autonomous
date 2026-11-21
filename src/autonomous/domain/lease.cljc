@@ -1,7 +1,8 @@
 (ns autonomous.domain.lease
   "Lease rules. A swarm shares runtimes; a lease lets one actor write without
    others interleaving, while every actor keeps reading. Time is a parameter,
-   never read here. Pure.")
+   never read here. Pure."
+  (:require [autonomous.domain.naming :as naming]))
 
 (def default-ttl-ms 60000)
 
@@ -44,3 +45,13 @@
    unchanged (releasing what you do not hold changes nothing)."
   [lease actor]
   (if (= actor (:actor lease)) nil lease))
+
+(defn refusal-data
+  "The :data of a :leased refusal naming the holder of `lease`: the lease
+   itself, plus :shown-actor, the holder as naming/shown-actor shows it.
+   :actor stays the holder's raw actor, as data for code to compare (a
+   caller tells whether it holds the lease by it), never text to display:
+   it may hold controls, bidi or zero-width characters. Show :shown-actor
+   (or the refusal's message), never :actor."
+  [lease]
+  (assoc lease :shown-actor (naming/shown-actor (:actor lease))))
