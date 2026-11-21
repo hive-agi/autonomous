@@ -13,6 +13,7 @@
     autonomous.ring-contract-test
     autonomous.domain.decision-trifecta-test
     autonomous.domain.primitives-trifecta-test
+    autonomous.domain.naming-test
     autonomous.domain.fleet-trifecta-test
     autonomous.bridge.bridge-trifecta-test
     autonomous.bridge.sources-strata-test

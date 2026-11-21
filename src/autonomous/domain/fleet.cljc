@@ -49,11 +49,13 @@
         (recur (quot n 36) (cons (nth base36 (mod n 36)) acc))))))
 
 (defn exposed-name
-  "MCP name of app tool `tool` (an MCP-safe name) of the target with prefix
-   `pfx`: <pfx>__<tool>, or past 64 characters its first 59, `-` and the
-   checksum of the full name. Always a valid MCP tool name."
+  "MCP name of app tool `tool` of the target with prefix `pfx`:
+   <pfx>__<tool>, every character of `tool` outside [A-Za-z0-9_-] made `_`
+   (a remote app may list `admin.tools.list`), or past 64 characters its
+   first 59, `-` and the checksum of the full name. Always a valid MCP tool
+   name; `resolve-local` finds the tool a changed name stands for."
   [pfx tool]
-  (let [full (str pfx separator tool)]
+  (let [full (str pfx separator (naming/sanitize tool))]
     (if (<= (count full) naming/max-length)
       full
       (str (subs full 0 (- naming/max-length 5)) "-" (checksum full)))))
@@ -154,21 +156,33 @@
     (seq dropped)  (assoc :dropped (mapv :name dropped))
     error          (assoc :error error)))
 
+(defn- split-taken
+  "[kept dropped] of `tools` under prefix `pfx`: a tool whose exposed name
+   is in `routes` or belongs to an earlier tool of `tools` is dropped."
+  [routes pfx tools]
+  (let [[kept dropped _]
+        (reduce (fn [[kept dropped seen] t]
+                  (let [n (exposed-name pfx (:name t))]
+                    (if (or (contains? routes n) (contains? seen n))
+                      [kept (conj dropped t) seen]
+                      [(conj kept t) dropped (conj seen n)])))
+                [[] [] #{}]
+                tools)]
+    [kept dropped]))
+
 (defn merge-probes
   "The fleet surface of `probes`, a vector of {:target :status :manifest
    :error} in fleet order: {:tools :resources :routes :apps}. Only :up
    targets contribute tools and resources. :routes maps each exposed tool
-   name to {:target :tool}. A name an earlier target already exposes is not
-   listed again; the later app reports it under :dropped."
+   name to {:target :tool}. A name an earlier target or an earlier tool of
+   the same target already exposes is not listed again; the app reports
+   the later tool under :dropped."
   [probes]
   (reduce
    (fn [acc {:keys [target status manifest error]}]
-     (let [pfx     (prefix target)
-           up?     (= :up status)
-           tools   (when up? (:tools manifest))
-           taken?  #(contains? (:routes acc) (exposed-name pfx (:name %)))
-           kept    (remove taken? tools)
-           dropped (filter taken? tools)]
+     (let [pfx            (prefix target)
+           up?            (= :up status)
+           [kept dropped] (split-taken (:routes acc) pfx (when up? (:tools manifest)))]
        (-> acc
            (update :tools into (map #(expose-tool target pfx %)) kept)
            (update :resources into (map #(expose-resource target pfx %)) (when up? (:resources manifest)))

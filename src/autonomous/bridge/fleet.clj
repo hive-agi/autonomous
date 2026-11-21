@@ -108,12 +108,13 @@
   (map :name (get-in @(:last f) [(last-key tid session) :manifest :tools])))
 
 (defn route-tool
-  "Ok {:target :local} of exposed tool name `exposed` for `session`. A name
-   cut at 64 characters is resolved against the tools the target listed
-   that session's actor at its last probe."
+  "Ok {:target :local} of exposed tool name `exposed` for `session`. In a
+   fleet the local name is resolved against the tools the target listed
+   that session's actor at its last probe, so a name cut at 64 characters
+   or with characters made `_` reaches the tool it stands for."
   [f session exposed]
   (let [r (fleet/route-tool (:view f) exposed)]
-    (if (and (answer/ok? r) (= :fleet (:mode f)) (fleet/cut? exposed))
+    (if (and (answer/ok? r) (= :fleet (:mode f)))
       (let [tid (get-in r [:ok :target])]
         (answer/ok {:target tid
                     :local (or (fleet/resolve-local (fleet/prefix tid) exposed (known-tools f session tid))

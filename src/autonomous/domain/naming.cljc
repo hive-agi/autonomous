@@ -14,13 +14,22 @@
        (<= 1 (count s) max-length)
        (every? name-chars (seq s))))
 
+(defn sanitize
+  "`s` with every character outside [A-Za-z0-9_-] replaced by _, one _ per
+   UTF-16 code unit (so an astral character such as an emoji becomes __ on
+   the JVM, babashka and JavaScript alike). The length is unchanged."
+  [s]
+  (apply str (map #(if (name-chars %) % "_") (str s))))
+
 (defn tool-name
   "MCP-safe name for a tool id: :todo/add is \"todo_add\", :app.todos/add-item
    is \"app_todos_add-item\". Every character outside [A-Za-z0-9_-] becomes _,
-   and the result is cut at 64 characters. An empty id names \"_\"."
+   and the result is cut at 64 characters. An empty id names \"_\". Always a
+   valid tool name, and a valid name maps to itself. Two ids may map to the
+   same name; registering the second is refused as a :name-clash."
   [id]
   (let [s   (if (keyword? id) (subs (str id) 1) (str id))
-        out (apply str (map #(if (name-chars %) % "_") (take max-length s)))]
+        out (sanitize (apply str (take max-length s)))]
     (if (= "" out) "_" out)))
 
 (def max-target-id-length 48)
