@@ -24,7 +24,9 @@
    an agent can evaluate in the gate's JVM can bypass it. Nothing here
    resolves hive-mcp; the hive ask is injected (`hive-solicit` :ask!), the
    pins are a required argument, and the hive-cloak functions are captured
-   as values when the asker is built."
+   as values when the asker is built. The gate runs as a uid that no agent
+   has (hive-cloak doc/signed-approval.md), and the operator reads the
+   request on the gate's console (`console!`), never in the hive ask."
   (:require [autonomous.approval :as approval]
             [clojure.string :as str]))
 
@@ -139,16 +141,35 @@
   (when (string? s)
     (re-find #"(?s)-----BEGIN PGP SIGNATURE-----.*?-----END PGP SIGNATURE-----\r?\n?" s)))
 
+(defn console!
+  "L1 Boundary: print on the gate's own console `out` the request it is
+   waiting on (hive-cloak's per-line rendering, from the request the gate
+   itself holds). This is the one rendering the operator can trust: the
+   hash prefix shown here and by the signer or the hive ask only ties the
+   prompts for one request together, and anyone who knows the hash can
+   print it beside a different request."
+  [out nonce request request-sha256]
+  (when-let [lines (cloak 'approval-request-lines)]
+    (locking out
+      (binding [*out* out]
+        (println (str "[" (subs (str nonce) 0 (min 8 (count (str nonce)))) "] waiting for a signed approval;"
+                      " this console is the request; the prefix only matches it to the other prompt"))
+        (run! println (lines request request-sha256))
+        (flush)))))
+
 (defn hive-solicit
   "L1 adapter (clj): a :solicit over a hive ask. `:ask!` is REQUIRED and
    injected by the app (a client of the hive's ask, with
    hive-mcp.hivemind.messaging/ask!'s shape); nothing is resolved in this
-   process. The ask carries the request (escaped per line), the hash prefix
-   to compare, and the exact statement to sign; the answer must be the
-   armored detached signature of that statement. A plain \"yes\", or any
-   answer without a signature block, answers nil, so the asker denies.
-   `:agent-id` names the asker in the hive."
-  [{:keys [ask! agent-id timeout-ms] :or {timeout-ms 120000}}]
+   process. Before it asks, the request is printed on the gate's own
+   `:console` (default *err*, see `console!`): anything in the hive can
+   rewrite the ask's text, so the operator reads the request there. The
+   ask carries the request (escaped per line), the hash prefix and the
+   exact statement to sign; the answer must be the armored detached
+   signature of that statement. A plain \"yes\", or any answer without a
+   signature block, answers nil, so the asker denies. `:agent-id` names
+   the asker in the hive."
+  [{:keys [ask! agent-id timeout-ms console] :or {timeout-ms 120000 console *err*}}]
   (let [statement (cloak 'approval-statement)
         lines     (cloak 'approval-request-lines)]
     (when-not (and statement lines)
@@ -159,35 +180,28 @@
                       {:autonomous/error :invalid-approval})))
     (fn [{:keys [request nonce request-sha256 expires-ms]}]
       (future
+        (console! console nonce request request-sha256)
         (let [text (:ok (statement {:nonce nonce :request-sha256 request-sha256
                                     :decision :approve :expires-ms expires-ms}))
               res  (ask! (str agent-id) "Sign this approval statement to approve; anything else denies."
                          nil
                          :timeout-ms timeout-ms :expects :text
                          :context (str (str/join "\n" (lines request request-sha256))
+                                       "\n\nRead the request on the gate's console, not here: this text"
+                                       " travels through the hive. The prefix only matches the two."
                                        "\n\nStatement (sign exactly these bytes):\n" text))
               sig  (signature-in (:answer res))]
           (when (and text sig)
             {:statement text :signature sig}))))))
 
-(defn console!
-  "L1 Boundary: print on the gate's own console `out` the request it is
-   waiting on (hive-cloak's per-line rendering) and the hash prefix, so the
-   operator can compare it with the prefix the signer shows."
-  [out nonce request request-sha256]
-  (when-let [lines (cloak 'approval-request-lines)]
-    (locking out
-      (binding [*out* out]
-        (println (str "[" (subs (str nonce) 0 (min 8 (count (str nonce)))) "] waiting for a signed approval"))
-        (run! println (lines request request-sha256))
-        (flush)))))
-
 (defn cloak-solicit
   "L1 adapter (clj): a :solicit that asks the operator through hive-cloak's
    own signer (hive-cloak.api/sign-approval!) in THIS process. The signer
    gets the request itself, hashes it, and shows it (escaped per line) with
-   the hash prefix before asking for the passphrase; the gate prints the
-   same prefix (see `console!`). No signature, no answer."
+   the hash prefix before asking for the passphrase. The gate first prints
+   the request on its own `:console` (see `console!`), which is where the
+   operator reads it; the prefix only ties the two prompts together. No
+   signature, no answer."
   ([] (cloak-solicit {}))
   ([{:keys [timeout-ms console] :or {timeout-ms 120000 console *err*}}]
    (let [sign! (cloak 'sign-approval!)]
