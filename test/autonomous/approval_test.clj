@@ -256,37 +256,35 @@
         (is (re-find #"\(1 line\(s\) typed before this prompt were discarded\)" (text out)))))))
 
 (deftest a-read-line-without-ready-cannot-approve-a-buffered-line
-  (let [out   (screen)
-        ;; "1 y" was typed before any prompt; a slow read hands it over only
-        ;; once request 1 is shown, as a read with latency does.
-        read! (let [sent (atom false)]
-                #(if (compare-and-set! sent false true)
-                   (do (await-ref (:text out) (fn [s] (re-find #"\[1\] approval requested" s))) "1 y")
-                   (.take (java.util.concurrent.LinkedBlockingQueue.))))
-        built (try (approval/stdin-asker {:read-line read! :out (:w out) :approver "op" :wait-ms 2000})
-                   (catch clojure.lang.ExceptionInfo e (:autonomous/error (ex-data e))))]
-    (is (= :invalid-approval built) "a :read-line without :ready? is refused")
-    (when (approval/asker? built)
-      (is (not= :approve (decision (approval/ask! built request 5000)))
-          "the buffered \"1 y\" (request 1 is always the first id) approved unseen"))))
+  (testing "\"1 y\" typed before any prompt, handed over by a slow read once request 1 is shown"
+    (let [out   (screen)
+          read! (let [sent (atom false)]
+                  #(if (compare-and-set! sent false true)
+                     (do (await-ref (:text out) (fn [s] (re-find #"\[1\] approval requested" s))) "1 y")
+                     (.take (java.util.concurrent.LinkedBlockingQueue.))))
+          built (try (approval/stdin-asker {:read-line read! :out (:w out) :approver "op" :wait-ms 2000})
+                     (catch clojure.lang.ExceptionInfo e (:autonomous/error (ex-data e))))]
+      (is (= :invalid-approval built) "a :read-line without :ready? is refused")
+      (when (approval/asker? built)
+        (is (not= :approve (decision (approval/ask! built request 5000)))
+            "the buffered \"1 y\" (request 1 is always the first id) approved unseen")))))
 
 (deftest a-line-queued-while-the-prompt-is-being-shown-is-discarded
-  (let [t     (typist)
-        out   (screen)
-        fired (atom false)
-        ;; the moment the prompt's first line is written, and before the
-        ;; rest of it is, "1 y" is typed and queued by the reader
-        _     (add-watch (:text out) ::type-mid-prompt
-                         (fn [_ _ _ s]
-                           (when (and (re-find #"\[1\] approval requested" s) (compare-and-set! fired false true))
-                             ((:type! t) "1 y")
-                             (await-reads t 2))))
-        asker (typed-asker t out "op")
-        a     (approval/ask! asker (assoc request :tool "a") 10000)]
-    (type-at! t out "1" "nope")
-    (is (= :deny (decision a)) "the line queued mid-prompt did not approve the request")
-    (is (re-find #"\(1 line\(s\) typed before this prompt were discarded\)" (text out)))
-    (remove-watch (:text out) ::type-mid-prompt)))
+  (testing "\"1 y\" is typed and queued once the prompt's first line is written, before the rest of it is"
+    (let [t     (typist)
+          out   (screen)
+          fired (atom false)
+          _     (add-watch (:text out) ::type-mid-prompt
+                           (fn [_ _ _ s]
+                             (when (and (re-find #"\[1\] approval requested" s) (compare-and-set! fired false true))
+                               ((:type! t) "1 y")
+                               (await-reads t 2))))
+          asker (typed-asker t out "op")
+          a     (approval/ask! asker (assoc request :tool "a") 10000)]
+      (type-at! t out "1" "nope")
+      (is (= :deny (decision a)) "the line queued mid-prompt did not approve the request")
+      (is (re-find #"\(1 line\(s\) typed before this prompt were discarded\)" (text out)))
+      (remove-watch (:text out) ::type-mid-prompt))))
 
 (def ^:private reader-proxies?
   "Does this host dispatch ready() to a proxy of java.io.Reader? babashka's
@@ -294,26 +292,15 @@
   (not (System/getProperty "babashka.version")))
 
 (defn- pipe
-  "A keyboard on a pipe (a Reader over a queue of characters, as a
-   PipedReader is, on every host): `:in` a BufferedReader whose input is
-   typed with `type!` (a string, sent as is: a line needs its own \\n).
-   The Reader is ready while typed characters wait, like a tty's."
+  "A keyboard on a host-native pipe (PipedInputStream, ready on every
+   host while typed bytes wait, like a tty): `:in` a BufferedReader whose
+   input is typed with `type!` (a string, sent as is: a line needs its own
+   \\n)."
   []
-  (let [q (java.util.concurrent.LinkedBlockingQueue.)
-        r (proxy [java.io.Reader] []
-            (read
-              ([] (int (.take q)))
-              ([buf] (proxy-super read buf))
-              ([buf off len]
-               (let [^chars buf buf]
-                 (aset buf (int off) (char (.take q)))
-                 (loop [n 1]
-                   (if-let [c (when (< n len) (.poll q))]
-                     (do (aset buf (int (+ off n)) (char c)) (recur (inc n)))
-                     n)))))
-            (ready [] (not (.isEmpty q)))
-            (close []))]
-    {:in (BufferedReader. r) :type! #(doseq [c %] (.put q c))}))
+  (let [in  (java.io.PipedInputStream. 4096)
+        out (java.io.PipedOutputStream. in)]
+    {:in    (BufferedReader. (java.io.InputStreamReader. in "UTF-8"))
+     :type! #(doto out (.write (.getBytes ^String % "UTF-8")) (.flush))}))
 
 (defn- listening?
   "Does the terminal prompting on screen `out` listen for request `id`
@@ -334,19 +321,35 @@
     ((:type! p) "1 y\n")
     (let [a (approval/ask! asker request 10000)]
       (is (listening? out "1"))
-      (is (re-find #"\(1 line\(s\) typed before this prompt were discarded\)" (text out))
-          "the reader's .ready drained the typed-ahead line before the prompt")
+      (is (re-find #"^\(1 line\(s\) typed before this prompt were discarded\)\n\[1\] approval requested" (text out))
+          "the reader's .ready drained the typed-ahead line before the prompt was shown")
       ((:type! p) "nope\n")
       (is (= :deny (decision a)) "the buffered \"1 y\" did not approve request 1"))))
 
+(deftest a-ready-check-that-throws-ends-input-and-denies-a-typed-ahead-line
+  (testing "\"1 y\" typed ahead, a :ready? that throws, and a slow read that hands the line over once request 1 is listened for"
+    (let [out   (screen)
+          reads (atom 0)
+          read! #(if (= 1 (swap! reads inc))
+                   (do (listening? out "1") "1 y")
+                   (.take (java.util.concurrent.LinkedBlockingQueue.)))
+          asker (doto (approval/stdin-asker {:read-line read! :ready? #(throw (java.io.IOException. "no ready"))
+                                             :out (:w out) :approver "op" :wait-ms 5000})
+                  (#(reset! (:terminal out) (:terminal %))))
+          a     (approval/ask! asker request 10000)]
+      (is (= :deny (decision a)) "the typed-ahead \"1 y\" did not approve request 1")
+      (is (await-ref (:state (:terminal asker)) :eof?) "the throwing :ready? ended the terminal")
+      (is (zero? @reads) "nothing was read once :ready? threw")
+      (is (shows? out #"request 1 denied, not run: input has ended")))))
+
 (defn- slow-reader-drain
-  "The body of the-first-prompt-waits-for-the-drain-of-a-slow-reader."
+  "The body of the-first-prompt-waits-for-the-drain-of-a-slow-reader, over
+   a Reader that is ready with \"1 y\", takes until `go` to read it, and
+   blocks on every later read."
   []
   (let [out     (screen)
         reading (promise)
         go      (promise)
-        ;; ready says a line waits, but reading it takes until `go`; then
-        ;; nothing more is typed (the second read blocks)
         later   (java.util.concurrent.CountDownLatch. 1)
         r       (proxy [java.io.Reader] []
                   (read ([buf off len]
@@ -379,8 +382,7 @@
     (let [a (approval/ask! asker request 10000)]
       (is (listening? out "1")
           "with the line unfinished, the prompt is shown once drain-wait-ms has passed")
-      (when reader-proxies?
-        (is (<= approval/drain-wait-ms (- (approval/now-ms) t0)) "the prompt waited for the drain first"))
+      (is (<= approval/drain-wait-ms (- (approval/now-ms) t0)) "the prompt waited for the drain first")
       (is (not (re-find #"discarded" (text out))) "nothing was complete to discard")
       ((:type! p) "\n")
       (is (= :approve (decision a))
@@ -626,6 +628,11 @@
   [^java.lang.ref.WeakReference r]
   (loop [i 0] (cond (nil? (.get r)) true (= i 50) false :else (do (System/gc) (recur (inc i))))))
 
+(def ^:private collects-dropped-terminals?
+  "Does System/gc collect a Terminal no asker holds any more? Not on
+   babashka, whose interpreter keeps it reachable."
+  (not (System/getProperty "babashka.version")))
+
 (deftest an-ended-stream-stays-ended-once-its-terminal-is-collected
   (let [out   (screen)
         eof   (promise)
@@ -637,15 +644,14 @@
                 (is (= :deny (decision a)))
                 (is (await-ref @#'approval/terminals #(not (contains? % read!))))
                 (java.lang.ref.WeakReference. (:terminal asker)))]
-    ;; babashka's interpreter keeps the Terminal reachable, so only the JVM
-    ;; collects it on demand; the ended stream is denied either way.
-    (when (or (System/getProperty "babashka.version")
+    (when (or (not collects-dropped-terminals?)
               (is (collected? gone) "nothing holds the ended Terminal any more"))
-      (let [later (approval/stdin-asker {:read-line read! :ready? never-ready :out (:w out) :wait-ms 60000})]
-        (is (= :deny (decision (approval/ask! later request 50000))) "denied at once")
-        (is (= 1 @reads) "no second reader was started on the ended stream")
-        (is (= 2 (:next @(:state (:terminal later)))) "the stream's numbering went on, not back to 1")
-        (is (shows? out #"request 2 denied, not run: input has ended"))))))
+      (testing "a later asker on the ended stream is denied, whether or not its Terminal was collected"
+        (let [later (approval/stdin-asker {:read-line read! :ready? never-ready :out (:w out) :wait-ms 60000})]
+          (is (= :deny (decision (approval/ask! later request 50000))) "denied at once")
+          (is (= 1 @reads) "no second reader was started on the ended stream")
+          (is (= 2 (:next @(:state (:terminal later)))) "the stream's numbering went on, not back to 1")
+          (is (shows? out #"request 2 denied, not run: input has ended")))))))
 
 (deftest a-second-asker-with-other-ports-is-refused
   (let [t (typist)]
