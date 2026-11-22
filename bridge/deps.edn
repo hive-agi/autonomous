@@ -1,9 +1,6 @@
 {:paths ["src"]
 
- ;; The bridge (JVM/bb process): the autonomous runtime plus the deps the
- ;; runtime must not ship to apps. Versions match the root deps.edn pins.
- ;; staging-gate.yml runs it against this checkout's runtime by defining a
- ;; :dev/local alias on the command line (-Sdeps), never in this file.
+ ;; Versions match the root deps.edn pins.
  :deps
  {io.github.hive-agi/autonomous {:mvn/version "0.2.2"}
   org.clojure/data.json         {:mvn/version "2.5.2"}
@@ -12,7 +9,7 @@
 
  :aliases
  {;; clojure -T:build <task>, as at the repo root.
-  :build {:deps {io.github.hive-agi/hive-build {:mvn/version "0.3.1"}}
+  :build {:deps {io.github.hive-agi/hive-build {:mvn/version "0.3.3"}}
           :jvm-opts ["-Xmx1g"]
           :ns-default hive-build.api}
 

@@ -40,9 +40,7 @@ jobs:
       - name: Test
         run: clojure -M:test unit
 
-  # The bridge artifact (bridge/, io.github.hive-agi/autonomous-bridge),
-  # built against THIS checkout's runtime. The :dev/local alias is passed
-  # with -Sdeps because a committed deps.edn never names a local path.
+  # The bridge artifact (bridge/), built against this checkout's runtime.
   jvm-bridge:
     name: JVM suite (bridge)
     runs-on: ubuntu-latest
@@ -61,10 +59,10 @@ jobs:
       - uses: DeLaGuardo/setup-clojure@13.0
         with:
           cli: latest
+          bb: latest
       - name: Resolve declared classpath
         run: clojure -Sdeps "$DEV_LOCAL" -P -M:dev/local:test
-      # Every bridge source must load on its declared classpath, so a
-      # namespace that needs a dependency bridge/deps.edn lacks fails here.
+      # Every bridge source must load on its declared classpath.
       - name: Compile
         run: |
           set -euo pipefail
@@ -81,13 +79,12 @@ jobs:
                                  symbol)]
                   (require ns-sym)))
               (println "loaded" (count files) "bridge source files"))'
-      # kaocha exits 0 when it finds no tests. With test files present the
-      # run must report at least one test, or the suite config is wrong.
+      # kaocha exits 0 with no tests: fail when test files exist and none ran.
       - name: Test
         run: |
           set -euo pipefail
           clojure -Sdeps "$DEV_LOCAL" -M:dev/local:test unit --no-color 2>&1 | tee kaocha.log
-          FILES=$(find test -name '*_test.clj*' | wc -l)
+          FILES=$(find test \( -name '*_test.clj' -o -name '*_test.cljc' \) | wc -l)
           if [ "$FILES" -gt 0 ] && ! grep -Eq '^[1-9][0-9]* tests?, ' kaocha.log; then
             echo "bridge/test holds $FILES test files but kaocha ran no tests"
             exit 1
