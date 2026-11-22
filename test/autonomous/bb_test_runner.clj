@@ -9,6 +9,7 @@
   '[autonomous.domain.answer-railway-test
     autonomous.approval-test
     autonomous.require-approval-test
+    autonomous.approval.signed-test
     autonomous.provider-allowlist-test
     autonomous.surface-test
     autonomous.spi-test
