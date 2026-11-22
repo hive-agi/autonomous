@@ -71,12 +71,40 @@
                       (if (answer/refused? a) (update a :error dissoc :data) a)))
       (meta a))))
 
+(defn- ran-phrase
+  "L2 Promote: what is known of whether the tool behind Answer `a` ran:
+   it ran for an Ok, it did not for a refusal carrying a human Decision
+   other than :approve, and it may have otherwise."
+  [a]
+  (let [decision (:decision (:autonomous/approval (meta a)))]
+    (cond (answer/ok? a)                          "the tool ran"
+          (and decision (not= :approve decision)) (str "the tool did not run (decision " decision ")")
+          :else                                   "the tool may have run")))
+
+(defn- unrecorded
+  "L2 Promote: the :settle-failed refusal standing in for Answer `a` of a
+   call whose answer could not be recorded (`e` says why), keeping `a`'s
+   :autonomous/approval metadata. Its message says whether the tool ran
+   (ran-phrase) and that its result is unknown; its data names `a`'s
+   outcome. Total: never throws."
+  [a e]
+  (with-meta (answer/refusal :settle-failed
+                             (str (ran-phrase a) ", but its result could not be recorded, so it is"
+                                  " unknown: check the app's state before you retry ("
+                                  (or (ex-message e) (str e)) ")")
+                             {:outcome (answer/outcome a)})
+    (select-keys (meta a) [:autonomous/approval])))
+
 (defn- settled!
-  "L2 Boundary: settle parked call `id` with Answer `a` and journal how it
-   ended (:autonomous/settled), under the app's CallDetail as it is now."
+  "L2 Boundary: settle parked call `id` with Answer `a` and its
+   :autonomous/settled entry in one registry swap (registry/settle!). When
+   that throws, settle it with the `unrecorded` refusal and a literal entry
+   (registry/settle-unrecorded!) instead."
   [id a]
-  (registry/settle! id a)
-  (registry/record! (journal/settled-entry id a (:call-detail (registry/snapshot)))))
+  (try
+    (registry/settle! id a)
+    (catch #?(:clj Throwable :cljs :default) e
+      (registry/settle-unrecorded! id (unrecorded a e)))))
 
 (defn- settle-later!
   "L2 Pipeline: park thenable `x` and answer its Pending. Its value
