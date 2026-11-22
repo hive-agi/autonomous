@@ -40,6 +40,13 @@
         f (test-fleet (constantly directory-refusal))]
     (is (= {:session initial :answer directory-refusal} (attach f initial {:target "app" :runtime_id "tab"})))
     (is (= :target/unknown (get-in (attach f initial {:target "missing" :runtime_id "tab"}) [:answer :error :type])))
+    (testing "a directory answering neither Ok nor a refusal knows no runtime"
+      (doseq [rows [nil {:pending "p"}]]
+        (let [{:keys [answer session]} (attach (test-fleet (constantly rows)) initial
+                                               {:target "app" :runtime_id "tab"})]
+          (is (= :unknown-runtime (get-in answer [:error :type])))
+          (is (= [] (get-in answer [:error :data :known])))
+          (is (= initial session)))))
     (testing "unpinning does not read the directory"
       (let [f (test-fleet #(throw (ex-info "directory should not run" {})))]
         (is (= {:ok {:attached nil}} (:answer (attach f initial {:target "app"}))))))))

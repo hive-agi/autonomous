@@ -28,12 +28,18 @@
     (or (some #(when (and % (= (str %) (str runtime-id))) (answer/ok %)) ids)
         (answer/refusal :unknown-runtime (str "no runtime " runtime-id) {:known (vec ids)}))))
 
+(defn- directory-rows
+  "Promote: directory answer `a` as an Answer of rows: a refusal as is,
+   anything else (Ok, nil, a Pending) as Ok of its :ok rows."
+  [a]
+  (if (answer/refused? a) a (answer/ok (:ok a))))
+
 (defn- requested-pin
   "Boundary: resolve a requested id against the current directory; nil unpins."
   [ctx runtime-id]
   (if (nil? runtime-id)
     (answer/ok nil)
-    (answer/bind (client/runtimes ctx) #(matching-runtime % runtime-id))))
+    (answer/bind (directory-rows (client/runtimes ctx)) #(matching-runtime % runtime-id))))
 
 (defn- pinned
   "Promote: Ok of the {:answer :session} result of pinning `session` to
