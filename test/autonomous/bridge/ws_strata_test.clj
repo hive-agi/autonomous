@@ -3,7 +3,6 @@
    of hello-grant, send-request! and on-text!. Private helpers are reached
    through their vars; nothing here opens a socket."
   (:require [autonomous.bridge.ws :as ws]
-            [autonomous.domain.answer :as answer]
             [clojure.test :refer [deftest is testing]]))
 
 (def ^:private runtime-grant @#'ws/runtime-grant)
@@ -11,7 +10,7 @@
 (def ^:private ordered @#'ws/ordered)
 (def ^:private conn-named @#'ws/conn-named)
 (def ^:private request-frame @#'ws/request-frame)
-(def ^:private await-answer @#'ws/await-answer)
+(def ^:private settled-answer @#'ws/settled-answer)
 (def ^:private response-answer @#'ws/response-answer)
 (def ^:private welcome-frame @#'ws/welcome-frame)
 (def ^:private welcome-conn @#'ws/welcome-conn)
@@ -69,11 +68,11 @@
             :send! identity :close! identity}
            conn))))
 
-(deftest await-answer-turns-a-silent-promise-into-a-timeout-refusal
+(deftest settled-answer-turns-a-silent-promise-into-a-timeout-refusal
   (let [conn {:runtime/id "r"}]
-    (is (= {:ok :pong} (await-answer {:ok :pong} conn 200)))
-    (is (= {:pending "p"} (await-answer {:pending "p"} conn 200)) "a pending passes through")
-    (let [a (await-answer :autonomous.bridge.ws/timeout conn 200)]
+    (is (= {:ok :pong} (settled-answer {:ok :pong} conn 200)))
+    (is (= {:pending "p"} (settled-answer {:pending "p"} conn 200)) "a pending passes through")
+    (let [a (settled-answer :autonomous.bridge.ws/timeout conn 200)]
       (is (= :channel/timeout (get-in a [:error :type])))
       (is (= "runtime r did not answer within 200 ms" (get-in a [:error :message]))))))
 

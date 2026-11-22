@@ -57,8 +57,7 @@
 
 (defn tools
   "Boundary: every tool the addons of `mount` offer now, as bb-mcp Tools.
-   An addon that fails to list is skipped, so one broken brick hides only
-   itself."
+   An addon that fails to list contributes none."
   [mount actor-fn]
   (into [] (mapcat #(addon-tools % actor-fn)) mount))
 
