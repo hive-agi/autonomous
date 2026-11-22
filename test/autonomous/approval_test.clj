@@ -1,5 +1,6 @@
 (ns autonomous.approval-test
   (:require [autonomous.approval :as approval]
+            [autonomous.support.wait :refer [await-ref]]
             [autonomous.thenable :as thenable]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing]]
@@ -169,15 +170,6 @@
              (close []))}))
 
 (defn- text [s] @(:text s))
-
-(defn- await-ref
-  "Does (pred @r) hold within 5 s? Waits on a watch, not a clock: it
-   answers as soon as `r` holds a value satisfying `pred`."
-  [r pred]
-  (let [k (Object.) ok (promise)]
-    (add-watch r k (fn [_ _ _ v] (when (pred v) (deliver ok true))))
-    (when (pred @r) (deliver ok true))
-    (try (deref ok 5000 false) (finally (remove-watch r k)))))
 
 (defn- shows?
   "Does screen `s` show text matching `re` within 5 s?"
