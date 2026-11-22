@@ -163,6 +163,13 @@
                          (constantly {:error {:type :ws/unknown-target :message "x"}}))]
         (ws/on-text! lopts (:link r) (pr-str {:ws/type :hello :token "t"}))
         (is (= 4400 (first @(:closed r))))))
+    (testing "an authenticate answering {:error nil} is refused and closes at once, not at the watchdog"
+      (let [r     (fake-runtime! hubs)
+            lopts (assoc (:lopts r) :authenticate (constantly {:error nil}))]
+        (ws/on-text! lopts (:link r) (pr-str {:ws/type :hello :token "t"}))
+        (is (= 4400 (first @(:closed r))))
+        (is (= :refused (:ws/type (first @(:sent r)))))
+        (is (= :hello (:state @(:link r))) "never joined")))
     (testing "garbage before hello"
       (let [r (fake-runtime! hubs)]
         (ws/on-text! (:lopts r) (:link r) "(launch-missiles)")
