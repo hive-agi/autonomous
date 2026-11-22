@@ -152,11 +152,13 @@
      :type! #(.put q %) :reads reads}))
 
 (defn- screen
-  "A fake terminal screen: `:w` a Writer whose text so far is the `:text` atom."
+  "A fake terminal screen: `:w` a Writer whose text so far is the `:text`
+   atom; `:terminal` holds the Terminal a typed-asker prompts on it."
   []
   (let [text (atom "")
         add! #(swap! text str %)]
     {:text text
+     :terminal (atom nil)
      :w    (proxy [java.io.Writer] []
              (write
                ([x] (add! (cond (string? x) x (int? x) (str (char x)) :else (String. ^chars x))))
@@ -191,7 +193,8 @@
   ([t] (typed-asker t (screen) "op"))
   ([t out approver] (typed-asker t out approver 2000))
   ([{:keys [read-line ready?]} out approver wait-ms]
-   (approval/stdin-asker {:read-line read-line :ready? ready? :out (:w out) :approver approver :wait-ms wait-ms})))
+   (doto (approval/stdin-asker {:read-line read-line :ready? ready? :out (:w out) :approver approver :wait-ms wait-ms})
+     (#(reset! (:terminal out) (:terminal %))))))
 
 (defn- decision [d] (:decision (deref d 2000 ::hung)))
 
@@ -201,10 +204,13 @@
   (mapv second (re-seq #"(?m)^\[(\d+)\] approval requested" (text out))))
 
 (defn- type-at!
-  "Type `line` on typist `t` once request `id` is prompted on screen `out`."
+  "Type `line` on typist `t` once request `id` is prompted on screen `out`
+   and its terminal listens for the answer."
   [t out id line]
   (is (await-ref (:text out) #(some #{id} (mapv second (re-seq #"(?m)^\[(\d+)\] approval requested" %))))
       (str "request " id " was prompted"))
+  (when-let [terminal @(:terminal out)]
+    (is (await-ref (:state terminal) #(= id (:listening %))) (str "request " id " is listened for")))
   ((:type! t) line))
 
 (defn- idle?
@@ -263,6 +269,24 @@
     (when (approval/asker? built)
       (is (not= :approve (decision (approval/ask! built request 5000)))
           "the buffered \"1 y\" (request 1 is always the first id) approved unseen"))))
+
+(deftest a-line-queued-while-the-prompt-is-being-shown-is-discarded
+  (let [t     (typist)
+        out   (screen)
+        fired (atom false)
+        ;; the moment the prompt's first line is written, and before the
+        ;; rest of it is, "1 y" is typed and queued by the reader
+        _     (add-watch (:text out) ::type-mid-prompt
+                         (fn [_ _ _ s]
+                           (when (and (re-find #"\[1\] approval requested" s) (compare-and-set! fired false true))
+                             ((:type! t) "1 y")
+                             (await-reads t 2))))
+        asker (typed-asker t out "op")
+        a     (approval/ask! asker (assoc request :tool "a") 10000)]
+    (type-at! t out "1" "nope")
+    (is (= :deny (decision a)) "the line queued mid-prompt did not approve the request")
+    (is (re-find #"\(1 line\(s\) typed before this prompt were discarded\)" (text out)))
+    (remove-watch (:text out) ::type-mid-prompt)))
 
 (deftest lines-typed-while-nothing-is-asked-are-bounded
   (let [t (typist) n (+ approval/max-typed-lines 36)]

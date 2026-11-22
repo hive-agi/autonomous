@@ -488,13 +488,16 @@
    :default
    (defn- answer!
      "L1 Boundary: wait (at most drain-wait-ms) until the reader has read
-      what was typed ahead, discard every line typed before this prompt
-      (saying how many), prompt request `entry` on `terminal`, and deliver
-      its Verdict for the next line: ::eof once input has ended, ::expired
-      when no line comes in its :wait-ms or it is withdrawn first."
+      what was typed ahead, prompt request `entry` on `terminal`, discard
+      every line queued before the prompt was fully shown (saying how
+      many), and deliver its Verdict for the next line: ::eof once input
+      has ended, ::expired when no line comes in its :wait-ms or it is
+      withdrawn first."
      [{:keys [out drained] :as terminal} {:keys [id p approver request wait-ms]}]
      (deref drained drain-wait-ms nil)
      (apply say! out (concat (discarded-lines! terminal) (prompt-lines id request)))
+     (some->> (discarded-lines! terminal) (apply say! out))
+     (swap! (:state terminal) assoc :listening id)
      (let [line (await-line terminal p wait-ms)]
        (deliver p (case line nil ::expired ::eof ::eof (verdict approver id line))))))
 
