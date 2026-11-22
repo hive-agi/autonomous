@@ -288,6 +288,104 @@
     (is (re-find #"\(1 line\(s\) typed before this prompt were discarded\)" (text out)))
     (remove-watch (:text out) ::type-mid-prompt)))
 
+(def ^:private reader-proxies?
+  "Does this host dispatch ready() to a proxy of java.io.Reader? babashka's
+   proxy does not, so the tests over one run on the JVM only."
+  (not (System/getProperty "babashka.version")))
+
+(defn- pipe
+  "A keyboard on a pipe (a Reader over a queue of characters, as a
+   PipedReader is, on every host): `:in` a BufferedReader whose input is
+   typed with `type!` (a string, sent as is: a line needs its own \\n).
+   The Reader is ready while typed characters wait, like a tty's."
+  []
+  (let [q (java.util.concurrent.LinkedBlockingQueue.)
+        r (proxy [java.io.Reader] []
+            (read
+              ([] (int (.take q)))
+              ([buf] (proxy-super read buf))
+              ([buf off len]
+               (let [^chars buf buf]
+                 (aset buf (int off) (char (.take q)))
+                 (loop [n 1]
+                   (if-let [c (when (< n len) (.poll q))]
+                     (do (aset buf (int (+ off n)) (char c)) (recur (inc n)))
+                     n)))))
+            (ready [] (not (.isEmpty q)))
+            (close []))]
+    {:in (BufferedReader. r) :type! #(doseq [c %] (.put q c))}))
+
+(defn- listening?
+  "Does the terminal prompting on screen `out` listen for request `id`
+   within 5 s?"
+  [out id]
+  (await-ref (:state @(:terminal out)) #(= id (:listening %))))
+
+(defn- piped-asker
+  "[pipe asker]: an asker reading a fresh pipe, prompting on screen `out`."
+  [out]
+  (let [p (pipe)]
+    [p (doto (approval/stdin-asker {:in (:in p) :out (:w out) :approver "op" :wait-ms 5000})
+         (#(reset! (:terminal out) (:terminal %))))]))
+
+(deftest a-line-buffered-in-an-in-reader-is-discarded-by-the-first-prompt
+  (let [out     (screen)
+        [p asker] (piped-asker out)]
+    ((:type! p) "1 y\n")
+    (let [a (approval/ask! asker request 10000)]
+      (is (listening? out "1"))
+      (is (re-find #"\(1 line\(s\) typed before this prompt were discarded\)" (text out))
+          "the reader's .ready drained the typed-ahead line before the prompt")
+      ((:type! p) "nope\n")
+      (is (= :deny (decision a)) "the buffered \"1 y\" did not approve request 1"))))
+
+(defn- slow-reader-drain
+  "The body of the-first-prompt-waits-for-the-drain-of-a-slow-reader."
+  []
+  (let [out     (screen)
+        reading (promise)
+        go      (promise)
+        ;; ready says a line waits, but reading it takes until `go`; then
+        ;; nothing more is typed (the second read blocks)
+        later   (java.util.concurrent.CountDownLatch. 1)
+        r       (proxy [java.io.Reader] []
+                  (read ([buf off len]
+                         (if (realized? reading)
+                           (do (.await later) -1)
+                           (do (deliver reading true) @go
+                               (let [s "1 y\n" ^chars buf buf n (min len (count s))]
+                                 (dotimes [i n] (aset buf (int (+ off i)) (.charAt s i)))
+                                 n)))))
+                  (ready [] (not (realized? reading)))
+                  (close []))
+        asker   (approval/stdin-asker {:in (BufferedReader. r) :out (:w out) :approver "op" :wait-ms 5000})
+        _       (reset! (:terminal out) (:terminal asker))
+        a       (approval/ask! asker request 10000)]
+    @reading
+    (is (not (re-find #"approval requested" (text out))) "no prompt while the typed-ahead line is being read")
+    (deliver go true)
+    (is (listening? out "1"))
+    (is (re-find #"\(1 line\(s\) typed before this prompt were discarded\)" (text out)))
+    (is (not= :approve (decision a)) "the slowly read \"1 y\" did not approve request 1")))
+
+(deftest the-first-prompt-waits-for-the-drain-of-a-slow-reader
+  (when reader-proxies? (slow-reader-drain)))
+
+(deftest a-partial-line-typed-ahead-approves-once-its-newline-arrives
+  (let [out       (screen)
+        [p asker] (piped-asker out)
+        t0        (approval/now-ms)]
+    ((:type! p) "1 y")
+    (let [a (approval/ask! asker request 10000)]
+      (is (listening? out "1")
+          "with the line unfinished, the prompt is shown once drain-wait-ms has passed")
+      (when reader-proxies?
+        (is (<= approval/drain-wait-ms (- (approval/now-ms) t0)) "the prompt waited for the drain first"))
+      (is (not (re-find #"discarded" (text out))) "nothing was complete to discard")
+      ((:type! p) "\n")
+      (is (= :approve (decision a))
+          "the line finished after the prompt answers it, as on a canonical tty"))))
+
 (deftest lines-typed-while-nothing-is-asked-are-bounded
   (let [t (typist) n (+ approval/max-typed-lines 36)]
     (dotimes [i n] ((:type! t) (str "1 y " i)))
