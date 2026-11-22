@@ -1,7 +1,6 @@
 (ns autonomous.support.wait
-  "Test support (JVM and bb): wait on a reference's changes, not on a
-   clock. A watch answers on the change that makes the predicate hold; the
-   deadline only bounds a hang."
+  "Test support (JVM and bb): wait on a reference's changes through a
+   watch, bounded by a deadline."
   (:require [autonomous.runtime.registry :as registry]))
 
 (def default-ms
@@ -21,8 +20,7 @@
 
 (defn await!
   "(pred v) as `await-ref` answers it; throws an ex-info naming `what` was
-   awaited when nothing satisfies `pred` within `ms`, so a timeout fails as
-   itself and not as the assertion after it."
+   awaited when nothing satisfies `pred` within `ms`."
   ([r what pred] (await! r what pred default-ms))
   ([r what pred ms]
    (let [x (await-ref r pred ms)]
@@ -41,8 +39,7 @@
 
 (defn bound-state
   "The state atom of the Runtime registry/*state* is bound to. Throws an
-   ex-info saying so when it is unbound, where add-watch would throw a
-   bare NullPointerException."
+   ex-info saying so when it is unbound."
   []
   (if (some? registry/*state*)
     (state-of registry/*state*)
