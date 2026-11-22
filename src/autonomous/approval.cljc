@@ -268,9 +268,8 @@
   {:decision (if (approves? id line) :approve :deny) :approver approver})
 
 (def max-typed-lines
-  "L1: the most typed lines a stdin terminal holds unread. A line typed
-   past it is dropped and counted among the lines the next prompt
-   discards, so input typed while nothing is prompted cannot grow memory."
+  "L1: the most typed lines a stdin terminal holds unread; a line past it
+   is dropped and counted among the lines the next prompt discards."
   64)
 
 ;; Terminal design: memory 20261120025625-307f0e9a.
@@ -424,22 +423,10 @@
 #?(:cljs nil
    :default
    (defn- pump!
-     "L1 Boundary: once per terminal, a daemon thread moving every line read
-      into the terminal's bounded `lines` queue (keep-line!), so no request
-      waits on a read. Started by the first ask, never by building an
-      asker, so a host that only configures an asker keeps its input. It
-      first reads every line its `ready?` says is already buffered, then
-      delivers `drained`; the first prompt waits for `drained`, so a line
-      typed ahead is discarded by that prompt rather than read after it.
-      With no `ready?` (a custom :read-line without :ready?) nothing can be
-      drained without blocking: `drained` is delivered at once, and a line
-      buffered before the first prompt may be read after it and answer it.
-      It reads until end of input, for the life of the process; at end of
-      input, or when its reader throws, it marks the terminal :eof: every
-      request still waiting, and every later one on the stream, is then
-      denied at once. The terminal
-      stays the stream's after end of input, so an asker built later on the
-      stream shares it (and is denied) instead of starting a second reader.
+     "L1 Boundary: start, once per terminal, a daemon thread that moves every
+      line read into `lines` (keep-line!) and delivers `drained` once
+      `ready?` says nothing more is buffered. At end of input, or when the
+      reader throws (silently), it marks the terminal :eof? and retires it.
       Answers `terminal`."
      [{:keys [read-line! ready? pumping drained state] :as terminal}]
      (when (compare-and-set! pumping false true)
@@ -481,8 +468,8 @@
 
 (def drain-wait-ms
   "L1: the longest the first prompt of a stdin terminal waits for its
-   reader to read what was typed ahead (a line typed without its newline
-   keeps the reader waiting for the rest of it)."
+   reader to read what was typed ahead. A partial line typed ahead is not
+   discarded: once its newline comes, it answers the prompt."
   1000)
 
 #?(:cljs nil
@@ -595,10 +582,9 @@
 #?(:cljs nil
    :default
    (defn stdin-asker-on
-     "L1 adapter (clj): stdin-asker over the process input `system-in` and
-      its own reader `root`: the default input, and the reader an :in is
-      compared with. stdin-asker passes System/in and (root-in); a test
-      passes a stream of its own, so it never reads the real System/in."
+     "L1 adapter (clj): stdin-asker (same `opts`) with `system-in` as the
+      default input stream and `root` as its own reader. stdin-asker passes
+      System/in and (root-in)."
      [system-in root {:keys [in read-line ready? stream out approver wait-ms] :or {approver "stdin" wait-ms 60000}}]
      (when (and read-line (not ready?))
        (throw (ex-info "a stdin asker with a :read-line needs its :ready?"
