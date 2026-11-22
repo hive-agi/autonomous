@@ -28,22 +28,21 @@
   #{:_actor :_caller_id :_caller_cwd :_caller_credential :agent_id})
 
 (defn args-of
-  "The tool arguments in `params`: keyword keys, routing keys removed."
+  "Promote: the tool arguments in `params`: keyword keys, routing keys removed."
   [params]
   (into {} (comp (map (fn [[k v]] [(keyword (name k)) v]))
                  (remove (fn [[k _]] (contains? routing-keys k))))
         params))
 
 (defn actor-of
-  "Pure over `st`: who acts. The host's keyword stamp (:_actor) only, else
-   the addon's default actor. A caller-supplied string \"_actor\" is never
-   read: it would let an agent name the addon's own actor, its credential
-   and its health vote."
+  "Boundary: who acts in `params` under `st`: the host's keyword stamp
+   (:_actor) only, else the addon's default actor; a string _actor key is
+   never read."
   [st params]
   (str (or (get params :_actor) (:actor @st))))
 
 (defn- session-of
-  "The session `actor` speaks with, opened on first use."
+  "Boundary: the session `actor` speaks with, opened on first use."
   [st actor]
   (or (get-in @st [:sessions actor])
       (let [ses (s/open-session (str "bb-mcp:" actor) {:actor actor :scopes (:scopes @st)})]
@@ -51,7 +50,7 @@
         ses)))
 
 (defn owns?
-  "True when `tool-name` is a built-in of the fleet or routes to one of its
+  "Boundary: true when `tool-name` is a built-in of the fleet or routes to one of its
    apps (fleet names are <app>__<tool>, so a host's own names never do)."
   [st tool-name]
   (let [srv (:srv @st)]
@@ -61,7 +60,7 @@
                       (answer/ok? (fleet/route-tool (:fleet srv) nil tool-name)))))))
 
 (defn call
-  "CallToolResult of `tool-name` with `params`, as the acting agent, keeping
+  "Boundary: CallToolResult of `tool-name` with `params`, as the acting agent, keeping
    the session the call leaves (an attach, a lease)."
   [st tool-name params]
   (let [actor (actor-of st params)
@@ -71,13 +70,13 @@
     (p/tool-result answer)))
 
 (defn tool-defs
-  "IAddon tool definitions of what the default actor sees of the fleet now."
+  "Boundary: IAddon tool definitions of what the default actor sees of the fleet now."
   [st]
   (mapv (fn [t] (assoc t :handler (fn [params] (call st (:name t) params))))
         (server/list-tools (:srv @st) (session-of st (:actor @st)))))
 
 (defn fingerprint
-  "What moves when the fleet's tool list moves."
+  "Boundary: a value that moves when the fleet's tool list moves."
   [st]
   (server/tools-fingerprint (:srv @st) (session-of st (:actor @st))))
 
@@ -139,7 +138,7 @@
           {} view-probes))
 
 (defn- health-of
-  "Health from the last look at every target (see `status-by-target`): :ok
+  "Boundary: health from the last look at every target (see `status-by-target`): :ok
    all up (or none looked at yet), :degraded some down or slow. :details
    :status is keyed by target id."
   [srv actor]
@@ -148,6 +147,35 @@
     {:status  (if (every? #{:up} (vals status)) :ok :degraded)
      :details {:apps (get-in srv [:fleet :order]) :status status}}))
 
+(defn- addon-config
+  "Promote: the effective config of construction `seed` and `runtime-config`,
+   each with its :addon/config nested map merged over it, later winning."
+  [seed runtime-config]
+  (merge seed (:addon/config seed) runtime-config (:addon/config runtime-config)))
+
+(defn- activate!
+  "Boundary: build the fleet server of `cfg` and make `state` active with it;
+   the IAddon initialize! result."
+  [state cfg]
+  (let [srv (or (:server cfg) ((:build cfg)))]
+    (swap! state assoc :lifecycle :active :srv srv :sessions {}
+           :actor (str (or (:actor cfg) "local"))
+           :scopes (or (:scopes cfg) #{:read :write}))
+    {:success? true :errors [] :metadata {:apps (get-in srv [:fleet :order])}}))
+
+(defn- initialize-once!
+  "Boundary: activate `state` from the config of `seed` and `runtime-config`
+   unless already active; a failed build marks it :error. The IAddon
+   initialize! result."
+  [state seed runtime-config]
+  (if (= :active (:lifecycle @state))
+    {:success? true :already-initialized? true}
+    (try
+      (activate! state (addon-config seed runtime-config))
+      (catch Exception e
+        (swap! state assoc :lifecycle :error :error (ex-message e))
+        {:success? false :errors [(str "autonomous.fleet: " (ex-message e))]}))))
+
 (defrecord FleetAddon [state seed]
   addon/IAddon
   (addon-id [_] addon-id-value)
@@ -155,18 +183,7 @@
   (capabilities [_] #{:tools :health-reporting})
   (initialize! [_ runtime-config]
     (locking state
-      (if (= :active (:lifecycle @state))
-        {:success? true :already-initialized? true}
-        (try
-          (let [cfg (merge seed (:addon/config seed) runtime-config (:addon/config runtime-config))
-                srv (or (:server cfg) ((:build cfg)))]
-            (swap! state assoc :lifecycle :active :srv srv :sessions {}
-                   :actor (str (or (:actor cfg) "local"))
-                   :scopes (or (:scopes cfg) #{:read :write}))
-            {:success? true :errors [] :metadata {:apps (get-in srv [:fleet :order])}})
-          (catch Exception e
-            (swap! state assoc :lifecycle :error :error (ex-message e))
-            {:success? false :errors [(str "autonomous.fleet: " (ex-message e))]})))))
+      (initialize-once! state seed runtime-config)))
   (shutdown! [_]
     (locking state
       (swap! state assoc :lifecycle :stopped :srv nil :sessions {}))
@@ -186,12 +203,12 @@
      :mount/fingerprint (fn [] (when (:srv @state) (fingerprint state)))}))
 
 (defn make-addon
-  "Uninitialized addon. initialize! takes :server (a built fleet server) or
+  "Pipeline: an uninitialized addon. initialize! takes :server (a built fleet server) or
    :build (a zero-arg fn building one), :actor and :scopes."
   ([] (make-addon {}))
   ([seed] (->FleetAddon (atom {:lifecycle :new}) (or seed {}))))
 
 (defn addon-ctor
-  "hive-addon.mount constructor: config -> uninitialized IAddon."
+  "Pipeline: hive-addon.mount constructor: config -> uninitialized IAddon."
   [config]
   (make-addon config))

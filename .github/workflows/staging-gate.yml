@@ -32,6 +32,7 @@ jobs:
       - uses: DeLaGuardo/setup-clojure@13.0
         with:
           cli: latest
+          bb: latest
       # The pins must resolve from the registries before anything else is
       # worth running: this is the step a dependency bump can break.
       - name: Resolve declared classpath

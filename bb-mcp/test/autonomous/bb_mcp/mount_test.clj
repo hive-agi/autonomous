@@ -196,6 +196,20 @@
       (is (false? (get-in rs [3 :result :isError])))
       (is (re-find #"ling-3" (get-in rs [3 :result :content 0 :text]))))))
 
+(deftest a-throwing-actor-fn-answers-an-error-and-forgets-the-call
+  (let [out (atom [])
+        t   (host/mounted (queue-transport [{:jsonrpc "2.0" :id 9 :method "tools/call"
+                                             :params {:name "todo__todo_add" :arguments {}}}]
+                                           out)
+                          [(started two-apps)]
+                          {:actor #(throw (ex-info "no id" {})) :watch-ms 0})]
+    (is (nil? (proto/read-msg t)))
+    (loop [n 0] (when (and (< n 100) (empty? @out)) (Thread/sleep 20) (recur (inc n))))
+    (is (= 9 (:id (first @out))))
+    (is (true? (get-in (first @out) [:result :isError])))
+    (is (re-find #"no id" (get-in (first @out) [:result :content 0 :text])))
+    (is (= {} @(:calls t)))))
+
 (deftest a-host-tool-is-never-shadowed
   (is (= [{:name "bash"} {:name "x__y"}]
          (get-in (host/with-tools {:result {:tools [{:name "bash"}]}} [{:name "bash" :d 1} {:name "x__y"}])
@@ -210,3 +224,21 @@
     (is (:fleet? (:ok (main/fleet-config {} {} {:port "7002" :target-id "stock"} nil {})))))
   (is (= "/p/autonomous.edn" (main/config-path {} {"BB_MCP_CALLER_CWD" "/p"})))
   (is (= "/f.edn" (main/config-path {} {"AUTONOMOUS_FLEET" "/f.edn" "BB_MCP_CALLER_CWD" "/p"}))))
+
+(deftest addon-config-merges-nested-config-later-winning
+  (let [cfg #'fa/addon-config]
+    (is (= {:actor "rt" :scopes #{:read} :addon/config {:actor "rt"}}
+           (cfg {:actor "seed" :addon/config {:scopes #{:read}}} {:addon/config {:actor "rt"}})))
+    (is (= "nested-seed" (:actor (cfg {:actor "seed" :addon/config {:actor "nested-seed"}} {}))))))
+
+(deftest a-transport-awaits-list-and-init-answers-only
+  (let [kind #'host/pending-kind]
+    (is (= :list (kind {:id 1 :method "tools/list"})))
+    (is (= :init (kind {:id 1 :method "initialize"})))
+    (is (nil? (kind {:method "tools/list"})))
+    (is (nil? (kind {:id 1 :method "tools/call"})))))
+
+(deftest the-fleet-file-names-its-own-actor-unless-local
+  (let [actor #'main/fleet-actor]
+    (is (= "head" (actor {:stdio/actor "local"} "head")))
+    (is (= "file" (actor {:stdio/actor "file"} "head")))))
