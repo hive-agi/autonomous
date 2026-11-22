@@ -79,6 +79,6 @@
    :main-opts ["-m" "orders.main"]}
 
   ;; The orders sources and tests on the classpath, without a main: a REPL
-  ;; for the example (clojure -M:test:example/orders-dev).
+  ;; for the example. Its suite is a bridge suite: example/orders/README.md.
   :example/orders-dev
-  {:extra-paths ["bridge/src" "example/orders/src" "example/orders/test"]}}}
+  {:extra-paths ["example/orders/src" "example/orders/test"]}}}

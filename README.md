@@ -203,8 +203,10 @@ bb test-rf2                                              # autonomous.re-frame2 
 `npm ci` first when `node_modules` is absent.
 
 The `:integration` suite (`clojure -M:dev/local:test integration` in `bridge/`, with the `-Sdeps` above) needs live runtimes:
-compile and watch the `:e2e` build, start two `node target/e2e/main.js`, then
-run it. It proves isolation across instances, lease coordination and ledger
+compile and watch the `:e2e` build at the repo root, start two
+`node target/e2e/main.js`, then run it from `bridge/` with
+`AUTONOMOUS_E2E_PORT_FILE=../.shadow-cljs/nrepl.port` (shadow writes the port
+file at the root). It proves isolation across instances, lease coordination and ledger
 attribution over the real nREPL channel.
 
 ## Status
