@@ -68,6 +68,15 @@
             :decorators-preserve-schemas :codecs-total]
            (mapv :check (:checks report))))))
 
+(deftest require-approval-is-in-the-decorator-law-and-preserves-schemas
+  (let [gate (:require-approval contract/tool-decorators)
+        tool (:contract-test/echo exposed)]
+    (is (fn? gate) "the law applies require-approval")
+    (is (contains? (gate tool) :autonomous.decorator/approval)
+        "the decorator under the law really installs the approval gate")
+    (is (= (select-keys tool [:input :output]) (select-keys (gate tool) [:input :output])))
+    (is (:ok? (contract/decorators-preserve-schemas echo-adapter (fixture))))))
+
 (deftest a-mount-that-changes-the-human-path-fails-the-contract
   (let [by-id (checks-by-id (contract/check-adapter echo-adapter
                                                     (fixture (fn [_] (constantly :hijacked)))))]
@@ -132,6 +141,14 @@
         (str why " is not total: the SPI guard refused for it")))
   (is (false? (:ok? (:schema-round-trip (codec-checks {:encode not-an-answer}))))
       "an encode failure breaks the sample round trip"))
+
+(deftest a-codec-refusing-with-a-guard-type-is-still-total
+  (let [own {:encode (fn [_ args]
+                       (if (and (map? args) (string? (:text args)))
+                         (answer/ok (:text args))
+                         (answer/refusal :codec/encode "the codec's own refusal")))}]
+    (is (:ok? (:codecs-total (codec-checks own)))
+        "the guard is told apart by its marker, not by the refusal type")))
 
 (deftest fixture-failures-are-contained-as-check-data
   (let [report (contract/check-adapter echo-adapter

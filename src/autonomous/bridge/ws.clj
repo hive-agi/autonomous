@@ -24,6 +24,7 @@
    live connections; a socket adapter (autonomous.ws.server) drives a
    connection through `open-link`, `on-text!` and `on-close!`."
   (:require [autonomous.bridge.auth :as auth]
+            [autonomous.bridge.failure :as failure]
             [autonomous.bridge.port :as port]
             [autonomous.domain.answer :as answer]
             [autonomous.domain.wire :as wire]))
@@ -256,7 +257,7 @@
       ((:send! conn) (frame-text (request-frame id request)))
       (settled-answer (deref p timeout-ms ::timeout) conn timeout-ms)
       (catch Exception e
-        (answer/refusal :channel/transport-failed (or (ex-message e) (str e))))
+        (answer/refusal :channel/transport-failed (failure/message e)))
       (finally (swap! (:pending hub) dissoc id)))))
 
 (defn send-request!

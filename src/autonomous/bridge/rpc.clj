@@ -19,6 +19,10 @@
 
 (def sse-accept "text/event-stream")
 
+(def post-accept
+  "What a POST accepts: Streamable HTTP lets the remote answer JSON or SSE."
+  "application/json, text/event-stream")
+
 (defn request
   "A JSON-RPC request map of `method` with `params`."
   [id method params]
@@ -108,30 +112,66 @@
   [result]
   (when-let [parts (seq (keep :text (:content result)))] (str/join "\n" parts)))
 
+(defn- error-code
+  "The JSON-RPC error code of `err` when it is an integer, else nil: a
+   remote's free-form value is never carried."
+  [err]
+  (let [c (:code err)] (when (int? c) c)))
+
+(defn result-of
+  "Pure: Ok of the map :result of JSON-RPC reply `msg`, or a refusal: an
+   :error reply, or one with no map :result, is :channel/rpc-error carrying
+   at most the integer error code, never the remote's text."
+  [msg]
+  (if (and (nil? (:error msg)) (map? (:result msg)))
+    (answer/ok (:result msg))
+    (answer/refusal :channel/rpc-error "the remote refused the request"
+                    {:code (error-code (:error msg))})))
+
 (defn answer-of
   "Answer of the tools/call response `msg`: the remote's value, a Pending id
    it reported, or a refusal. A call the remote marks failed is a refusal,
-   so the bridge never reports an app error as a value."
+   so the bridge never reports an app error as a value. A refusal carries a
+   fixed message and at most the integer error code: the remote's text may
+   echo a credential, so it never enters a refusal."
   [msg]
   (let [err  (:error msg)
         res  (:result msg)
         body (when (map? res) (:structuredContent res))]
     (cond
-      err                            (answer/refusal :channel/rpc-error
-                                                     (str "the remote refused the call: " (:message err))
-                                                     {:code (:code err)})
+      err                            (answer/refusal :channel/rpc-error "the remote refused the call"
+                                                     {:code (error-code err)})
       (not (map? res))               (answer/refusal :channel/bad-answer "the remote sent neither result nor error")
-      (:isError res)                 (answer/refusal :channel/tool-failed (or (content-text res) "the remote tool failed"))
+      (:isError res)                 (answer/refusal :channel/tool-failed "the remote tool failed")
       (contains? body :pending)      (answer/pending (get body :pending))
       (contains? res :structuredContent) (answer/ok body)
       :else                          (answer/ok (or (content-text res) {})))))
 
-(defn message-of
-  "The JSON-RPC message in reply body `body`: a direct object, or the first
-   message of a batch/stream body. Throws when it is not JSON."
-  [body]
-  (let [v (json/read-json (str body))]
-    (if (map? v) v (first v))))
+(defn sse-type?
+  "Pure: true when Content-Type `content-type` names an SSE stream
+   (text/event-stream, any parameters and case)."
+  [content-type]
+  (= sse-accept (str/trim (str/lower-case (str (first (str/split (str content-type) #";")))))))
+
+(defn- messages-of
+  "Every JSON-RPC message in reply body `body`, read as SSE when `sse?`,
+   else as one JSON object or batch. Throws when JSON does not parse."
+  [body sse?]
+  (if sse?
+    (read-messages body)
+    (let [v (json/read-json (str body))]
+      (if (map? v) [v] (filterv map? v)))))
+
+(defn reply-of
+  "Pure: Ok of the message in reply body `body` of Content-Type
+   `content-type` that answers request `id`, skipping notifications and
+   other replies, or a :channel/bad-answer refusal when none does or the
+   body is not JSON-RPC. The header decides the framing, never the body."
+  [body content-type id]
+  (let [msgs (try (messages-of body (sse-type? content-type)) (catch Exception _not-json nil))]
+    (if-let [m (first (filter #(and (contains? % :id) (= id (:id %))) msgs))]
+      (answer/ok m)
+      (answer/refusal :channel/bad-answer "the remote sent no reply to this request"))))
 
 ;; =============================================================================
 ;; Manifest

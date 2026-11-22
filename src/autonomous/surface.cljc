@@ -12,7 +12,8 @@
             [autonomous.domain.schema :as s]
             [malli.core :as m]
             [malli.error :as me]
-            [autonomous.domain.affordance :as affordance])
+            [autonomous.domain.affordance :as affordance]
+            [malli.registry :as mr])
   #?(:cljs (:require-macros [autonomous.domain.answer :as answer])))
 
 (def Interceptor
@@ -73,17 +74,31 @@
 ;; of the surface is a new defmethod; merge-surfaces never changes.
 ;; =============================================================================
 
+(defn- differing-keys
+  "L1: the keys whose values differ between maps `a` and `b` (a key one
+   lacks counts), sorted; nil unless both are maps."
+  [a b]
+  (when (and (map? a) (map? b))
+    (->> (distinct (concat (keys a) (keys b)))
+         (remove #(= (get a % ::absent) (get b % ::absent)))
+         (sort-by str)
+         vec)))
+
 (defn- clash
-  "L1: the refusal of one name two different values claim."
-  [what n left right]
+  "L1: the refusal of one name two different values claim. :differs names
+   the keys of the compared identities that differ, when they are maps:
+   the labels alone (a tool's :id) are often equal on both sides."
+  [what n left right differs]
   (answer/refusal :name-clash
                   (str what " " n " is declared by two different values")
-                  {:name n :left left :right right}))
+                  (cond-> {:name n :left left :right right}
+                    (seq differs) (assoc :differs differs))))
 
 (defn- keyed-merge
   "L1: THE keyed merge, one shape for every part: same key with the same
-   identity keeps the first; a different identity is a clash refusal.
-   `label` is a (fn [v] described-identity) for the refusal."
+   identity keeps the first (first-writer-wins on whatever `ident`
+   leaves out, such as a tool's handler); a different identity is a clash
+   refusal. `label` is a (fn [v] described-identity) for the refusal."
   [what ident label a b]
   (answer/reduce-answer
    (fn [acc [k v]]
@@ -91,7 +106,8 @@
        (cond
          (nil? other)                  (answer/ok (assoc acc k v))
          (= (ident other) (ident v))   (answer/ok acc)
-         :else (clash what k (label other) (label v)))))
+         :else (clash what k (label other) (label v)
+                      (differing-keys (ident other) (ident v))))))
    a
    b))
 
@@ -110,13 +126,129 @@
       :else (answer/refusal :app-clash "two surfaces name different apps"
                             {:left a :right b}))))
 
+(def ^:private regex-type
+  "The type of a regex literal on this runtime."
+  (type #""))
+
+(defn- regex-data
+  "L1: regex `re` as [source flags], the same on every runtime, so two
+   patterns that differ only in their flags never compare equal. On
+   ClojureWasm a Pattern exposes no flags (no .flags, no flag argument
+   to re-pattern): a flag exists only as a leading inline group such as
+   (?i), which stays in the source, so the source alone keeps two such
+   patterns apart and the flags slot is nil."
+  [re]
+  #?(:cljs    [(.-source re) (.-flags re)]
+     :cljw    [(str re) nil]
+     :default [(.pattern ^java.util.regex.Pattern re) (.flags ^java.util.regex.Pattern re)]))
+
+(defn- path-prefix?
+  "L1: true when schema path `p` is `q` or one of its ancestors."
+  [p q]
+  (and (<= (count p) (count q)) (= p (subvec (vec q) 0 (count p)))))
+
+(defn- foreign-registry?
+  "L1: true when registry `reg` differs from the default registry `dflt`
+   (a map of type to schema) in anything the keys of `own` do not name:
+   a default type it lacks, redefines or adds. A key of `own` accounts
+   only for a schema the form rebuilds: an IntoSchema object under it (a
+   type such as m/-simple-schema, whose predicate the form hides) stays
+   foreign. A registry whose types cannot be listed (nil, or one that is
+   not a malli registry) is foreign: nothing says it matches the
+   defaults, and reading it must never throw out of merge-surfaces."
+  [reg own dflt]
+  (let [sch (when (some? reg)
+              (try (mr/-schemas (mr/registry reg))
+                   (catch #?(:clj Throwable :cljs :default) _ nil)))]
+    (boolean
+     (or (not (map? sch))
+         (some (fn [[k v]] (and (or (not (contains? own k)) (m/into-schema? v))
+                                (not (identical? v (get dflt k ::absent)))))
+               sch)
+         (some #(not (contains? sch %)) (keys dflt))))))
+
+(declare carries-options*)
+
+(def ^:private malli-options
+  "Options malli sets on the schemas it builds for its own bookkeeping,
+   which carry nothing the form does not say."
+  [:registry ::m/allow-invalid-refs])
+
+(defn- accounted-value?
+  "L1: true when property-registry value `v`, in scope of the accounted
+   registry keys `own`, is rebuilt equal by recompiling its form: plain
+   form data holding no compiled schema, IntoSchema or fn, or a compiled
+   schema (malli compiles the value in place) whose own tree carries no
+   options beyond those keys. An IntoSchema prints as a bare type its
+   predicate hides, and a compiled value built with options of its own
+   prints the same form for different validators, so neither is."
+  [v own]
+  (cond
+    (m/schema? v)      (not (carries-options* v own))
+    (m/into-schema? v) false
+    (fn? v)            false
+    (coll? v)          (every? #(accounted-value? % own) v)
+    :else              true))
+
+(defn- carries-options*
+  "L1: `carries-options?` for `schema` nested where the registry keys in
+   `inherited` are already accounted for."
+  [schema inherited]
+  (let [dflt  (mr/-schemas (m/-registry {}))
+        nodes (volatile! [])]
+    (m/walk schema (fn [s path _ _] (vswap! nodes conj [path s]) nil))
+    (let [regs  (mapv (fn [[p s]] [p (:registry (m/properties s))]) @nodes)
+          own   (fn [path] (into (set inherited)
+                                 (comp (filter #(path-prefix? (first %) path)) (mapcat (comp keys second)))
+                                 regs))]
+      (boolean
+       (or (some (fn [[p reg]] (not-every? #(accounted-value? % (own p)) (vals reg))) regs)
+           (some (fn [[path s]]
+                   (let [o (m/options s)]
+                     (and (seq o)
+                          (or (seq (apply dissoc o malli-options))
+                              (foreign-registry? (:registry o) (own path) dflt)))))
+                 @nodes))))))
+
+(defn- carries-options?
+  "L1: true when any schema in compiled `schema`'s tree was built with
+   options its form does not account for: an option other than :registry
+   (or malli's own ref bookkeeping), or a registry that adds, redefines
+   or drops a type beyond the :registry properties the schema or its
+   ancestors declare. Such a form names types the options define, so two
+   schemas can share it and still validate differently. A property
+   registry is accounted for when every value is (`accounted-value?`):
+   malli copies it into the options of the schemas it builds, and
+   recompiling the form rebuilds the same registry. m/walk does not enter
+   registry-defined schemas, so their values are checked here,
+   recursively."
+  [schema]
+  (carries-options* schema #{}))
+
+(defn- schema-data
+  "L1: `x` with every compiled malli schema replaced by its form and every
+   regex by [source flags], recursively, so two compilations of one schema
+   compare equal. A compiled schema that carries options its form does not
+   account for (`carries-options?`) keeps its own identity: its form does
+   not say what that registry means. Anything else is kept."
+  [x]
+  (cond
+    (m/schema? x)                    (if (carries-options? x) x (schema-data (m/form x)))
+    (identical? regex-type (type x)) (regex-data x)
+    (map? x)                         (into {} (map (fn [[k v]] [(schema-data k) (schema-data v)])) x)
+    (vector? x)                      (mapv schema-data x)
+    (set? x)                         (into #{} (map schema-data) x)
+    (seq? x)                         (apply list (map schema-data x))
+    :else                            x))
+
 (defn- tool-data
   "L1: a tool's identity for merging: every field but the fn-valued ones
-   (handler, compiled decode/explain), which no two compilations share.
-   Two tools of one name and id that differ in scopes, schemas or any
-   other data are different affordances."
+   (handler, compiled decode/explain), which no two compilations share,
+   with schemas compared by form (`schema-data`). Two tools of one name
+   and id that differ in scopes, schemas or any other data are different
+   affordances."
   [tool]
-  (into {} (remove (comp fn? val)) tool))
+  (into {} (keep (fn [[k v]] (when-not (fn? v) [k (schema-data v)]))) tool))
 
 (defmethod merge-part :tools [_ a b]
   (keyed-merge "tool" tool-data :id (:tools a) (:tools b)))
@@ -137,7 +269,7 @@
     (not (contains? a k)) (answer/ok (get b k))
     (not (contains? b k)) (answer/ok (get a k))
     (= (get a k) (get b k)) (answer/ok (get a k))
-    :else (clash "surface part" k (get a k) (get b k))))
+    :else (clash "surface part" k (get a k) (get b k) (differing-keys (get a k) (get b k)))))
 
 (defn- merge-parts
   "L1 Promote: merge every part supplied by either surface."
@@ -156,7 +288,23 @@
 (defn merge-surfaces
   "L1: the monoid fold of surfaces, left to right: ALWAYS Ok of the
    composition, or the first refusal (:invalid-surface, :name-clash,
-   :app-clash). Identity: `empty-surface`. Associative on disjoint names."
+   :app-clash). Identity: `empty-surface`. Associative on disjoint names.
+
+   Two tools under one name are one affordance when they agree on every
+   field that is not a fn; malli schemas (:input, :output) are compared
+   by form, regexes by source and flags. A :registry the form declares in
+   its own properties is part of the form, so two compilations of it
+   merge. A compiled schema built with options the form does not account
+   for (a custom options registry, any other option) is compared by
+   identity, because its form names types the options define: two such
+   schemas of one form may validate differently, so they clash unless
+   they are the same value.
+   The fn-valued fields are first-writer-wins: the merged tool keeps the
+   leftmost surface's handler. A schema whose form holds a fn, such as an
+   inline [:fn #(...)], is equal only to itself, because two evaluations
+   of that fn are different values; name the predicate (a var) to make
+   two compilations agree. A :name-clash refusal names the differing keys
+   under :differs."
   [& surfaces]
   (answer/reduce-answer merge-two empty-surface surfaces))
 

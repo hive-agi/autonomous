@@ -34,23 +34,47 @@
 (def redacted "<redacted>")
 
 (defn- mask-path
-  "`m` with the value at `path` replaced by `replacement` when present;
-   the empty path is `m` itself. An absent path adds no key."
-  [replacement m path]
-  (cond
-    (empty? path)                            replacement
-    (= ::absent (get-in m path ::absent))    m
-    :else                                    (assoc-in m path replacement)))
+  "L1: `v` with the value at `path` replaced by `replacement`; the empty
+   path is `v` itself. Maps and vectors are stepped through: a missing
+   key, an index out of range or a non-integer step into a vector is an
+   absent path and adds nothing. nil holds nothing to hide and is kept.
+   Any other value the path stops at before it is consumed (a string, a
+   set, a number) is masked whole, because the path promised a secret
+   somewhere inside it. Never throws."
+  [replacement v path]
+  (if (empty? path)
+    replacement
+    (let [[k & more] path]
+      (cond
+        (map? v)    (if (contains? v k) (assoc v k (mask-path replacement (get v k) more)) v)
+        (vector? v) (if (and (int? k) (< -1 k (count v)))
+                      (assoc v k (mask-path replacement (nth v k) more))
+                      v)
+        (nil? v)    v
+        :else       replacement))))
 
 (defn redact-paths
-  "`m` with the value at every present path of `paths` (vectors of keys or
-   indices) replaced by `replacement`, default `redacted`. Absent paths
-   add nothing; the empty path replaces `m` itself. Give it a wire-form
-   value (wire/->wire): an index into a seq or list is not a path there,
-   so a secret under one would be reported absent and kept."
+  "`m` with the value at every path of `paths` (vectors of keys or
+   indices) replaced by `replacement`, default `redacted`. A path that
+   misses a map key or a vector index adds nothing; the empty path
+   replaces `m` itself. A path that stops at any other non-nil value
+   before it is consumed (a string where a vector of cookies was
+   expected, a set) masks that whole value: it is never kept as absent.
+   Give it a wire-form value (wire/->wire), where every seq and list is
+   a vector the path's indices reach."
   ([m paths] (redact-paths m paths redacted))
   ([m paths replacement]
    (reduce (partial mask-path replacement) m paths)))
+
+(defn- with-approval
+  "L0 Promote: `entry` with the human Decision Answer `ans` carries as
+   :autonomous/approval metadata, as :approval {:decision :approver :ms},
+   whenever there is one. CallDetail :redact paths that start with
+   :approval mask inside it, as the other paths mask inside the args."
+  [entry ans detail]
+  (if-let [d (:autonomous/approval (meta ans))]
+    (assoc entry :approval (:approval (redact-paths {:approval d} (:redact detail))))
+    entry))
 
 (defn call-entry
   "The CallEntry of a call of `tool-name` with `args` by `grant` that ended in
@@ -75,15 +99,22 @@
     (assoc :args (redact-paths (wire/->wire (or args {})) (:redact detail)))
 
     (and (:errors? detail) (answer/refused? ans))
-    (assoc :error (:error ans))))
+    (assoc :error (:error ans))
+
+    :always
+    (with-approval ans detail)))
 
 (defn settled-entry
   "The entry saying how the async call parked as `id` ended: Answer `ans`.
    With the app's CallDetail :errors? on, a refusal's :error is kept, as
-   call-entry keeps it for a call refused at once."
+   call-entry keeps it for a call refused at once. A human approval
+   Decision the answer carries is kept as :approval (see call-entry)."
   [id ans detail]
   (cond-> {:kind    :autonomous/settled
            :pending id
            :outcome (answer/outcome ans)}
     (and (:errors? detail) (answer/refused? ans))
-    (assoc :error (:error ans))))
+    (assoc :error (:error ans))
+
+    :always
+    (with-approval ans detail)))

@@ -5,7 +5,9 @@
             [autonomous.decorator :as decorator]
             [autonomous.runtime.registry :as registry]
             [clojure.test :refer [deftest is testing use-fixtures]]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [autonomous.runtime.invoke :as invoke]
+            [autonomous.domain.answer :as answer]))
 
 (defn- fixture-app! []
   (a/set-app-info! {:name "intercept" :description "test app"})
@@ -102,9 +104,107 @@
       (is (= {:ok {:accounts [{:token "<redacted>"}]}} (call tool-name {}))
           (str "the secret never reaches the wire through " id)))))
 
+(deftest an-output-path-that-stops-at-a-string-masks-it-whole
+  (a/reg-tool :t/session {:description "Session" :read-only? true
+                          :handler (fn [_ _] {:user "ana" :set-cookie "sid=s3cret"})})
+  (a/decorate! (decorator/each-tool (decorator/redact-output [[:set-cookie 0]])))
+  (is (= {:ok {:user "ana" :set-cookie "<redacted>"}} (call "t_session" {}))
+      "one cookie string where a vector of cookies was expected never reaches the agent"))
+
 (deftest a-redaction-that-breaks-the-output-schema-is-refused
   (a/decorate! (decorator/each-tool (decorator/redact-output [[:token]] 0)))
   (is (= :output/invalid-redaction (get-in (call "t_account" {}) [:error :type]))))
+
+(deftest the-invalid-redaction-refusal-is-neutral-and-says-what-failed
+  (a/decorate! (decorator/each-tool (decorator/redact-output [[:token]] 0)))
+  (let [{:keys [message data]} (:error (call "t_account" {}))]
+    (is (str/includes? message "wire form"))
+    (is (= {:token ["should be a string"]} (:problems data)))))
+
+(def ^:private leaky-request
+  "The ex-data an HTTP client attaches to a failure: the request, with its token."
+  {:request {:headers {:authorization "Bearer s3cret"}} :status 401})
+
+(defn- reg-leaky! []
+  (a/reg-tool :t/login {:description "Login" :read-only? true
+                        :input [:map [:mode :string]]
+                        :handler (fn [{:keys [mode]} _]
+                                   (case mode
+                                     "throw"  (throw (ex-info "http 401" leaky-request))
+                                     "later"  (future (throw (ex-info "http 401" leaky-request)))
+                                     "refuse" (invoke/return-answer
+                                               (answer/refusal :t/denied "no" leaky-request))
+                                     {:user "ana"}))}))
+
+(deftest redact-refusal-masks-the-data-of-every-refusal-the-tool-makes
+  (reg-leaky!)
+  (a/journal-calls! {:errors? true})
+  (a/decorate! (decorator/each-tool (decorator/redact-refusal [[:request :headers :authorization]])))
+  (let [masked {:request {:headers {:authorization "<redacted>"}} :status 401}]
+    (is (= masked (get-in (call "t_login" {:mode "throw"}) [:error :data])) "a throw")
+    (is (= masked (get-in (call "t_login" {:mode "refuse"}) [:error :data])) "a returned refusal")
+    (let [{:keys [pending]} (call "t_login" {:mode "later"})]
+      (is (= masked (get-in (poll-until-settled pending) [:error :data])) "an async failure"))
+    (is (= {:ok {:user "ana"}} (call "t_login" {:mode "ok"})) "Ok passes untouched")
+    (testing "the journal keeps only the masked data"
+      (let [errors (keep :error (:entries (:ok (a/rpc {:op :journal :since 0}))))]
+        (is (= 3 (count errors)))
+        (is (not (str/includes? (pr-str errors) "s3cret")))))))
+
+(deftest without-redact-refusal-the-data-is-kept
+  (reg-leaky!)
+  (is (= leaky-request (get-in (call "t_login" {:mode "throw"}) [:error :data]))
+      "refusal redaction is opt in"))
+
+(deftest redact-refusal-leaves-runtime-refusals-alone
+  (reg-leaky!)
+  (a/decorate! (decorator/each-tool (decorator/redact-refusal [[]])))
+  (is (= :invalid-args (get-in (call "t_login" {}) [:error :type])))
+  (is (map? (get-in (call "t_login" {}) [:error :data]))
+      "the runtime's own argument diagnosis is not the tool's data")
+  (is (= "<redacted>" (get-in (call "t_login" {:mode "throw"}) [:error :data]))
+      "the empty path replaces the whole data"))
+
+(deftest a-refusal-path-that-stops-at-a-string-or-a-set-masks-it-and-never-hangs
+  (a/reg-tool :t/cookie {:description "Cookie" :read-only? true
+                         :input [:map [:mode :string]]
+                         :handler (fn [{:keys [mode]} _]
+                                    (let [e (ex-info "denied" {:set-cookie "sid=s3cret" :tags #{"s3cret"}})]
+                                      (if (= mode "later") (future (throw e)) (throw e))))})
+  (a/journal-calls! {:errors? true})
+  (a/decorate! (decorator/each-tool (decorator/redact-refusal [[:set-cookie 0] [:tags 0]])))
+  (let [masked {:set-cookie "<redacted>" :tags "<redacted>"}]
+    (is (= masked (get-in (call "t_cookie" {:mode "now"}) [:error :data]))
+        "a string where a vector of cookies was expected, and a set, are masked whole")
+    (let [{:keys [pending]} (call "t_cookie" {:mode "later"})
+          settled (poll-until-settled pending)]
+      (is (= :tool-threw (get-in settled [:error :type])) "the async call settles, never stays Pending")
+      (is (= masked (get-in settled [:error :data])) "and its data is masked the same way")
+      (let [entries (:entries (:ok (a/rpc {:op :journal :since 0})))]
+        (is (some #(and (= :autonomous/settled (:kind %)) (= pending (:pending %))) entries)
+            "its settled entry is written")
+        (is (not (str/includes? (pr-str entries) "s3cret")) "and the journal never holds the secret")))))
+
+(deftest a-refusal-projection-that-throws-drops-the-data-and-still-settles
+  (let [boom (fn [_ a] (if (answer/refused? a) (throw (ex-info "projection broke" {})) a))]
+    (is (= {:error {:type :t/x :message "m"}}
+           (invoke/settle (invoke/return-answer (answer/refusal :t/x "m" {:token "s3cret"}))
+                          answer/ok (partial boom nil)))
+        "direct: the refusal survives without the data its projection could not make safe")
+    (let [{:keys [pending]} (invoke/settle (future (throw (ex-info "late" {:token "s3cret"})))
+                                           answer/ok (partial boom nil))]
+      (is (= {:error {:type :tool-threw :message "late"}} (poll-until-settled pending))
+          "async: the same, and the call settles"))))
+
+(deftest a-future-of-a-marked-refusal-settles-as-that-refusal-redacted
+  (a/reg-tool :t/later-refusal {:description "Async refusal" :read-only? true
+                                :handler (fn [_ _] (future (invoke/return-answer
+                                                            (answer/refusal :t/denied "no" {:token "s3cret"}))))})
+  (a/decorate! (decorator/each-tool (decorator/redact-refusal [[:token]])))
+  (let [{:keys [pending]} (call "t_later-refusal" {})]
+    (is (= {:error {:type :t/denied :message "no" :data {:token "<redacted>"}}}
+           (poll-until-settled pending))
+        "never {:ok {:error ...}}, and the refusal projection applies")))
 
 (deftest require-scope-through-a-decorated-runtime
   (a/decorate! (decorator/each-tool (decorator/require-scope :audit)))

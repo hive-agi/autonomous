@@ -15,35 +15,51 @@
             [autonomous.domain.answer :as answer]
             [clojure.string :as str]))
 
+(defn protocol-headers
+  "Pure: the headers every request to a remote carries: `ident`, the MCP
+   protocol version, `accept`, and session `sid` when there is one."
+  [ident accept sid]
+  (cond-> (assoc ident "accept" accept "mcp-protocol-version" rpc/protocol-version)
+    sid (assoc "mcp-session-id" (str sid))))
+
 (defn- post
   "Answer of JSON-RPC message `msg` to `target`'s endpoint with `ident`
    headers, in session `sid` (none when nil)."
   [client target msg ident sid timeout-ms]
-  (let [req {:method :post
-             :url (http/endpoint target)
-             :headers (cond-> (assoc ident "content-type" "application/json")
-                        sid (assoc "mcp-session-id" (str sid)))
-             :body (rpc/json-text msg)
-             :timeout-ms timeout-ms}]
-    (port/-request! client req)))
+  (port/-request! client {:method :post
+                          :url (http/endpoint target)
+                          :headers (assoc (protocol-headers ident rpc/post-accept sid)
+                                          "content-type" "application/json")
+                          :body (rpc/json-text msg)
+                          :rpc-id (:id msg)
+                          :timeout-ms timeout-ms}))
 
 (def ^:private gone-status 404)
 
+(defn- unknown-without-reply
+  "Answer `a` of reading a 2xx reply, its :channel/bad-answer (no message
+   answers the request) recast as :channel/outcome-unknown."
+  [a]
+  (if (= :channel/bad-answer (get-in a [:error :type]))
+    (answer/refusal :channel/outcome-unknown
+                    "the remote accepted the request but sent no reply to it: the outcome is unknown")
+    a))
+
 (defn- decode
-  "Answer of `resp` read as JSON-RPC: its message, or a refusal. A 404 is
-   :channel/session-gone (the remote forgot the session and it must be
-   renewed); any other error status is :channel/remote-refused, carrying
-   the status only: an error body is the remote's text and may echo the
-   request's credential back."
-  [{:keys [status body]}]
+  "Answer of `resp` read as the JSON-RPC reply to request `id`: that
+   message, or a refusal. A 404 is :channel/session-gone (the remote forgot
+   the session and it must be renewed); any other error status is
+   :channel/remote-refused, carrying the status only: an error body is the
+   remote's text and may echo the request's credential back. A 2xx with no
+   reply to `id` is :channel/outcome-unknown: the remote accepted the
+   request and may have acted on it."
+  [{:keys [status body headers]} id]
   (cond
     (= gone-status status) (answer/refusal :channel/session-gone "the remote forgot this session")
     (<= 400 status)        (answer/refusal :channel/remote-refused
                                            (str "the remote answered " status)
                                            {:status status})
-    :else                  (try (answer/ok (rpc/message-of body))
-                                (catch Exception _not-json
-                                  (answer/refusal :channel/bad-answer "the remote did not answer JSON-RPC")))))
+    :else                  (unknown-without-reply (rpc/reply-of body (get headers "content-type") id))))
 
 (defn open-session!
   "Ok of a session {:id :actor} opened for `grant` on `target`, or a
@@ -67,7 +83,7 @@
     (answer/let-answer
      [ident (http/identity target source grant)]
      (port/-request! client {:method :delete :url (http/endpoint target)
-                             :headers (assoc ident "mcp-session-id" (str (:id ses)))
+                             :headers (protocol-headers ident rpc/post-accept (:id ses))
                              :timeout-ms 5000}))))
 
 (defn round
@@ -82,37 +98,88 @@
               (answer/ok nil))
       ident (http/identity target source grant)
       resp  (post client target msg ident (:id ses) timeout-ms)]
-     (decode resp))))
+     (decode resp (:id msg)))))
 
 ;; =============================================================================
 ;; The event stream
 ;; =============================================================================
 
-(def ^:private event-gap "\n\n")
+(def max-event-chars
+  "The most characters one SSE event may gather before its blank line."
+  (* 1024 1024))
 
-(defn- cut
-  "Ok [complete-events remainder] of SSE buffer `text` at its last blank
-   line, or nil while no event is complete."
-  [text]
-  (when-let [i (str/last-index-of text event-gap)]
-    (answer/ok [(subs text 0 i) (subs text (+ i (count event-gap))) ])))
+(def max-event-lines
+  "The most lines one SSE event may gather before its blank line."
+  4096)
+
+(def empty-event
+  "An SSE event being gathered: its lines, their size, and whether it
+   passed a cap and is being dropped."
+  {:lines [] :chars 0 :dropped? false})
+
+(defn- over-cap?
+  "True when adding `line` would take event `ev` past a cap."
+  [ev line]
+  (or (<= max-event-lines (count (:lines ev)))
+      (< max-event-chars (+ (:chars ev) (count line)))))
+
+(defn add-line
+  "Pure: event `ev` with `line` appended in O(1), or emptied and marked
+   :dropped? once it would pass max-event-chars or max-event-lines. A
+   dropped event stays dropped until its blank line."
+  [ev line]
+  (cond
+    (:dropped? ev)      ev
+    (over-cap? ev line) (assoc empty-event :dropped? true)
+    :else               (-> ev (update :lines conj line) (update :chars + (count line)))))
+
+(defn- lines-of
+  "The lines of chunk `t`, which holds whole lines each ended by a newline."
+  [t]
+  (let [ls (str/split (str t) #"\n" -1)]
+    (if (= "" (peek ls)) (pop ls) ls)))
+
+(def ^:private overflow
+  (answer/refusal :channel/event-overflow
+                  (str "a remote event passed " max-event-chars " characters or "
+                       max-event-lines " lines: it is dropped")))
+
+(defn- feed-line!
+  "Boundary: take `line` into event cell `ev`: a blank line dispatches the
+   gathered event's messages to `on-message` and starts the next one; an
+   event that just passed a cap is reported to `on-failed`."
+  [ev on-message on-failed line]
+  (if (str/blank? line)
+    (let [done @ev]
+      (reset! ev empty-event)
+      (when-not (:dropped? done)
+        (run! on-message (rpc/read-messages (str/join "\n" (:lines done))))))
+    (let [[before after] (swap-vals! ev add-line line)]
+      (when (and (:dropped? after) (not (:dropped? before))) (on-failed overflow)))))
 
 (defn- feed!
-  "Feed chunk `t` into buffer `buf`, invoking `on-message` for each message
-   that completes."
-  [buf on-message t]
-  (when-let [{:keys [ok]} (cut (swap! buf str t))]
-    (let [[events rest-] ok]
-      (swap! buf (constantly rest-))
-      (run! on-message (rpc/read-messages events)))))
+  "Feed chunk `t` of whole lines into event cell `ev`, line by line."
+  [ev on-message on-failed t]
+  (run! #(feed-line! ev on-message on-failed %) (lines-of t)))
 
-(defn- sink
-  "Sink for port/-open-stream!: `on-message` gets each completed JSON-RPC
-   message, `on-close` runs once at the end."
-  [on-message on-close]
-  (let [buf (atom "")]
-    {:text! (partial feed! buf on-message)
-     :close! (fn [] (on-close))}))
+(defn- report-failed!
+  "Boundary: report refusal `a` that closed a remote stream on stderr. Its
+   message is the adapter's own text, never the remote's."
+  [a]
+  (binding [*out* *err*]
+    (println "[autonomous] remote stream closed:" (get-in a [:error :message]))))
+
+(defn sink
+  "Boundary: a sink for port/-open-stream!. `on-message` gets each JSON-RPC
+   message of an event that completes, `on-close` runs once at the end, and
+   `on-failed` (default: stderr) gets each refusal: an event dropped past
+   its cap, or a line that closed the stream."
+  ([on-message on-close] (sink on-message on-close report-failed!))
+  ([on-message on-close on-failed]
+   (let [ev (atom empty-event)]
+     {:text!   (partial feed! ev on-message on-failed)
+      :failed! on-failed
+      :close!  (fn [] (on-close))})))
 
 (defn open-stream!
   "Boundary: hold the caller's event stream and dispatch its messages to
@@ -121,7 +188,6 @@
   (answer/let-answer
    [ident (http/identity target source grant)]
    (port/-open-stream! client {:url (http/endpoint target)
-                               :headers (merge ident {"accept" rpc/sse-accept
-                                                      "mcp-session-id" (str (:id ses))})
+                               :headers (protocol-headers ident rpc/sse-accept (:id ses))
                                :stream-timeout-ms (:timeout-ms target http/default-timeout-ms)}
                        (sink on-message on-close))))

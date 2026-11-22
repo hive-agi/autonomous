@@ -2,7 +2,8 @@
   "L3 adapter contract kit: checks over a Source, its Codec and host ports
    supplied by a fixture. `check-adapter` answers data; assertion reporting
    is a separate clojure.test boundary."
-  (:require [autonomous.decorator :as decorator]
+  (:require [autonomous.approval :as approval]
+            [autonomous.decorator :as decorator]
             [autonomous.domain.answer :as answer]
             [autonomous.domain.schema :as s]
             [autonomous.spi :as spi]
@@ -179,11 +180,21 @@
   [surf]
   (into {} (map (fn [[n t]] [n (select-keys t [:input :output])])) (:tools surf)))
 
+(def tool-decorators
+  "The Tool -> Tool decorators decorators-preserve-schemas applies, by name.
+   The approval asker never answers: the law is about schemas, no call runs."
+  {:require-scope      (decorator/require-scope :contract/read)
+   :redact-output      (decorator/redact-output [[:secret]])
+   :require-approval   (decorator/require-approval {:asker (approval/queue-asker [])
+                                                    :timeout-ms 1})
+   :provider-allowlist (decorator/provider-allowlist {:path [:provider]
+                                                      :providers [{:code "contract-sim"}]
+                                                      :allowed ["contract-sim"]})})
+
 (defn- decorate-tool
-  "L3 Promote: apply both tool decorators to every tool."
+  "L3 Promote: apply every tool decorator to every tool."
   [surf]
-  (update surf :tools update-vals (comp (decorator/require-scope :contract/read)
-                                        (decorator/redact-output [[:secret]]))))
+  (update surf :tools update-vals (apply comp (vals tool-decorators))))
 
 (defn- decorated-surface
   "L3 Promote: apply tool decorators, then the surface decorator."
@@ -198,7 +209,8 @@
                {:tool n :expected schemas :actual actual})]))
 
 (defn decorators-preserve-schemas
-  "L3 Contract: require-scope, redact-output and prefix-names preserve a
+  "L3 Contract: the `tool-decorators` (require-scope, redact-output,
+   require-approval, provider-allowlist) and prefix-names preserve a
    valid Surface and every tool's :input and :output schemas."
   [adapter fixture]
   (answer-receipt->check :decorators-preserve-schemas
@@ -225,18 +237,14 @@
                          (when-let [sample (sample-args fixture tool)] [sample])
                          malformed-args))))
 
-(def ^:private guard-refusals
-  "Refusal types autonomous.spi's guard emits when a codec port throws,
-   is missing or answers a non-Answer. The guard keeps the runtime safe,
-   but the codec itself failed to be total, so the contract fails it."
-  #{:codec/encode :codec/decode})
-
 (defn- answer-receipt
   "L3 Contract: require one codec crossing to answer Ok or the codec's own
-   refusal, never one the SPI guard had to make for it."
+   refusal, never one the SPI guard had to make for it (spi/guard-refusal?,
+   which reads the guard's marker, so a codec may refuse with the type
+   :codec/encode itself)."
   [stage tool-name args a]
   (result :codecs/total (and (m/validate [:or s/Ok s/Refusal] a)
-                             (not (guard-refusals (get-in a [:error :type]))))
+                             (not (spi/guard-refusal? a)))
           {:stage stage :tool tool-name :args args :answer a}))
 
 (defn- encode-receipt

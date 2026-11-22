@@ -206,6 +206,18 @@
            (cli/anonymous-grant (promoted {"AUTONOMOUS_ACTOR" "claude"} {:scopes "read"})))
         "the anonymous grant keeps read and write")))
 
+(deftest the-http-banner-quotes-the-anonymous-actor-as-shown
+  (let [promoted (fn [env opts]
+                   (:ok (config/promote {} (config/read-env env) (merge {:http "127.0.0.1:0" :port "1"} opts) nil)))
+        banner   #(cli/http-banner (promoted {"AUTONOMOUS_ACTOR" %} {}) 8080)]
+    (is (str/ends-with? (banner "claude") "/mcp (loopback, no tokens, acting as \"claude\")"))
+    (is (str/includes? (banner "ops\u202e\u001b[2J") "acting as \"ops\\u202e\\u001b[2J\")")
+        "a bidi control and an ESC in the configured actor are escaped")
+    (is (every? #(<= 0x20 (int %) 0x7E) (banner "ops\u202e\u001b[2J")))
+    (is (str/includes? (banner "ops (+9 chars)") "acting as \"ops (+9 chars)\")"))
+    (is (str/ends-with? (cli/http-banner (promoted {} {}) 8080) "acting as \"local\")")))
+  (is (str/ends-with? (cli/http-banner {:tokens {"h" {}}} 8080) "/mcp (bearer tokens required)")))
+
 ;; -----------------------------------------------------------------------------
 ;; HTTP server stream: tools/list_changed pushed per session
 

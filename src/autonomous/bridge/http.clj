@@ -7,7 +7,8 @@
   (:require [autonomous.bridge.port :as port]
             [autonomous.bridge.url :as url]
             [autonomous.domain.answer :as answer]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [autonomous.domain.naming :as naming]))
 
 (defn host-label
   "A short secret-free label of `target`'s remote: its url without scheme,
@@ -80,16 +81,19 @@
 
 (defn- selected-reference
   "Ok of `grant`'s credential reference on `target`, nil for a target with
-   no credential configuration at all. A target that configures
-   :credentials fails closed: an actor matching no entry, with no :default
-   and no legacy :token-env, is refused naming only actor and target id."
+   no credential configuration at all. A target that carries the
+   :credentials key fails closed, even when it is empty: an actor matching
+   no entry, with no :default and no legacy :token-env, is refused naming
+   only the target id and the actor as naming/shown-actor shows it (quoted
+   in the message by naming/quoted-actor), so a control, bidi or zero-width
+   character is escaped, never repeated, and distinct actors stay distinct."
   [target grant]
   (let [reference (credential-reference target grant)]
-    (if (and (nil? reference) (seq (:credentials target)))
+    (if (and (nil? reference) (some? (:credentials target)))
       (answer/refusal :channel/credential-missing
-                      (str "no credential is configured for agent " (:actor grant)
+                      (str "no credential is configured for agent " (naming/quoted-actor (:actor grant))
                            " on " (:target/id target) ", and no :default: refusing to go anonymous")
-                      {:actor (:actor grant) :target (:target/id target)})
+                      {:actor (naming/shown-actor (:actor grant)) :target (:target/id target)})
       (answer/ok reference))))
 
 (defn identity

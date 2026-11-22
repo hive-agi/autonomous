@@ -1,10 +1,10 @@
 ;; The bridge on babashka: `bb serve --dir ../todo`, one cheap process per
 ;; agent (or one per fleet), the same code as the JVM bridge. ClojureWasm runs
 ;; the same namespaces (`cljw -cp ... -m autonomous.cli serve`), stdio only.
-{:paths ["src" "test" "bb-mcp/src" "bb-mcp/test"]
+{:paths ["src" "test" "test-cljc" "example/sim/src" "example/sim/test" "bb-mcp/src" "bb-mcp/test"]
  :deps {metosin/malli                {:mvn/version "0.20.3"}
-        io.github.hive-agi/bb-mcp    {:mvn/version "1.3.7"}
-        io.github.hive-agi/hive-addon {:mvn/version "1.1.10"}
+        io.github.hive-agi/bb-mcp    {:mvn/version "1.3.8"}
+        io.github.hive-agi/hive-addon {:mvn/version "1.1.13"}
         io.github.hive-agi/hive-test  {:mvn/version "0.5.2"}
         io.github.hive-agi/hive-schemas {:mvn/version "0.2.2"}}
 
@@ -21,6 +21,20 @@
   test  {:doc  "Every unit suite on babashka (the datahike ledger contract is JVM-only)"
          :task (exec 'autonomous.bb-test-runner/-main)}
 
+  -node-deps {:doc  "npm ci from package-lock.json, only when node_modules is absent"
+              :task (when-not (babashka.fs/exists? "node_modules")
+                      (shell "npm" "ci" "--no-audit" "--no-fund"))}
+
+  test-cljs {:doc     "The ClojureScript suite on re-frame 1 (shadow :test, run on node)"
+             :depends [-node-deps]
+             :task    (do (clojure "-M:cljs" "-m" "shadow.cljs.devtools.cli" "compile" "test")
+                          (shell "node" "target/cljs-test/test.js"))}
+
+  test-rf2 {:doc     "autonomous.re-frame2 against real re-frame2 (alias :cljs-rf2, shadow :rf2-test, run on node)"
+            :depends [-node-deps]
+            :task    (do (clojure "-M:cljs-rf2" "-m" "shadow.cljs.devtools.cli" "compile" "rf2-test")
+                         (shell "node" "target/cljs-rf2-test/test.js"))}
+
   demo  {:doc  "Open the todo app and let an agent drive it over MCP: [--no-open] [--no-script] [--exit] [--step-ms N] [--record OUT.gif]. Ctrl-C stops everything it started."
          :task (apply (requiring-resolve 'autonomous.demo.runner/-main) *command-line-args*)}
 
@@ -32,14 +46,45 @@
          :task (exec 'autonomous.e2e.bb-runner/-main)}
 
   cabi  {:doc  "libautonomous, the runtime as a C library (jolt build --library; needs JOLT_CHEZ_CSV), then the C smoke test (doc/cabi.md)"
-         :task (do (babashka.fs/create-dirs "cabi/build")
-                   (shell {:dir "cabi"} "jolt" "build" "--library" "-m" "autonomous.cabi" "-o" "build/libautonomous")
-                   (babashka.fs/delete-tree "cabi/build/libautonomous.so.build")
-                   (shell {:dir "cabi/examples/c"} "cc" "-rdynamic" "-I../../include" "-o" "../../build/smoke" "smoke.c" "-ldl")
-                   (shell {:dir "cabi/examples/c"} "../../build/smoke" "../../build/libautonomous.so"))}
+         :task (let [csv  (System/getenv "JOLT_CHEZ_CSV")
+                     hint (str ". Set JOLT_CHEZ_CSV to the Chez kernel dir csv<version>/<machine> of a"
+                               " threaded -fPIC Chez build, the one holding scheme.h, e.g."
+                               " JOLT_CHEZ_CSV=$HOME/.local/share/chez/10.4.1/lib/csv10.4.1/ta6le"
+                               " (doc/cabi.md, Build it).")
+                     fail (fn [why] (binding [*out* *err*] (println (str "bb cabi: " why hint))) (System/exit 2))]
+                 (when (and csv (not (babashka.fs/exists? (babashka.fs/path csv "scheme.h"))))
+                   (fail (str "JOLT_CHEZ_CSV is " csv ", which has no scheme.h")))
+                 (babashka.fs/create-dirs "cabi/build")
+                 (when-not (zero? (:exit (shell {:dir "cabi" :continue true}
+                                                "jolt" "build" "--library" "-m" "autonomous.cabi" "-o" "build/libautonomous")))
+                   (fail (str "jolt build --library failed"
+                              (when-not csv " and JOLT_CHEZ_CSV is not set, so jolt looked for its own Chez build files"))))
+                 (babashka.fs/delete-tree "cabi/build/libautonomous.so.build")
+                 (shell {:dir "cabi/examples/c"} "cc" "-rdynamic" "-I../../include" "-o" "../../build/smoke" "smoke.c" "-ldl")
+                 (shell {:dir "cabi/examples/c"} "../../build/smoke" "../../build/libautonomous.so")
+                 (shell {:dir "cabi/examples/c"} "cc" "-rdynamic" "-DSMOKE_V1" "-I../../include" "-o" "../../build/smoke-v1" "smoke.c" "-ldl")
+                 (shell {:dir "cabi/examples/c"} "../../build/smoke-v1" "../../build/libautonomous.so"))}
 
   cabi-rust {:doc  "Build the Rust example app over libautonomous (cabi/examples/rust)"
              :task (shell {:dir "cabi/examples/rust"} "cargo" "build" "--release")}
+
+  cabi-go {:doc  "Build and run the Go (cgo) example over libautonomous (cabi/bindings/go, after bb cabi); fails on a wrong answer"
+           :task (do (shell {:dir "cabi/bindings/go/example"} "go" "vet" "./" "../")
+                     (shell {:dir "cabi/bindings/go"} "go" "test" "-count=1" "./")
+                     (shell {:dir "cabi/bindings/go/example"} "go" "build" "-o" "../../../build/go-example" ".")
+                     (shell {:dir "cabi/build"} "./go-example"))}
+
+  cabi-zig {:doc  "Build and run the Zig example over libautonomous (cabi/bindings/zig, after bb cabi); fails on a wrong answer"
+            :task (do (shell {:dir "cabi/bindings/zig"} "zig" "build" "test" "run"
+                             "--prefix" "../../build/zig-out" "--cache-dir" "../../build/zig-cache")
+                      (shell {:dir "cabi/bindings/zig"} "zig" "build" "run" "-Dblind=true"
+                             "--prefix" "../../build/zig-out-blind" "--cache-dir" "../../build/zig-cache"))}
+
+  cabi-bindings {:doc  "libautonomous and every binding example that builds here: C smoke, Go, Zig, Rust"
+                 :depends [cabi cabi-go cabi-zig cabi-rust]}
+
+  tool-spec {:doc  "Print a JSON tool-spec file as EDN specs for autonomous_reg_tool: FILE.json (autonomous.json-spec)"
+             :task (apply (requiring-resolve 'autonomous.json-spec.load/-main) *command-line-args*)}
 
   cabi-e2e {:doc  "Live: the Rust example dials a ws-only bb bridge; agents call its tools over MCP HTTP (doc/cabi.md)"
             :task (exec 'autonomous.e2e.cabi-runner/-main)}

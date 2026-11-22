@@ -7,12 +7,16 @@
   "Every unit suite. The datahike ledger contract is gated to the JVM
    inside bridge-trifecta-test; the live e2e runs as `bb e2e`."
   '[autonomous.domain.answer-railway-test
+    autonomous.approval-test
+    autonomous.require-approval-test
+    autonomous.provider-allowlist-test
     autonomous.surface-test
     autonomous.spi-test
     autonomous.contract-test
     autonomous.ring-contract-test
     autonomous.domain.decision-trifecta-test
     autonomous.domain.primitives-trifecta-test
+    autonomous.domain.naming-test
     autonomous.domain.fleet-trifecta-test
     autonomous.bridge.bridge-trifecta-test
     autonomous.bridge.sources-strata-test
@@ -21,6 +25,7 @@
     autonomous.bridge.ws-strata-test
     autonomous.mcp.builtins-test
     autonomous.bridge.http-test
+    autonomous.bridge.failure-test
     autonomous.bridge.http-smoke-test
     autonomous.mcp.transport-test
     autonomous.mcp.protocol-strata-test
@@ -33,6 +38,7 @@
     autonomous.runtime.intercept-test
     autonomous.surface-transform-test
     autonomous.re-frame.model-trifecta-test
+    autonomous.re-frame.model-frame-test
     autonomous.openapi-test
     autonomous.openapi-derive-test
     autonomous.openapi-surface-test
@@ -43,7 +49,9 @@
     autonomous.openapi-pure-strata-test
     autonomous.asyncapi-core-test
     autonomous.asyncapi-source-test
-    autonomous.bb-mcp.mount-test])
+    autonomous.json-spec-test
+    autonomous.bb-mcp.mount-test
+    sim.control-test])
 
 (defn -main [& _]
   (apply require suites)
