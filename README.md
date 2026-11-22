@@ -190,7 +190,8 @@ is the example's, shortened:
 ## Develop and test
 
 ```sh
-clojure -M:test unit                                     # JVM suite
+clojure -M:test unit                                     # JVM suite (runtime)
+(cd bridge && clojure -Sdeps '{:aliases {:dev/local {:override-deps {io.github.hive-agi/autonomous {:local/root ".."}}}}}' -M:dev/local:test unit)  # JVM suite (bridge)
 bb test                                                  # babashka suite
 bb e2e                                                   # live swarm story from a bb bridge
 bb cabi && bb cabi-rust && bb cabi-e2e                   # libautonomous, C smoke, Rust app live (needs jolt)
@@ -201,9 +202,11 @@ bb test-rf2                                              # autonomous.re-frame2 
 `bb test-cljs` and `bb test-rf2` are the ClojureScript gate; both run
 `npm ci` first when `node_modules` is absent.
 
-The `:integration` suite (`clojure -M:test integration`) needs live runtimes:
-compile and watch the `:e2e` build, start two `node target/e2e/main.js`, then
-run it. It proves isolation across instances, lease coordination and ledger
+The `:integration` suite (`clojure -M:dev/local:test integration` in `bridge/`, with the `-Sdeps` above) needs live runtimes:
+compile and watch the `:e2e` build at the repo root, start two
+`node target/e2e/main.js`, then run it from `bridge/` with
+`AUTONOMOUS_E2E_PORT_FILE=../.shadow-cljs/nrepl.port` (shadow writes the port
+file at the root). It proves isolation across instances, lease coordination and ledger
 attribution over the real nREPL channel.
 
 ## Status

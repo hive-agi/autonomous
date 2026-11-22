@@ -89,7 +89,9 @@ probe: every step answered as expected
 ## Tests
 
 ```sh
-clojure -M:test:example/orders-dev orders
+cd bridge
+clojure -Sdeps '{:aliases {:dev/local {:override-deps {io.github.hive-agi/autonomous {:local/root ".."}}}}}' \
+  -M:dev/local:test:example/orders-dev orders
 ```
 
 `orders.domain-trifecta-test` locks the domain (golden, property and

@@ -1,7 +1,7 @@
 ;; The bridge on babashka: `bb serve --dir ../todo`, one cheap process per
 ;; agent (or one per fleet), the same code as the JVM bridge. ClojureWasm runs
 ;; the same namespaces (`cljw -cp ... -m autonomous.cli serve`), stdio only.
-{:paths ["src" "test" "test-cljc" "example/sim/src" "example/sim/test" "bb-mcp/src" "bb-mcp/test"]
+{:paths ["src" "test" "test-cljc" "bridge/src" "bridge/test" "example/sim/src" "example/sim/test" "bb-mcp/src" "bb-mcp/test"]
  :deps {metosin/malli                {:mvn/version "0.20.3"}
         io.github.hive-agi/bb-mcp    {:mvn/version "1.3.8"}
         io.github.hive-agi/hive-addon {:mvn/version "1.1.13"}
@@ -18,8 +18,8 @@
   token {:doc  "Mint a bearer token: --actor NAME --scopes read,write"
          :task (apply (requiring-resolve 'autonomous.cli/-main) "token" *command-line-args*)}
 
-  test  {:doc  "Every unit suite on babashka (the datahike ledger contract is JVM-only)"
-         :task (exec 'autonomous.bb-test-runner/-main)}
+  test  {:doc  "Every unit suite on babashka, from bridge/ (the datahike ledger contract is JVM-only)"
+         :task (shell {:dir "bridge"} "bb" "--config" "../bb.edn" "-m" "autonomous.bb-test-runner")}
 
   -node-deps {:doc  "npm ci from package-lock.json, only when node_modules is absent"
               :task (when-not (babashka.fs/exists? "node_modules")
