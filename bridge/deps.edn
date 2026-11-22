@@ -1,8 +1,11 @@
 {:paths ["src"]
 
- ;; Versions match the root deps.edn pins.
+ ;; Versions match the root deps.edn pins. Clojure is pinned here too: the
+ ;; tools.deps default (the CLI's own, an alpha on this host) would otherwise
+ ;; win, and datahike's connect fails on it.
  :deps
- {io.github.hive-agi/autonomous {:mvn/version "0.2.2"}
+ {org.clojure/clojure           {:mvn/version "1.12.1"}
+  io.github.hive-agi/autonomous {:mvn/version "0.2.2"}
   org.clojure/data.json         {:mvn/version "2.5.2"}
   nrepl/nrepl                   {:mvn/version "1.3.1"}
   clj-commons/clj-yaml          {:mvn/version "1.0.29"}}

@@ -77,7 +77,7 @@ jobs:
           set -euo pipefail
           LOAD='
             (require (quote clojure.java.io) (quote clojure.string))
-            (let [[mode & names] *command-line-args*
+            (let [mode (System/getenv "PASS")
                   optional (set (map symbol (clojure.string/split (System/getenv "OPTIONAL") #"\s+")))
                   root (.toPath (clojure.java.io/file "src"))
                   all (->> (file-seq (clojure.java.io/file "src"))
@@ -94,8 +94,8 @@ jobs:
                 (throw (ex-info "OPTIONAL names a ns with no source file" {:missing missing})))
               (doseq [n nses] (require n))
               (println "loaded" (count nses) mode "bridge namespaces of" (count all)))'
-          clojure -Sdeps "$DEV_LOCAL" -M:dev/local -e "$LOAD" base
-          clojure -Sdeps "$DEV_LOCAL" -M:dev/local:datahike:ws:ring:cljw -e "$LOAD" optional
+          PASS=base clojure -Sdeps "$DEV_LOCAL" -M:dev/local -e "$LOAD"
+          PASS=optional clojure -Sdeps "$DEV_LOCAL" -M:dev/local:datahike:ws:ring:cljw -e "$LOAD"
       # kaocha exits 0 with no tests: fail when fewer tests ran than the
       # deftest forms of the unit suites (trifecta macros only add to it).
       - name: Test
