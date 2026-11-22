@@ -23,12 +23,12 @@
 (defn- log [& xs] (binding [*out* *err*] (apply println "[autonomous.bb-mcp]" xs)))
 
 (defn ->listed
-  "The tools/list entry of bb-mcp tool spec `spec`."
+  "Promote: the tools/list entry of bb-mcp tool spec `spec`."
   [{:keys [name description schema]}]
   {:name name :description description :inputSchema schema})
 
 (defn with-tools
-  "tools/list response `resp` with `extra` (tools/list entries) appended,
+  "Promote: tools/list response `resp` with `extra` (tools/list entries) appended,
    except names it already lists: a host's own tool is never shadowed."
   [resp extra]
   (let [have (into #{} (map :name) (get-in resp [:result :tools]))]
@@ -36,7 +36,7 @@
                (fnil into []) (remove #(contains? have (:name %))) extra)))
 
 (defn with-list-changed
-  "initialize response `resp` advertising tools.listChanged."
+  "Promote: initialize response `resp` advertising tools.listChanged."
   [resp]
   (cond-> resp
     (:result resp) (assoc-in [:result :capabilities :tools :listChanged] true)))
@@ -44,7 +44,7 @@
 (defn- request? [msg method] (and (= method (:method msg)) (contains? msg :id)))
 
 (defn- watch!
-  "Send notifications/tools/list_changed through `write!` whenever the
+  "Boundary: send notifications/tools/list_changed through `write!` whenever the
    mount's fingerprint moves, until `running?` is false."
   [m write! running? watch-ms]
   (future
@@ -57,27 +57,74 @@
           (Thread/sleep (long watch-ms))
           (recur fp))))))
 
+(defn- run-call
+  "Boundary: bb-mcp {:result :error?} of tools/call `params` on `owner` as
+   the agent `(actor)` names; a throw, the actor fn's included, is an error
+   result."
+  [owner params actor]
+  (try (mount/call owner (:name params) (or (:arguments params) {}) (actor))
+       (catch Exception e {:result (str "Error: " (ex-message e)) :error? true})))
+
 (defn- answer-call!
-  "Answer tools/call `msg` for `owner` on a future; the response is written
-   unless the call was cancelled meanwhile."
+  "Boundary: answer tools/call `msg` for `owner` on a future; the response
+   is written unless the call was cancelled meanwhile."
   [{:keys [calls write! actor]} owner {:keys [id params]}]
   ;; Registered BEFORE the future starts: a fast call must find itself.
   (swap! calls assoc id ::starting)
   (let [fut (future
-              (let [{:keys [result error?]}
-                    (try (mount/call owner (:name params) (or (:arguments params) {}) (actor))
-                         (catch Exception e {:result (str "Error: " (ex-message e)) :error? true}))
+              (let [{:keys [result error?]} (run-call owner params actor)
                     [old _] (swap-vals! calls dissoc id)]
                 (when (contains? old id)
                   (write! (proto/tool-call-response id result error?)))))]
     (swap! calls #(if (contains? % id) (assoc % id fut) %))))
 
-(defn- cancel! [{:keys [calls]} id]
-  (let [[old _] (swap-vals! calls dissoc id)]
-    (when (contains? old id)
-      (let [fut (get old id)]
-        (when (future? fut) (future-cancel fut)))
-      true)))
+(defn- cancel!
+  "Boundary: cancel the call answered here under request `id`; true when
+   there was one, else false."
+  [{:keys [calls]} id]
+  (let [[old _] (swap-vals! calls dissoc id)
+        owed?   (contains? old id)]
+    (when (and owed? (future? (get old id))) (future-cancel (get old id)))
+    owed?))
+
+(defn- pending-kind
+  "Promote: the response kind request `msg` awaits from bb-mcp: :list for
+   tools/list, :init for initialize, else nil."
+  [msg]
+  (cond (request? msg "tools/list") :list
+        (request? msg "initialize") :init))
+
+(defn- intercept!
+  "Boundary: answer an owned tools/call, or cancel one answered here; true
+   when `msg` was consumed and so never reaches bb-mcp."
+  [{:keys [m] :as t} msg]
+  (if-let [owner (and (request? msg "tools/call") (mount/owner m (get-in msg [:params :name])))]
+    (do (answer-call! t owner msg) true)
+    (boolean (and (= "notifications/cancelled" (:method msg))
+                  (cancel! t (get-in msg [:params :requestId]))))))
+
+(defn- pass-through!
+  "Boundary: remember the response kind `msg` awaits in `pending`; `msg`."
+  [pending msg]
+  (when-let [kind (pending-kind msg)] (swap! pending assoc (:id msg) kind))
+  msg)
+
+(defn- decorated
+  "Boundary: bb-mcp response `resp` as the client sees it, given the `kind`
+   of request it answers: the mount's tools appended to a :list, listChanged
+   advertised on an :init, any other unchanged."
+  [{:keys [m opts]} kind resp]
+  (case kind
+    :list (with-tools resp (map (comp ->listed tool/tool-spec) (mount/tools m (:actor opts))))
+    :init (with-list-changed resp)
+    resp))
+
+(defn- start-watch!
+  "Boundary: start the list_changed watcher once, on the first :init answer,
+   unless :watch-ms is 0; the watcher's future when it started one, else nil."
+  [{:keys [m opts running?] :as t} kind]
+  (when (and (= :init kind) (pos? (:watch-ms opts)) (compare-and-set! running? :new true))
+    (watch! m (:write! t) running? (:watch-ms opts))))
 
 (defrecord MountedTransport [inner m opts lock pending running? calls]
   proto/Transport
@@ -85,35 +132,18 @@
     (loop []
       (let [msg (proto/read-msg inner)]
         (cond
-          (nil? msg)
-          (do (reset! running? false) nil)
-
-          (and (request? msg "tools/call") (mount/owner m (get-in msg [:params :name])))
-          (do (answer-call! this (mount/owner m (get-in msg [:params :name])) msg) (recur))
-
-          (and (= "notifications/cancelled" (:method msg))
-               (cancel! this (get-in msg [:params :requestId])))
-          (recur)
-
-          :else
-          (do (cond
-                (request? msg "tools/list")  (swap! pending assoc (:id msg) :list)
-                (request? msg "initialize")  (swap! pending assoc (:id msg) :init))
-              msg)))))
+          (nil? msg)            (do (reset! running? false) nil)
+          (intercept! this msg) (recur)
+          :else                 (pass-through! pending msg)))))
   (write-msg [this resp]
     (let [kind (when (contains? resp :id) (get @pending (:id resp)))
-          resp (case kind
-                 :list (with-tools resp (map (comp ->listed tool/tool-spec)
-                                             (mount/tools m (:actor opts))))
-                 :init (with-list-changed resp)
-                 resp)]
+          out  (decorated this kind resp)]
       (when kind (swap! pending dissoc (:id resp)))
-      ((:write! this) resp)
-      (when (and (= :init kind) (pos? (:watch-ms opts)) (compare-and-set! running? :new true))
-        (watch! m (:write! this) running? (:watch-ms opts))))))
+      ((:write! this) out)
+      (start-watch! this kind))))
 
 (defn mounted
-  "`inner` (a bb-mcp Transport) serving `m` (a seq of initialized IAddons)
+  "Boundary: `inner` (a bb-mcp Transport) serving `m` (a seq of initialized IAddons)
    beside bb-mcp's own tools. opts: :actor (zero-arg fn: who acts),
    :watch-ms (0: no list_changed watcher)."
   [inner m {:keys [actor watch-ms] :or {watch-ms default-watch-ms}}]
