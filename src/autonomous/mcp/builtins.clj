@@ -21,13 +21,12 @@
     (k (fleet/member f tid) (fleet/on f session tid) tid)))
 
 (defn- matching-runtime
-  "Promote: find the original id by its string spelling, or give the known ids."
+  "Promote: Ok of the id in `rows` spelled as `runtime-id`, its original
+   type kept; else an :unknown-runtime refusal naming the known ids."
   [rows runtime-id]
-  (let [ids (set (map :runtime/id rows))
-        id  (or (some #(when (= (str %) (str runtime-id)) %) ids) ::none)]
-    (if (= ::none id)
-      (answer/refusal :unknown-runtime (str "no runtime " runtime-id) {:known (vec ids)})
-      (answer/ok id))))
+  (let [ids (set (map :runtime/id rows))]
+    (or (some #(when (and % (= (str %) (str runtime-id))) (answer/ok %)) ids)
+        (answer/refusal :unknown-runtime (str "no runtime " runtime-id) {:known (vec ids)}))))
 
 (defn- requested-pin
   "Boundary: resolve a requested id against the current directory; nil unpins."
@@ -36,13 +35,17 @@
     (answer/ok nil)
     (answer/bind (client/runtimes ctx) #(matching-runtime % runtime-id))))
 
+(defn- pinned
+  "Promote: Ok of the {:answer :session} result of pinning `session` to
+   runtime `id` of target `tid` under fleet `mode`."
+  [mode session [tid id]]
+  (answer/ok (same (s/attach-on mode session tid id) (answer/ok {:attached id}))))
+
 (defn- pin-result
-  "Promote: apply a successful target/runtime choice, keeping the session on failure."
+  "Promote: the {:answer :session} result of target/runtime `choice`: the
+   pinned session on Ok, else `session` unchanged answering `choice`."
   [mode session choice]
-  (if (answer/ok? choice)
-    (let [[tid id] (:ok choice)]
-      (same (s/attach-on mode session tid id) (answer/ok {:attached id})))
-    (same session choice)))
+  (get (answer/bind choice #(pinned mode session %)) :ok (same session choice)))
 
 (defn- attach-run
   "Pipeline: resolve the pin before applying it to the session."

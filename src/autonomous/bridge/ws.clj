@@ -105,8 +105,7 @@
 
 (defn- runtime-grant
   "Promote: Ok of the grant whose scopes include :runtime itself, else an
-   :auth/unauthorized refusal. :admin does not stand in: an agent's token
-   does not make its holder a runtime."
+   :auth/unauthorized refusal; :admin alone does not qualify."
   [g]
   (if (contains? (set (:scopes g)) runtime-scope)
     (answer/ok g)
@@ -237,8 +236,8 @@
   [id request]
   {:ws/type :request :id id :request (wire/print-edn request)})
 
-(defn- await-answer
-  "Promote: what promise value `a` settles as — the runtime's Answer, or a
+(defn- settled-answer
+  "Promote: what promise value `a` settles as: the runtime's Answer, or a
    :channel/timeout refusal when nothing arrived in time."
   [a conn timeout-ms]
   (if (= ::timeout a)
@@ -255,7 +254,7 @@
     (swap! (:pending hub) assoc id {:link (:link conn) :promise p})
     (try
       ((:send! conn) (frame-text (request-frame id request)))
-      (await-answer (deref p timeout-ms ::timeout) conn timeout-ms)
+      (settled-answer (deref p timeout-ms ::timeout) conn timeout-ms)
       (catch Exception e
         (answer/refusal :channel/transport-failed (or (ex-message e) (str e))))
       (finally (swap! (:pending hub) dissoc id)))))
@@ -331,9 +330,9 @@
   {:auth/unauthorized :unauthorized :ws/unknown-target :unknown-target})
 
 (defn- refuse-hello!
-  "Boundary: close a refused hello with the code its refusal type names."
-  [io a]
-  (refuse! io (hello-close-kind (get-in a [:error :type]) :bad-frame) (:error a)))
+  "Boundary: close a refused hello with the code its `error`'s type names."
+  [io error]
+  (refuse! io (hello-close-kind (:type error) :bad-frame) error))
 
 (defn- welcome!
   "Boundary: register the granted runtime on its hub and say welcome.
@@ -352,8 +351,7 @@
   (let [a (answer/let-answer [g (hello-grant (:authenticate opts) frame fresh-id)
                               h (hub-of-grant opts g)]
             (welcome! link h (:runtime g)))]
-    (when (answer/refused? a)
-      (refuse-hello! (:io @link) a))))
+    (some->> (:error a) (refuse-hello! (:io @link)))))
 
 (defn- response-answer
   "Promote: the Answer a :response frame carries — its EDN text read, or
