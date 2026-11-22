@@ -27,35 +27,36 @@
 (defn- log [& xs] (binding [*out* *err*] (apply println "[autonomous.bb-mcp]" xs)))
 
 (defn project-dir
-  "The client's project directory, as bb-mcp resolves it."
+  "Promote: the client's project directory in `env`, as bb-mcp resolves it,
+   else the working directory."
   [env]
   (or (get env "BB_MCP_CALLER_CWD") (get env "BB_MCP_PROJECT_DIR") (System/getProperty "user.dir")))
 
 (defn config-path
-  "The fleet file: --config, else AUTONOMOUS_FLEET, else
+  "Promote: the fleet file: --config, else AUTONOMOUS_FLEET, else
    <project>/autonomous.edn."
   [opts env]
   (or (:config opts) (get env "AUTONOMOUS_FLEET")
       (str (io/file (project-dir env) "autonomous.edn"))))
 
 (defn configured?
-  "True when `file` or `opts` names at least one app."
+  "Promote: true when `file` or `opts` names at least one app."
   [file opts]
   (boolean (or (seq (:targets opts)) (seq (:targets file)) (:target file)
                (:dir opts) (:port opts) (:port-file opts))))
 
 (defn fleet-config
-  "{:ok cfg} (always fleet mode, stdio identity from the environment),
-   {:none true} when no app is configured, or {:error ..}. Pure over the
-   collected `file`, `env`, `opts`, `app-dir` and `dir-facts`."
+  "Promote: {:ok cfg} (always fleet mode, stdio identity from the
+   environment), {:none true} when no app is configured, or {:error ..},
+   of the collected `file`, `env`, `opts`, `app-dir` and `dir-facts`."
   [file env opts app-dir dir-facts]
   (if-not (configured? file opts)
     {:none true}
     (config/promote file (config/read-env env) (assoc opts :fleet? true) app-dir dir-facts)))
 
 (defn collect
-  "fleet-config of command-line `args` and environment `env` (effects:
-   reads the fleet file and every app directory)."
+  "Boundary: fleet-config of command-line `args` and environment `env`;
+   reads the fleet file and every app directory."
   [args env]
   (let [{:keys [opts errors]} (config/parse-args args)]
     (if (seq errors)
@@ -65,18 +66,30 @@
                       (when (:dir opts) (config/read-app-dir (:dir opts)))
                       (config/read-fleet-dirs file opts))))))
 
+(defn- fleet-actor
+  "Promote: who lists tools under fleet config `cfg`: its own :stdio/actor,
+   unless that is the default \"local\", in which case `actor`."
+  [cfg actor]
+  (if (= "local" (:stdio/actor cfg)) actor (:stdio/actor cfg)))
+
+(defn- mounted-fleet
+  "Boundary: [addon] of the fleet of `cfg`, initialized, or [] (logged) when
+   it fails to initialize."
+  [cfg actor]
+  (let [a (fleet-addon/make-addon {:build #(cli/build-server cfg)
+                                   :actor (fleet-actor cfg actor)
+                                   :scopes (:stdio/scopes cfg)})
+        r (addon/initialize! a {})]
+    (if (:success? r)
+      (do (log "fleet:" (pr-str (get-in r [:metadata :apps]))) [a])
+      (do (log "fleet failed:" (pr-str (:errors r))) []))))
+
 (defn mount-of
-  "The initialized Mount for collected config `res`, listing tools as
-   `actor` unless the fleet file names its own :stdio/actor: [] when none."
+  "Boundary: the initialized Mount for collected config `res`, listing tools
+   as `actor` unless the fleet file names its own :stdio/actor: [] when none."
   [res actor]
   (if-let [cfg (:ok res)]
-    (let [a (fleet-addon/make-addon {:build #(cli/build-server cfg)
-                                     :actor (if (= "local" (:stdio/actor cfg)) actor (:stdio/actor cfg))
-                                     :scopes (:stdio/scopes cfg)})
-          r (addon/initialize! a {})]
-      (if (:success? r)
-        (do (log "fleet:" (pr-str (get-in r [:metadata :apps]))) [a])
-        (do (log "fleet failed:" (pr-str (:errors r))) [])))
+    (mounted-fleet cfg actor)
     (do (when-let [e (:error res)] (log "fleet not mounted:" (:message e) (pr-str (:problems e))))
         [])))
 
