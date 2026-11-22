@@ -267,11 +267,16 @@
   [approver id line]
   {:decision (if (approves? id line) :approve :deny) :approver approver})
 
+(def max-typed-lines
+  "L1: the most typed lines a stdin terminal holds unread; a line past it
+   is dropped and counted among the lines the next prompt discards."
+  64)
+
 ;; Terminal design: memory 20261120025625-307f0e9a.
 
 #?(:cljs nil
    :default
-   (defrecord Terminal [read-line! out state lines pumping]))
+   (defrecord Terminal [stream read-line! ready? out state lines pumping drained]))
 
 #?(:cljs nil
    :default
@@ -280,11 +285,58 @@
 
 #?(:cljs nil
    :default
+   (defonce ^:private ended
+     (java.util.WeakHashMap.)))
+
+#?(:cljs nil
+   :default
    (defn- new-terminal
-     "L1: a Terminal reading with `read-line!` and prompting on `out`."
-     [read-line! out]
-     (->Terminal read-line! out (atom {:next 0 :queue [] :serving? false})
-                 (java.util.concurrent.LinkedBlockingQueue.) (atom false))))
+     "L1: the Terminal of input `stream`, reading with `read-line!` and
+      prompting on `out`; `ready?`, when given, says whether a line can be
+      read without blocking. Its typed-line queue holds at most
+      max-typed-lines; the lines dropped past it are counted in :dropped.
+      `drained` is delivered once its reader has read what was typed ahead
+      (see pump!)."
+     [stream read-line! ready? out]
+     (->Terminal stream read-line! ready? out (atom {:next 0 :queue [] :serving? false :dropped 0})
+                 (java.util.concurrent.LinkedBlockingQueue. (int max-typed-lines)) (atom false) (promise))))
+
+#?(:cljs nil
+   :default
+   (defn- retire!
+     "L1 Boundary: `terminal`'s input has ended: remove it from `terminals`
+      and mark its stream ended with {:state :out}, the Terminal's state
+      atom and writer (a weak key, held while the stream is; the mark never
+      references the stream)."
+     [{:keys [stream state out] :as terminal}]
+     (locking terminals
+       (.put ^java.util.WeakHashMap ended stream {:state state :out out})
+       (swap! terminals #(if (identical? terminal (get % stream)) (dissoc % stream) %)))))
+
+#?(:cljs nil
+   :default
+   (defn- ended-terminal
+     "L1: a Terminal of `stream` rebuilt from its ended `mark` (see
+      retire!): it never reads, shares the ended Terminal's state and
+      writer, and denies every request at once."
+     [stream read-line! ready? {:keys [state out]}]
+     (assoc (new-terminal stream read-line! ready? out)
+            :state state :pumping (atom true) :drained (doto (promise) (deliver true)))))
+
+#?(:cljs nil
+   :default
+   (defn- registered
+     "L1 Boundary: the live Terminal of `stream`, or nil."
+     [stream]
+     (get @terminals stream)))
+
+#?(:cljs nil
+   :default
+   (defn- ended-mark
+     "L1 Boundary: the ended mark of `stream` (see retire!), nil while its
+      input has not ended."
+     [stream]
+     (.get ^java.util.WeakHashMap ended stream)))
 
 #?(:cljs nil
    :default
@@ -302,12 +354,19 @@
    :default
    (defn- terminal-for
      "L1 Boundary: the process-wide Terminal of input `stream`, made once
-      (reading with `read-line!` or `default-read`, prompting on `out` or
-      *err*); a later asker on the stream must pass the same ports or none."
-     [stream read-line! default-read out]
-     (-> (swap! terminals #(if (contains? % stream) %
-                               (assoc % stream (new-terminal (or read-line! default-read) (or out *err*)))))
-         (get stream)
+      (reading with `read-line!` and its `ready?`, else `default-read` and
+      `default-ready?`; prompting on `out` or *err*); a later asker on the
+      stream must pass the same ports or none. On a stream whose input has
+      ended (see retire!) it answers an unregistered ended-terminal."
+     [stream read-line! ready? default-read default-ready? out]
+     (-> (locking terminals
+           (let [read! (or read-line! default-read) ready? (if read-line! ready? default-ready?) out (or out *err*)]
+             (or (registered stream)
+                 (if-let [mark (ended-mark stream)]
+                   (ended-terminal stream read! ready? mark)
+                   (let [t (new-terminal stream read! ready? out)]
+                     (swap! terminals assoc stream t)
+                     t)))))
          (same-ports! read-line! out))))
 
 (defn- enqueued
@@ -346,21 +405,40 @@
 
 #?(:cljs nil
    :default
+   (defn- ready-now?
+     "L1 host: can a line be read without blocking, by `ready?`? A throw
+      from `ready?` propagates."
+     [ready?]
+     (boolean (ready?))))
+
+#?(:cljs nil
+   :default
+   (defn- keep-line!
+     "L1 Boundary: queue typed `line` on `terminal`; with max-typed-lines
+      already held, drop it and count it in :dropped instead."
+     [{:keys [lines state]} line]
+     (when-not (.offer ^java.util.concurrent.LinkedBlockingQueue lines line)
+       (swap! state update :dropped inc))))
+
+#?(:cljs nil
+   :default
    (defn- pump!
-     "L1 Boundary: once per terminal, a daemon thread moving every line read
-      into the terminal's `lines` queue, so no request waits on a read.
-      Started when the asker is built, so a line already buffered is read
-      into the queue, and discarded by the next prompt, rather than read
-      after that prompt. It reads until end of input, for the life of the
-      process; at end of input it marks the terminal :eof: every request
-      still waiting, and every later one on the stream, is then denied at
-      once. The terminal stays the stream's after end of input, so an asker
-      built later on the stream shares it (and is denied) instead of
-      starting a second reader. Answers `terminal`."
-     [{:keys [read-line! lines pumping state] :as terminal}]
+     "L1 Boundary: start, once per terminal, a daemon thread that moves every
+      line read into `lines` (keep-line!) and delivers `drained` once
+      `ready?` says nothing more is buffered. At end of input, or when the
+      reader or its `ready?` throws (silently), it marks the terminal :eof?
+      and retires it.
+      Answers `terminal`."
+     [{:keys [read-line! ready? pumping drained state] :as terminal}]
      (when (compare-and-set! pumping false true)
-       (daemon! #(do (loop [] (when-let [l (read-line!)] (.put lines l) (recur)))
-                     (swap! state assoc :eof? true))))
+       (daemon! #(try (loop []
+                        (when-not (or (realized? drained) (ready-now? ready?)) (deliver drained true))
+                        (when-let [l (read-line!)] (keep-line! terminal l) (recur)))
+                      (catch Throwable _ nil)
+                      (finally
+                        (swap! state assoc :eof? true)
+                        (deliver drained true)
+                        (retire! terminal)))))
      terminal))
 
 #?(:cljs nil
@@ -380,21 +458,35 @@
 #?(:cljs nil
    :default
    (defn- discarded-lines!
-     "L1 Boundary: empty the terminal's typed-line queue; answer the line
-      saying how many lines it held, or nothing when it was empty."
-     [{:keys [lines]}]
-     (let [n (.drainTo ^java.util.concurrent.LinkedBlockingQueue lines (java.util.ArrayList.))]
+     "L1 Boundary: empty the terminal's typed-line queue and its :dropped
+      count; answer the line saying how many lines were typed (queued or
+      dropped), or nothing when there were none."
+     [{:keys [lines state]}]
+     (let [n (.drainTo ^java.util.concurrent.LinkedBlockingQueue lines (java.util.ArrayList.))
+           [{:keys [dropped]}] (swap-vals! state assoc :dropped 0)
+           n (+ n (or dropped 0))]
        (when (pos? n) [(str "(" n " line(s) typed before this prompt were discarded)")]))))
+
+(def drain-wait-ms
+  "L1: the longest the first prompt of a stdin terminal waits for its
+   reader to read what was typed ahead. A partial line typed ahead is not
+   discarded: once its newline comes, it answers the prompt."
+  1000)
 
 #?(:cljs nil
    :default
    (defn- answer!
-     "L1 Boundary: discard every line typed before this prompt (saying how
-      many), prompt request `entry` on `terminal`, and deliver its Verdict
-      for the next line: ::eof once input has ended, ::expired when no line
-      comes in its :wait-ms or it is withdrawn first."
-     [{:keys [out] :as terminal} {:keys [id p approver request wait-ms]}]
+     "L1 Boundary: wait (at most drain-wait-ms) until the reader has read
+      what was typed ahead, prompt request `entry` on `terminal`, discard
+      every line queued before the prompt was fully shown (saying how
+      many), and deliver its Verdict for the next line: ::eof once input
+      has ended, ::expired when no line comes in its :wait-ms or it is
+      withdrawn first."
+     [{:keys [out drained] :as terminal} {:keys [id p approver request wait-ms]}]
+     (deref drained drain-wait-ms nil)
      (apply say! out (concat (discarded-lines! terminal) (prompt-lines id request)))
+     (some->> (discarded-lines! terminal) (apply say! out))
+     (swap! (:state terminal) assoc :listening id)
      (let [line (await-line terminal p wait-ms)]
        (deliver p (case line nil ::expired ::eof ::eof (verdict approver id line))))))
 
@@ -446,6 +538,7 @@
      Asker
      (-ask! [_ request]
        (let [p (promise)]
+         (pump! terminal)
          (start-server! terminal {:p p :approver approver :request request :wait-ms wait-ms})
          p))
      Withdraw
@@ -458,6 +551,14 @@
      "L1 host: a zero-argument function reading one line of BufferedReader `in`."
      [in]
      #(binding [*in* in] (read-line))))
+
+#?(:cljs nil
+   :default
+   (defn- ready-check
+     "L1 host: a zero-argument function answering whether reader `in` can
+      be read without blocking (.ready)."
+     [in]
+     #(.ready ^java.io.Reader in)))
 
 #?(:cljs nil
    :default
@@ -474,10 +575,25 @@
    :default
    (defn- stream-key
      "L1: the Terminal key of an asker: an explicit `stream`, else its
-      `read-line` function, else System/in for no `in` or an `in` that is
-      the process's own reader of System/in (`root`, see root-in), else `in`."
-     [stream read-line in root]
-     (or stream read-line (if (or (nil? in) (identical? in root)) System/in in))))
+      `read-line` function, else `system-in` for no `in` or an `in` that is
+      the process's own reader of it (`root`, see root-in), else `in`."
+     [stream read-line in system-in root]
+     (or stream read-line (if (or (nil? in) (identical? in root)) system-in in))))
+
+#?(:cljs nil
+   :default
+   (defn stdin-asker-on
+     "L1 adapter (clj): stdin-asker (same `opts`) with `system-in` as the
+      default input stream and `root` as its own reader. stdin-asker passes
+      System/in and (root-in)."
+     [system-in root {:keys [in read-line ready? stream out approver wait-ms] :or {approver "stdin" wait-ms 60000}}]
+     (when (and read-line (not ready?))
+       (throw (ex-info "a stdin asker with a :read-line needs its :ready?"
+                       {:autonomous/error :invalid-approval})))
+     (let [stream (stream-key stream read-line in system-in root)
+           reader (or in root)]
+       (->StdinAsker (terminal-for stream read-line ready? (line-reader reader) (ready-check reader) out)
+                     stream approver wait-ms))))
 
 #?(:cljs nil
    :default
@@ -491,17 +607,18 @@
       how every request ended. Give require-approval a :timeout-ms that
       covers the queue wait too. A request that times out before its turn is
       dropped unprompted. Refuses (ex-info :invalid-approval) a :read-line
-      or :out other than the stream's first asker's, and a request with
-      more than max-shown-args argument values is denied unshown.
+      without :ready?, a :read-line or :out other than the stream's first
+      asker's, and a request with more than max-shown-args argument values
+      is denied unshown.
       Options :in (a BufferedReader that does NOT read System/in: one over
       System/in, or the root *in*, is keyed on System/in like the default),
-      or :read-line (a zero-argument function) with :stream (its identity,
-      default the function), :out (default *err*), :approver (default
-      \"stdin\"). The reader reads for the life of the process.
-      Pass :stream System/in with a custom :read-line over System/in."
+      or :read-line (a zero-argument function) with :ready? (required: a
+      zero-argument function, true when a line can be read without
+      blocking) and :stream (its identity, default the function), :out
+      (default *err*), :approver (default \"stdin\"). Building an asker
+      reads nothing; the stream's reader starts at its first ask, holds at
+      most max-typed-lines unread, and every line typed before a prompt is
+      discarded by it. Pass :stream System/in with a custom :read-line over
+      System/in."
      ([] (stdin-asker {}))
-     ([{:keys [in read-line stream out approver wait-ms] :or {approver "stdin" wait-ms 60000}}]
-      (let [root   (root-in)
-            stream (stream-key stream read-line in root)]
-        (->StdinAsker (pump! (terminal-for stream read-line (line-reader (or in root)) out))
-                      stream approver wait-ms)))))
+     ([opts] (stdin-asker-on System/in (root-in) opts))))
