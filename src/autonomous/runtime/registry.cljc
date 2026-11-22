@@ -327,12 +327,22 @@
                                   (assoc-in [:pending (str "p" n)] {:status :pending :at now})))))]
     (str "p" (:next-id st))))
 
+(defn- settled
+  "State `st` with parked `id` settled to Answer `a` (an id that expired or
+   was never parked is not added back) and its :autonomous/settled entry,
+   under the CallDetail `st` holds, appended to the journal at `now`. Pure."
+  [st id a now]
+  (-> st
+      (update :pending (fn [p] (if (contains? p id) (update p id assoc :status :settled :answer a) p)))
+      (update :journal journal/append (journal/settled-entry id a (:call-detail st)) now journal/default-cap)))
+
 (defn settle!
-  "Record the final answer `a` of parked id."
+  "Record the final answer `a` of parked `id` and journal how it ended
+   (:autonomous/settled), in ONE swap: no reader of the state ever sees
+   the answer without its entry. Answers the entry's sequence number."
   [id a]
-  (swap! (state-ref) update :pending
-         (fn [p] (if (contains? p id) (update p id assoc :status :settled :answer a) p)))
-  nil)
+  (let [now (now-ms)]
+    (get-in (swap! (state-ref) settled id a now) [:journal :seq])))
 
 (defn take-settled!
   "Answer for parked `id`: the settled answer (removed once taken), Pending

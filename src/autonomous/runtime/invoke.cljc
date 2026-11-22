@@ -73,10 +73,17 @@
 
 (defn- settled!
   "L2 Boundary: settle parked call `id` with Answer `a` and journal how it
-   ended (:autonomous/settled), under the app's CallDetail as it is now."
+   ended (:autonomous/settled), under the app's CallDetail as it is now, in
+   one registry swap (registry/settle!). When that throws, nothing changed,
+   so the call settles as a :settle-failed refusal instead: it never stays
+   Pending because its answer could not be recorded."
   [id a]
-  (registry/settle! id a)
-  (registry/record! (journal/settled-entry id a (:call-detail (registry/snapshot)))))
+  (try
+    (registry/settle! id a)
+    (catch #?(:clj Throwable :cljs :default) e
+      (registry/settle! id (answer/refusal :settle-failed
+                                           (str "the call's answer could not be recorded: "
+                                                (ex-message e)))))))
 
 (defn- settle-later!
   "L2 Pipeline: park thenable `x` and answer its Pending. Its value

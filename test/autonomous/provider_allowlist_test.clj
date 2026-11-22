@@ -8,6 +8,7 @@
             [autonomous.core :as a]
             [autonomous.decorator :as decorator]
             [autonomous.runtime.registry :as registry]
+            [autonomous.support.wait :as wait]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.test.check :as tc]
@@ -39,10 +40,12 @@
   ([args] (call rw args))
   ([grant args] (a/rpc (merge grant {:op :call :tool "pix" :args args}))))
 
-(defn- poll-until-settled [id]
-  (loop [i 0]
-    (let [r (a/rpc {:op :poll :id id})]
-      (if (and (:pending r) (< i 400)) (do (Thread/sleep 5) (recur (inc i))) r))))
+(defn- poll-until-settled
+  "The poll answer of parked `id` once the runtime has settled it; throws
+   naming the id when it has not within the wait's deadline."
+  [id]
+  (wait/await-settled! (wait/bound-state) id)
+  (a/rpc {:op :poll :id id}))
 
 (defn- settled [r] (if (:pending r) (poll-until-settled (:pending r)) r))
 
