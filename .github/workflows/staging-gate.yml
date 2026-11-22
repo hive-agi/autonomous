@@ -62,23 +62,23 @@ jobs:
           bb: latest
       - name: Resolve declared classpath
         run: clojure -Sdeps "$DEV_LOCAL" -P -M:dev/local:test
-      # Every bridge source must load on its declared classpath. Pass 1 loads
-      # all of them on the bare classpath except OPTIONAL, the nses that
-      # statically require an alias-only dep; pass 2 loads OPTIONAL with those
-      # aliases (datahike, http-kit, reitit-ring for ring.websocket, bb-mcp).
+      # Every bridge source loads on the bare classpath, except OPTIONAL
+      # (ns:alias), each of which loads with its one alias only.
       - name: Compile
         env:
           OPTIONAL: >-
-            autonomous.bridge.ledger.datahike
-            autonomous.mcp.http.kit
-            autonomous.ws.ring-listener
-            autonomous.bridge.nrepl-wire
+            autonomous.bridge.ledger.datahike:datahike
+            autonomous.mcp.http.kit:ws
+            autonomous.ws.ring-listener:ring
+            autonomous.bridge.nrepl-wire:cljw
         run: |
           set -euo pipefail
           LOAD='
             (require (quote clojure.java.io) (quote clojure.string))
             (let [mode (System/getenv "PASS")
-                  optional (set (map symbol (clojure.string/split (System/getenv "OPTIONAL") #"\s+")))
+                  optional (->> (clojure.string/split (System/getenv "OPTIONAL") #"\s+")
+                                (map #(symbol (first (clojure.string/split % #":"))))
+                                set)
                   root (.toPath (clojure.java.io/file "src"))
                   all (->> (file-seq (clojure.java.io/file "src"))
                            (filter #(re-find #"\.clj[c]?$" (.getName %)))
@@ -89,25 +89,27 @@ jobs:
                                      symbol))
                            sort)
                   missing (remove (set all) optional)
-                  nses (if (= mode "optional") (filter optional all) (remove optional all))]
+                  nses (if (= mode "base") (remove optional all) [(symbol mode)])]
               (when (seq missing)
                 (throw (ex-info "OPTIONAL names a ns with no source file" {:missing missing})))
               (doseq [n nses] (require n))
-              (println "loaded" (count nses) mode "bridge namespaces of" (count all)))'
+              (println "loaded" (count nses) mode "of" (count all) "bridge namespaces"))'
           PASS=base clojure -Sdeps "$DEV_LOCAL" -M:dev/local -e "$LOAD"
-          PASS=optional clojure -Sdeps "$DEV_LOCAL" -M:dev/local:datahike:ws:ring:cljw -e "$LOAD"
-      # kaocha exits 0 with no tests: fail when fewer tests ran than the
-      # deftest forms of the unit suites (trifecta macros only add to it).
+          for entry in $OPTIONAL; do
+            PASS="${entry%%:*}" clojure -Sdeps "$DEV_LOCAL" -M:dev/local:"${entry##*:}" -e "$LOAD"
+          done
+      # Every non-integration *_test ns under the unit test paths must run
+      # (kaocha exits 0 when a suite silently drops a namespace).
       - name: Test
         run: |
           set -euo pipefail
-          clojure -Sdeps "$DEV_LOCAL" -M:dev/local:test unit --no-color 2>&1 | tee kaocha.log
-          MIN=$(grep -rL --include='*_test.clj' --include='*_test.cljc' '\^:integration' test ../example/sim/test \
-                  | xargs cat | grep -Ec '^\(deftest ' || true)
-          RAN=$(grep -Eo '^[0-9]+ tests?, ' kaocha.log | grep -Eo '^[0-9]+' || echo 0)
-          echo "bridge unit tests ran: $RAN, floor (deftest forms): $MIN"
-          if [ "$RAN" -lt "$MIN" ] || [ "$RAN" -eq 0 ]; then
-            echo "kaocha ran $RAN tests, fewer than the $MIN deftest forms under bridge/test"
+          clojure -Sdeps "$DEV_LOCAL" -M:dev/local:test unit --no-color --reporter documentation 2>&1 | tee kaocha.log
+          grep -rL --include='*_test.clj' --include='*_test.cljc' '^(ns \^:integration' test ../example/sim/test \
+            | xargs -r grep -ho '^(ns [^ ]*' | sed 's/^(ns //' | sort -u > expected.txt
+          grep -Eo '^[a-z][A-Za-z0-9.*+!?_-]*-test$' kaocha.log | sort -u > ran.txt
+          echo "bridge unit test namespaces: $(wc -l < expected.txt) expected, $(wc -l < ran.txt) ran"
+          if [ ! -s expected.txt ] || ! diff expected.txt ran.txt; then
+            echo "the namespaces kaocha ran differ from the *_test files (< missing, > unexpected)"
             exit 1
           fi
 
