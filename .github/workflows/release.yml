@@ -24,6 +24,8 @@ on:
       # trigger a run, or a test regression stays invisible until a src push.
       - 'test/**'
       - 'tests.edn'
+      # Until the bridge is its own artifact, the root jar ships bridge/src.
+      - 'bridge/**'
       - '.github/workflows/**'
   workflow_dispatch:
 
@@ -49,6 +51,14 @@ jobs:
       # The :integration suite needs live app runtimes and stays local.
       - name: Test (JVM unit suite)
         run: clojure -M:test unit
+
+      # The root jar ships bridge/src (version.edn :src-dirs), so its suite
+      # gates the release too, against this checkout's runtime.
+      - name: Test (JVM unit suite, bridge)
+        working-directory: bridge
+        env:
+          DEV_LOCAL: '{:aliases {:dev/local {:override-deps {io.github.hive-agi/autonomous {:local/root ".."}}}}}'
+        run: clojure -Sdeps "$DEV_LOCAL" -M:dev/local:test unit
 
       # A floor above every tag opens a new line and is released as written
       # (VERSION 0.2.0 releases 0.2.0); otherwise the newest tag gets +1 patch.
