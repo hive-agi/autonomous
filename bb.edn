@@ -18,7 +18,7 @@
   token {:doc  "Mint a bearer token: --actor NAME --scopes read,write"
          :task (apply (requiring-resolve 'autonomous.cli/-main) "token" *command-line-args*)}
 
-  test  {:doc  "Every unit suite on babashka, run from bridge/ so its fixture paths resolve (the datahike ledger contract is JVM-only)"
+  test  {:doc  "Every unit suite on babashka, from bridge/ (the datahike ledger contract is JVM-only)"
          :task (shell {:dir "bridge"} "bb" "--config" "../bb.edn" "-m" "autonomous.bb-test-runner")}
 
   -node-deps {:doc  "npm ci from package-lock.json, only when node_modules is absent"

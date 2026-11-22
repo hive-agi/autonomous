@@ -1,8 +1,9 @@
 {:paths ["src"]
 
- ;; Versions match the root deps.edn pins. Clojure is pinned here too: the
- ;; tools.deps default (the CLI's own, an alpha on this host) would otherwise
- ;; win, and datahike's connect fails on it.
+ ;; Versions match the root deps.edn pins, Clojure included.
+ ;; Until step 6, run every alias with -Sdeps :dev/local (README): the 0.2.2
+ ;; runtime pin lacks autonomous.spi and autonomous.surface, which ring and
+ ;; ring.surface require.
  :deps
  {org.clojure/clojure           {:mvn/version "1.12.1"}
   io.github.hive-agi/autonomous {:mvn/version "0.2.2"}
@@ -16,7 +17,7 @@
           :jvm-opts ["-Xmx1g"]
           :ns-default hive-build.api}
 
-  ;; clojure -M:serve --dir ../my-app --build app
+  ;; clojure -M:serve --dir ../my-app --build app (with :dev/local until step 6)
   :serve {:main-opts ["-m" "autonomous.cli" "serve"]}
   :token {:main-opts ["-m" "autonomous.cli" "token"]}
 
@@ -51,6 +52,6 @@
    :main-opts ["-m" "orders.main"]}
 
   ;; The orders sources and tests on the classpath, without a main:
-  ;; clojure -M:test:example/orders-dev orders
+  ;; clojure -M:dev/local:test:example/orders-dev orders
   :example/orders-dev
   {:extra-paths ["../example/orders/src" "../example/orders/test"]}}}
