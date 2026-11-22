@@ -32,5 +32,6 @@ find "$out/m2" -type f ! -name '*.jar' -delete
 
 cp -r src "$out/src"
 cp -r bridge/src/. "$out/src/"
-cp deploy/playground/bridge/entrypoint.sh "$out/entrypoint.sh"
+file "$out/bb" | grep -q "statically linked" || { echo "bb is not static: the scratch image has no libc" >&2; exit 1; }
 echo "classpath: $(cat "$out/classpath")"
+echo "build: docker build -f deploy/playground/bridge/Dockerfile --build-arg BRIDGE_CLASSPATH=\"\$(cat $out/classpath)\" -t ghcr.io/buddhilw/autonomous-bridge:TAG $out"
