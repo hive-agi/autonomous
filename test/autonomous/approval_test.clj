@@ -388,7 +388,7 @@
 
 (deftest lines-typed-while-nothing-is-asked-are-bounded
   (let [t (typist) n (+ approval/max-typed-lines 36)]
-    (dotimes [i n] ((:type! t) (str "1 y " i)))
+    (dotimes [_ n] ((:type! t) "1 y"))
     (let [out   (screen)
           asker (typed-asker t out "op")
           a     (approval/ask! asker (assoc request :tool "a") 10000)]
