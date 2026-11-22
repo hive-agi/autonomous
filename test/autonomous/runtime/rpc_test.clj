@@ -7,6 +7,7 @@
             [autonomous.core :as a]
             [autonomous.decorator :as decorator]
             [autonomous.domain.wire :as wire]
+            [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.test.check.generators :as gen]
             [hive-test.trifecta :refer [deftrifecta]]
@@ -67,7 +68,7 @@
                ["drops refusal data" (fn [s] (let [x (wire/read-edn (rpc/rpc-str s))]
                                                (wire/print-edn (update x :error dissoc :data))))]]})
 
-(use-fixtures :each (fn [t] (install-fixture-app!) (t)))
+(use-fixtures :each (fn [t] (install-fixture-app!) (try (t) (finally (install-fixture-app!)))))
 
 (def ^:private rw {:actor "agent-1" :scopes [:read :write]})
 
@@ -130,13 +131,13 @@
 (defn- settle-under-detail
   "Call tool `tool-name` (its handler answers promise `p`), swap CallDetail
    `detail` into the runtime state while the call is parked, deliver `v`,
-   and answer [poll-answer settled-entry]."
+   and answer [parked-id poll-answer settled-entry]."
   [tool-name p detail v]
   (let [{:keys [pending]} (call rw tool-name {})]
     (is (string? pending))
     (swap! state assoc :call-detail detail)
     (deliver p v)
-    [(poll-until-settled pending) (settled-entry pending)]))
+    [pending (poll-until-settled pending) (settled-entry pending)]))
 
 (deftest an-approved-answer-that-cannot-be-journaled-settles-as-unknown-keeping-the-decision
   (let [p (promise)]
@@ -144,13 +145,13 @@
     (a/decorate! (a/each-tool (decorator/require-approval
                                {:asker (approval/queue-asker [{:decision :approve :approver "ana"}])
                                 :timeout-ms 1000})))
-    (let [[r e] (settle-under-detail "pay" p {:redact 42} {:paid 1})]
+    (let [[id r e] (settle-under-detail "pay" p {:redact 42} {:paid 1})]
       (testing "the poll: a refusal that says the tool ran and its result is unknown"
         (is (= :settle-failed (get-in r [:error :type])))
         (is (re-find #"^the tool ran, .*unknown.*before you retry" (get-in r [:error :message])))
         (is (= {:outcome :ok} (get-in r [:error :data]))))
       (testing "the journal: a literal entry that keeps the Decision, its approver masked"
-        (is (= {:kind :autonomous/settled :pending (:pending e) :outcome :settle-failed}
+        (is (= {:kind :autonomous/settled :pending id :outcome :settle-failed}
                (dissoc e :approval :seq :at)))
         (is (= {:decision :approve :approver "<redacted>"} (dissoc (:approval e) :ms)))
         (is (nat-int? (get-in e [:approval :ms])))))))
@@ -158,12 +159,64 @@
 (deftest a-journal-failure-that-does-not-depend-on-the-answer-still-settles-the-call
   (let [p (promise)]
     (a/reg-tool :slow {:description "Slow" :handler (fn [_ _] p)})
-    (let [[r e] (settle-under-detail "slow" p (sorted-map 1 1) {:done true})]
+    (let [[id r e] (settle-under-detail "slow" p (sorted-map 1 1) {:done true})]
       (is (= :settle-failed (get-in r [:error :type])) "settled, not Pending for ever")
       (is (re-find #"^the tool ran, " (get-in r [:error :message])))
-      (is (= {:kind :autonomous/settled :pending (:pending e) :outcome :settle-failed}
+      (is (str/ends-with? (get-in r [:error :message]) "(java.lang.ClassCastException)")
+          "the agent is told the type of the failure")
+      (is (not (str/includes? (get-in r [:error :message]) "cannot be cast"))
+          "and never the failure's own message")
+      (is (= {:kind :autonomous/settled :pending id :outcome :settle-failed}
              (dissoc e :seq :at))
           "no :approval when there was no human Decision"))))
+
+(defn- reporting-writer
+  "A Writer that keeps what is written to it, and delivers it to promise
+   `p` on the first flush whose text holds `needle`."
+  [p needle]
+  (let [sb (StringBuilder.)]
+    (proxy [java.io.Writer] []
+      (write
+        ([x] (locking sb (.append sb (cond (string? x)  x
+                                           (integer? x) (str (char x))
+                                           :else        (String. ^chars x)))))
+        ([x off len] (locking sb (.append sb (if (string? x)
+                                               (subs x off (+ off len))
+                                               (String. ^chars x (int off) (int len)))))))
+      (flush [] (let [s (locking sb (str sb))] (when (str/includes? s needle) (deliver p s))))
+      (close [] nil))))
+
+(deftest a-settle-whose-watch-throws-keeps-its-answer-and-one-entry
+  (let [p        (promise)
+        reported (promise)
+        parked   (atom nil)
+        k        ::throwing-watch
+        newly    (fn [id old new] (and (nil? (wait/settled-of id (get-in old [:journal :entries])))
+                                       (wait/settled-of id (get-in new [:journal :entries]))))]
+    (add-watch state k (fn [_ _ old new]
+                         (when-let [id @parked]
+                           (when (newly id old new)
+                             (throw (ex-info "watch saw s3cret" {:value "s3cret"}))))))
+    (try
+      (a/reg-tool :slow {:description "Slow" :handler (fn [_ _] p)})
+      (let [{:keys [pending]} (binding [*err* (reporting-writer reported "parked call")]
+                                (call rw "slow" {}))]
+        (reset! parked pending)
+        (deliver p {:done true})
+        (let [err (deref reported wait/default-ms nil)]
+          (is (some? err) "the watch's throw is reported, not lost in the discarded future")
+          (is (str/includes? (str err) (str "parked call " pending " settled, but a watch")))
+          (is (str/includes? (str err) "(clojure.lang.ExceptionInfo)"))
+          (is (not (str/includes? (str err) "s3cret")) "by its type, never its message"))
+        (is (= {:ok {:done true}} (poll-until-settled pending))
+            "the answer the committed settle! recorded, not a :settle-failed in its place")
+        (is (= [{:kind :autonomous/settled :pending pending :outcome :ok}]
+               (map #(dissoc % :seq :at)
+                    (filter #(and (= :autonomous/settled (:kind %)) (= pending (:pending %)))
+                            (:entries (:ok (a/rpc {:op :journal}))))))
+            "one settled entry for the id, not a second fallback one"))
+      (finally (remove-watch state k)))))
+
 
 (deftest an-async-call-joins-its-settled-entry-by-pending-id
   (a/reg-tool :slow-boom {:description "x" :handler (fn [_ _] (future (throw (ex-info "late" {:why 1}))))})

@@ -81,30 +81,55 @@
           (and decision (not= :approve decision)) (str "the tool did not run (decision " decision ")")
           :else                                   "the tool may have run")))
 
+(defn- failure-name
+  "L1 host: the name of the type of what was thrown, `e`: never its
+   message or data, which may hold values. Total: never throws."
+  [e]
+  #?(:clj  (.getName (class e))
+     :cljs (if (instance? ExceptionInfo e) "ExceptionInfo" (or (some-> e .-name str) "error"))))
+
 (defn- unrecorded
   "L2 Promote: the :settle-failed refusal standing in for Answer `a` of a
    call whose answer could not be recorded (`e` says why), keeping `a`'s
    :autonomous/approval metadata. Its message says whether the tool ran
-   (ran-phrase) and that its result is unknown; its data names `a`'s
-   outcome. Total: never throws."
+   (ran-phrase), that its result is unknown, and the type of `e` only
+   (failure-name); its data names `a`'s outcome. Total: never throws."
   [a e]
   (with-meta (answer/refusal :settle-failed
                              (str (ran-phrase a) ", but its result could not be recorded, so it is"
                                   " unknown: check the app's state before you retry ("
-                                  (or (ex-message e) (str e)) ")")
+                                  (failure-name e) ")")
                              {:outcome (answer/outcome a)})
     (select-keys (meta a) [:autonomous/approval])))
+
+(defn- report-settle-failure!
+  "L2 Boundary: say on stderr (the JS console on cljs) what went wrong
+   settling parked call `id`, `what`, and the type of `e` that was thrown,
+   never its message. Total: never throws."
+  [id what e]
+  (try
+    #?(:clj  (binding [*out* *err*]
+               (println "[autonomous] parked call" id what (str "(" (failure-name e) ")")))
+       :cljs (js/console.error "[autonomous] parked call" id what (str "(" (failure-name e) ")")))
+    (catch #?(:clj Throwable :cljs :default) _ nil)))
 
 (defn- settled!
   "L2 Boundary: settle parked call `id` with Answer `a` and its
    :autonomous/settled entry in one registry swap (registry/settle!). When
    that throws, settle it with the `unrecorded` refusal and a literal entry
-   (registry/settle-unrecorded!) instead."
+   (registry/settle-unrecorded!). An id already journaled (a settle! that
+   committed, then threw from a watch on the state) keeps its answer and
+   entry, and the throw is reported (report-settle-failure!), as is a
+   fallback that throws too. Total: never throws."
   [id a]
   (try
     (registry/settle! id a)
     (catch #?(:clj Throwable :cljs :default) e
-      (registry/settle-unrecorded! id (unrecorded a e)))))
+      (try
+        (when (nil? (registry/settle-unrecorded! id (unrecorded a e)))
+          (report-settle-failure! id "settled, but a watch on the runtime state threw" e))
+        (catch #?(:clj Throwable :cljs :default) e2
+          (report-settle-failure! id "may be unsettled: its fallback settle threw" e2))))))
 
 (defn- settle-later!
   "L2 Pipeline: park thenable `x` and answer its Pending. Its value
