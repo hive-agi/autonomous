@@ -2,5 +2,5 @@
  :minor    3
  :license  {:name "MIT" :url "https://opensource.org/licenses/MIT"}
  :scm-url  "https://github.com/hive-agi/autonomous"
- :src-dirs ["src"]
+ :src-dirs ["src" "bridge/src"]
  :publish  :clojars}
