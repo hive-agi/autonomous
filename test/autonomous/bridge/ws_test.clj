@@ -141,6 +141,13 @@
             lopts (assoc (:lopts r) :authenticate (ws/authenticator other))]
         (ws/on-text! lopts (:link r) (pr-str {:ws/type :hello :token "aut_rt_other"}))
         (is (= 4404 (first @(:closed r))))))
+    (testing "an authenticate answering neither Ok nor a refusal is unauthorized"
+      (doseq [authenticate [(constantly nil) (constantly {:pending "p"})]]
+        (let [r     (fake-runtime! hubs)
+              lopts (assoc (:lopts r) :authenticate authenticate)]
+          (ws/on-text! lopts (:link r) (pr-str {:ws/type :hello :token "t"}))
+          (is (= 4401 (first @(:closed r))))
+          (is (= :auth/unauthorized (get-in (first @(:sent r)) [:error :type]))))))
     (testing "garbage before hello"
       (let [r (fake-runtime! hubs)]
         (ws/on-text! (:lopts r) (:link r) "(launch-missiles)")
