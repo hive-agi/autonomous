@@ -118,3 +118,26 @@
 
     :always
     (with-approval ans detail)))
+
+(defn unrecorded-decision
+  "The human Decision `d` (an :autonomous/approval map, or nil) reduced to
+   what can be journaled without redaction: :decision when it is a
+   keyword, :ms when it is a number, and :approver always as `redacted`.
+   nil when `d` is not a map. Total: never throws."
+  [d]
+  (when (map? d)
+    (cond-> {}
+      (keyword? (:decision d)) (assoc :decision (:decision d))
+      (number? (:ms d))        (assoc :ms (:ms d))
+      (contains? d :approver)  (assoc :approver redacted))))
+
+(defn unrecorded-entry
+  "The :autonomous/settled entry of parked `id` whose answer could not be
+   recorded: outcome :settle-failed, plus :approval (see
+   `unrecorded-decision`) when Answer `ans` carries a human Decision as
+   :autonomous/approval metadata. Reads no CallDetail and redacts nothing.
+   Total: never throws."
+  [id ans]
+  (let [d (unrecorded-decision (:autonomous/approval (meta ans)))]
+    (cond-> {:kind :autonomous/settled :pending id :outcome :settle-failed}
+      (some? d) (assoc :approval d))))

@@ -347,7 +347,7 @@
   "Promote: Answer `a` with its refusal tagged by the close-code kind
    `kind-of` names for it; an Ok or a Pending unchanged."
   [kind-of a]
-  (if-let [e (:error a)] (assoc a :ws/close (kind-of e)) a))
+  (if (answer/refused? a) (assoc a :ws/close (kind-of (:error a))) a))
 
 (defn- refuse-hello!
   "Boundary: close a refused hello `a` with the code its :ws/close kind
@@ -374,7 +374,7 @@
             [g (closing grant-close-kind (hello-grant (:authenticate opts) frame fresh-id))
              h (closing (constantly :unknown-target) (hub-of-grant opts g))]
             (welcome! link h (:runtime g)))]
-    (when (:error a) (refuse-hello! (:io @link) a))
+    (when (answer/refused? a) (refuse-hello! (:io @link) a))
     nil))
 
 (defn- response-answer

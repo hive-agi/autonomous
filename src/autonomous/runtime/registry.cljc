@@ -327,12 +327,38 @@
                                   (assoc-in [:pending (str "p" n)] {:status :pending :at now})))))]
     (str "p" (:next-id st))))
 
+(defn- settled
+  "State `st` with parked `id` settled to Answer `a` (an id that expired or
+   was never parked is not added back) and `entry-of` (fn [st] entry)
+   appended to the journal at `now`. Pure."
+  [st id a entry-of now]
+  (-> st
+      (update :pending (fn [p] (if (contains? p id) (update p id assoc :status :settled :answer a) p)))
+      (update :journal journal/append (entry-of st) now journal/default-cap)))
+
+(defn- settle-with!
+  "Boundary: settle parked `id` with Answer `a` and journal (entry-of state)
+   in one swap; answers the entry's sequence number."
+  [id a entry-of]
+  (let [now (now-ms)]
+    (get-in (swap! (state-ref) settled id a entry-of now) [:journal :seq])))
+
 (defn settle!
-  "Record the final answer `a` of parked id."
+  "Record the final Answer `a` of parked `id` and its :autonomous/settled
+   entry (journal/settled-entry under the CallDetail the state holds) in
+   one swap. Answers the entry's sequence number. Throws, changing
+   nothing, when the entry cannot be made."
   [id a]
-  (swap! (state-ref) update :pending
-         (fn [p] (if (contains? p id) (update p id assoc :status :settled :answer a) p)))
-  nil)
+  (settle-with! id a #(journal/settled-entry id a (:call-detail %))))
+
+(defn settle-unrecorded!
+  "Record fallback Answer `a` of parked `id` and its literal
+   journal/unrecorded-entry in one swap. Reads no CallDetail and redacts
+   nothing, so it does not throw on what made settle! throw. Answers the
+   entry's sequence number."
+  [id a]
+  (let [entry (journal/unrecorded-entry id a)]
+    (settle-with! id a (constantly entry))))
 
 (defn take-settled!
   "Answer for parked `id`: the settled answer (removed once taken), Pending
