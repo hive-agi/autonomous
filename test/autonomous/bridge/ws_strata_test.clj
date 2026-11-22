@@ -82,3 +82,12 @@
   (is (= :channel/bad-answer (get-in (response-answer "{:ok 1 :error 2}") [:error :type])))
   (is (= :channel/bad-answer (get-in (response-answer 42) [:error :type]))
       "an Answer must travel as EDN text"))
+
+(deftest edn-reads-on-the-railway-and-frames-refuse-the-rest
+  (let [read-edn @#'ws/read-edn-safely]
+    (is (= {:ok {:a 1}} (read-edn "{:a 1}")))
+    (is (= {:ok nil} (read-edn "nil")))
+    (is (= :ws/not-edn (get-in (read-edn "{:a") [:error :type]))))
+  (is (= {:ok {:ws/type :hello}} (ws/read-frame "{:ws/type :hello}")))
+  (doseq [text ["{:a" "nil" "{:ws/type \"hello\"}" 42 (apply str (repeat 300000 " "))]]
+    (is (= :ws/bad-frame (get-in (ws/read-frame text) [:error :type])))))

@@ -80,13 +80,12 @@
 
 (defn- cancel!
   "Boundary: cancel the call answered here under request `id`; true when
-   there was one, else nil."
+   there was one, else false."
   [{:keys [calls]} id]
-  (let [[old _] (swap-vals! calls dissoc id)]
-    (when (contains? old id)
-      (let [fut (get old id)]
-        (when (future? fut) (future-cancel fut)))
-      true)))
+  (let [[old _] (swap-vals! calls dissoc id)
+        owed?   (contains? old id)]
+    (when (and owed? (future? (get old id))) (future-cancel (get old id)))
+    owed?))
 
 (defn- pending-kind
   "Promote: the response kind request `msg` awaits from bb-mcp: :list for

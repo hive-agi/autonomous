@@ -58,9 +58,11 @@
   (wire/print-edn frame))
 
 (defn- read-edn-safely
-  "Collect: the EDN value in `text`, or ::bad. Reading evaluates nothing."
+  "Collect: Ok of the EDN value in `text`, or a :ws/not-edn refusal when it
+   does not read. Reading evaluates nothing."
   [text]
-  (try (wire/read-edn text) (catch Exception _not-edn ::bad)))
+  (try (answer/ok (wire/read-edn text))
+       (catch Exception _not-edn (answer/refusal :ws/not-edn "not EDN"))))
 
 (defn- frame?
   "Promote: a frame is one EDN map with a keyword :ws/type."
@@ -72,16 +74,22 @@
   [a]
   (and (map? a) (= 1 (count (select-keys a [:ok :pending :error])))))
 
+(def ^:private bad-frame
+  (answer/refusal :ws/bad-frame "a frame is one EDN map with a keyword :ws/type"))
+
+(defn- bounded-text
+  "Promote: Ok of `text` when it is a string of at most max-frame-chars,
+   else the :ws/bad-frame refusal."
+  [text]
+  (if (and (string? text) (<= (count text) max-frame-chars)) (answer/ok text) bad-frame))
+
 (defn read-frame
   "Promote: Ok of the frame in `text` (an EDN map with a keyword :ws/type),
    or a :ws/bad-frame refusal. Reading EDN evaluates nothing."
   [text]
-  (let [f (if (and (string? text) (<= (count text) max-frame-chars))
-            (read-edn-safely text)
-            ::bad)]
-    (if (frame? f)
-      (answer/ok f)
-      (answer/refusal :ws/bad-frame "a frame is one EDN map with a keyword :ws/type"))))
+  (answer/let-answer [t (bounded-text text)]
+    (let [f (read-edn-safely t)]
+      (if (frame? (:ok f)) f bad-frame))))
 
 (defn valid-runtime-id?
   "Promote: true for 1..64 characters of [A-Za-z0-9._-]."
@@ -143,7 +151,7 @@
   "Promote: the Answer that text `text` from a runtime reads as, or a
    :channel/bad-answer refusal."
   [text]
-  (let [a (read-edn-safely text)]
+  (let [a (:ok (read-edn-safely text))]
     (if (answer-shape? a)
       a
       (answer/refusal :channel/bad-answer "the runtime answered something that is not an Answer"))))

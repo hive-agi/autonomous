@@ -291,7 +291,8 @@
     (answer/refused? a) (assoc :isError true)))
 
 (def ^:private tool-template
-  "The public tool description and argument schema, apart from command enum."
+  "Promote: the public tool description and argument schema, apart from
+   the command enum."
   {:name "autonomous"
    :description (str "Operate running apps built with the autonomous library (re-frame UIs, Clojure "
                      "services), all behind one fleet: list the apps and their status, list their tools, "
