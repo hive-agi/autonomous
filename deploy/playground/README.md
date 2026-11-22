@@ -38,11 +38,16 @@ bb fullstack-e2e                                     # builds frontend/dist, che
 deploy/playground/stage-backend.sh                   # target/playground
 deploy/playground/stage-bridge.sh                    # target/playground-bridge (bb, src, jars)
 
-docker build -f deploy/playground/bridge/Dockerfile -t ghcr.io/buddhilw/autonomous-bridge:TAG target/playground-bridge
+docker build -f deploy/playground/bridge/Dockerfile --build-arg BRIDGE_CLASSPATH="$(cat target/playground-bridge/classpath)" -t ghcr.io/buddhilw/autonomous-bridge:TAG target/playground-bridge
 docker build -f deploy/playground/backend/Dockerfile -t ghcr.io/buddhilw/autonomous-todo:TAG target/playground
 docker push ghcr.io/buddhilw/autonomous-bridge:TAG
 docker push ghcr.io/buddhilw/autonomous-todo:TAG
 ```
+
+Both images are `FROM scratch`: no `/bin/sh`, so `kubectl exec ... -- sh`
+fails by design. The backend serves only the five page files in
+`statics::ALLOWED` and reads its tokens from the mounted Secret
+(`AUTONOMOUS_BACKEND_TOKEN_FILE`, `PLAYGROUND_AGENT_TOKEN_FILE`), never from env.
 
 Make both packages public on GitHub (package settings, "Change visibility"), so
 the cluster pulls without a pull secret. Put the pushed digests into
@@ -90,7 +95,9 @@ script tags and forged event-stream lines sent over HTTP are refused or stored
 as plain text. Verified 2026-11-20.
 
 DNS answers the backend for the bridge's name only (`todo-dns`); every other
-name is refused:
+name is refused. The shell-free image has no `getent`: run these from an
+ephemeral debug container (`kubectl debug -it deploy/todo --image=busybox --target=todo`;
+PSA restricted may refuse it, then use a temporary pod with the todo labels):
 
 ```sh
 kubectl -n autonomous-playground exec deploy/todo -- getent hosts bridge.autonomous-playground.svc.cluster.local  # answers

@@ -5,6 +5,10 @@
 #   - its own namespace, Pod Security "restricted" enforced;
 #   - a ResourceQuota and LimitRange: at most 1 CPU and 1 GiB for everything
 #     (the backend measures about 200 MiB steady, 410 MiB peak at start);
+#   - images are FROM scratch: no shell, no coreutils, no package manager
+#     (the backend carries only the loader, libc, libm and libgcc_s; the
+#     bridge is static babashka); the backend serves a fixed list of five
+#     page files and its tokens are read from mounted files, not env;
 #   - pods run as non-root (65532), read-only root filesystem, no
 #     capabilities, no privilege escalation, seccomp RuntimeDefault, no
 #     service-account token, no host anything; /tmp is a small memory emptyDir;
@@ -115,6 +119,8 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: bridge
+          # PIN the shell-free build's digest here before applying (README, Build and publish).
+          # The old todo digest ignores *_TOKEN_FILE and would serve humans only.
           image: ghcr.io/buddhilw/autonomous-bridge@sha256:114f83146dc212638b236e9b4995a653824a2948baa7a088e1fee5797a652f62
           imagePullPolicy: IfNotPresent
           ports:
@@ -192,9 +198,12 @@ spec:
         runAsNonRoot: true
         runAsUser: 65532
         runAsGroup: 65532
+        fsGroup: 65532
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: todo
+          # PIN the shell-free build's digest here before applying (README, Build and publish).
+          # The old todo digest ignores *_TOKEN_FILE and would serve humans only.
           image: ghcr.io/buddhilw/autonomous-todo@sha256:87593cf9071dc5c230b2f90ec1d481b956320c2fc15cab8afe211226618e1df5
           imagePullPolicy: IfNotPresent
           ports:
@@ -204,15 +213,15 @@ spec:
             # The container memory limit bounds the embedded jolt heap.
             - {name: JOLT_MAX_HEAP, value: "off"}
             - {name: AUTONOMOUS_WS_URL, value: "ws://bridge.autonomous-playground.svc.cluster.local:7890/autonomous/ws"}
-            - name: AUTONOMOUS_BACKEND_TOKEN
-              valueFrom: {secretKeyRef: {name: playground-tokens, key: backend-token}}
+            # Tokens are read from the mounted Secret, never put in the
+            # environment (where /proc/<pid>/environ and crash dumps see them).
+            - {name: AUTONOMOUS_BACKEND_TOKEN_FILE, value: /etc/autonomous-backend/backend-token}
             - {name: TODO_MAX_TODOS, value: "30"}
             - {name: TODO_MAX_TEXT, value: "80"}
             - {name: TODO_MAX_STREAMS, value: "100"}
             - {name: TODO_RESET_SECS, value: "600"}
             - {name: PLAYGROUND_MCP_URL, value: "https://autonomous.buddhilw.com/mcp"}
-            - name: PLAYGROUND_AGENT_TOKEN
-              valueFrom: {secretKeyRef: {name: playground-tokens, key: agent-token}}
+            - {name: PLAYGROUND_AGENT_TOKEN_FILE, value: /etc/autonomous-backend/agent-token}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -229,8 +238,17 @@ spec:
             initialDelaySeconds: 10
             periodSeconds: 20
           volumeMounts:
+            - {name: tokens, mountPath: /etc/autonomous-backend, readOnly: true}
             - {name: tmp, mountPath: /tmp}
       volumes:
+        # The backend's two tokens only; the bridge config is not mounted here.
+        - name: tokens
+          secret:
+            secretName: playground-tokens
+            items:
+              - {key: backend-token, path: backend-token}
+              - {key: agent-token, path: agent-token}
+            defaultMode: 0440
         - name: tmp
           emptyDir: {medium: Memory, sizeLimit: 32Mi}
 ---
