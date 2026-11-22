@@ -406,10 +406,10 @@
 #?(:cljs nil
    :default
    (defn- ready-now?
-     "L1 host: can a line be read without blocking, by `ready?`? False with
-      no `ready?` or when it throws (a host whose reader has no .ready)."
+     "L1 host: can a line be read without blocking, by `ready?`? A throw
+      from `ready?` propagates."
      [ready?]
-     (boolean (when ready? (try (ready?) (catch Throwable _ false))))))
+     (boolean (ready?))))
 
 #?(:cljs nil
    :default
@@ -426,7 +426,8 @@
      "L1 Boundary: start, once per terminal, a daemon thread that moves every
       line read into `lines` (keep-line!) and delivers `drained` once
       `ready?` says nothing more is buffered. At end of input, or when the
-      reader throws (silently), it marks the terminal :eof? and retires it.
+      reader or its `ready?` throws (silently), it marks the terminal :eof?
+      and retires it.
       Answers `terminal`."
      [{:keys [read-line! ready? pumping drained state] :as terminal}]
      (when (compare-and-set! pumping false true)
