@@ -135,6 +135,49 @@
   (is (= "ling-9" (addon/actor-of {"agent_id" "ling-9" "actor" "someone-else"})))
   (is (= "hive" (addon/actor-of {"actor" "ling-x"})) "actor is no longer read as the caller"))
 
+(deftest checked-app-ids-share-the-fleet-naming-rules
+  (let [checked #'addon/checked-app-ids]
+    (is (= ["2" "orders"] (checked [{:app/id 2} {:app/id "orders"}])))
+    (let [cause (try (checked [{:app/id "a_b"} {:app/id "a.b"}])
+                     (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+      (is (= :fleet/invalid (:autonomous/error cause)))
+      (is (str/includes? (first (:problems cause)) "share a tool prefix")))))
+
+(deftest command-context-normalizes-host-arguments-and-keeps-the-actor
+  (is (= {:app "7" :actor "ling-1" :params {:app 7 :agent_id "ling-1" :args {"x" 1}}}
+         (#'addon/command-context {"app" 7 "agent_id" "ling-1" "args" {"x" 1}})))
+  (is (= {:app nil :actor "hive" :params {:actor "not-the-caller"}}
+         (#'addon/command-context {:actor "not-the-caller"}))))
+
+(deftest dispatch-keeps-help-and-refusal-precedence
+  (let [st {:configs {"svc" {}} :order ["svc"]}]
+    (is (= {:ok {:commands addon/command-help}} (addon/dispatch nil "help" {:app "missing"})))
+    (is (= :autonomous/not-running (get-in (addon/dispatch nil "bogus" {:app "missing"}) [:error :type])))
+    (let [a (addon/dispatch st "bogus" {:app "missing"})]
+      (is (= :autonomous/unknown-app (get-in a [:error :type])))
+      (is (= ["svc"] (get-in a [:error :data :known]))))
+    (is (= :autonomous/unknown-command (get-in (addon/dispatch st "bogus" {:app "svc"}) [:error :type])))
+    (is (= {:ok st} (#'addon/checked-fleet st "svc")))))
+
+(deftest fleet-presentation-is-derived-without-a-server
+  (let [members {"a" {:target {:target/kind :local}}}
+        rows [{:app "a" :status :up} {:app "b" :status :down}]
+        tools [{:name "a__find" :description "Find" :inputSchema {} :handler identity}
+               {:name "a-b__find" :description "Another"}]]
+    (is (= [{:app "a" :status :up :target {:target/kind :local}}
+            {:app "b" :status :down :target nil}]
+           (#'addon/with-app-targets members rows)))
+    (is (= [{:name "a__find" :description "Find" :inputSchema {}}]
+           (#'addon/listed-tools "a" tools)))
+    (is (= ["a__find" "a-b__find"] (mapv :name (#'addon/listed-tools nil tools))))))
+
+(deftest runtime-addon-config-overlays-the-seed
+  (is (= {:choice :runtime-nested :from-seed 1 :from-seed-addon 2 :from-runtime 3
+          :addon/config {:choice :runtime-nested}}
+         (#'addon/effective-config
+          {:choice :seed :from-seed 1 :addon/config {:choice :seed-nested :from-seed-addon 2}}
+          {:choice :runtime :from-runtime 3 :addon/config {:choice :runtime-nested}}))))
+
 (deftest a-request-is-narrowed-to-the-grant-on-its-app
   (let [app {:app/id "svc" :app/grants {"r" [:read]}}]
     (is (= #{:read} (:scopes (apps/scope-request app {:actor "r" :scopes #{:read :write}}))))
