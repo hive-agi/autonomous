@@ -8,6 +8,7 @@
             [autonomous.decorator :as decorator]
             [autonomous.domain.answer :as answer]
             [autonomous.runtime.registry :as registry]
+            [autonomous.support.wait :as wait]
             [clojure.test :refer [deftest is testing use-fixtures]]))
 
 (def ^:private runs (atom 0))
@@ -26,20 +27,11 @@
   ([args] (call rw args))
   ([grant args] (a/rpc (merge grant {:op :call :tool "pay" :args args}))))
 
-(defn- await-state
-  "(pred state) of the bound runtime's state atom as soon as it is truthy,
-   nil if it is not within 5 s. Waits on a watch, not a clock: it answers on
-   the swap that makes `pred` hold."
-  [pred]
-  (let [st (:state registry/*state*) k (Object.) hit (promise)]
-    (add-watch st k (fn [_ _ _ v] (when-let [x (pred v)] (deliver hit x))))
-    (when-let [x (pred @st)] (deliver hit x))
-    (try (deref hit 5000 nil) (finally (remove-watch st k)))))
-
 (defn- poll-until-settled
-  "The poll answer of parked `id` once the runtime has settled it."
+  "The poll answer of parked `id` once the runtime has settled it; throws
+   naming the id when it has not within the wait's deadline."
   [id]
-  (await-state #(= :settled (get-in % [:pending id :status])))
+  (wait/await-settled! (wait/bound-state) id)
   (a/rpc {:op :poll :id id}))
 
 (defn- approving! [verdicts timeout-ms]
@@ -47,15 +39,13 @@
     (a/decorate! (a/each-tool (decorator/require-approval {:asker asker :timeout-ms timeout-ms})))
     asker))
 
-(defn- settled-of [id entries]
-  (first (filter #(and (= :autonomous/settled (:kind %)) (= id (:pending %))) entries)))
-
 (defn- settled-entry
   "The :autonomous/settled journal entry of parked `id`, as the journal op
-   reads it, once the runtime state holds it; nil if it does not within 5 s."
+   reads it, once the runtime state holds it (collected or not); throws
+   naming the id when it does not within the wait's deadline."
   [id]
-  (await-state #(settled-of id (get-in % [:journal :entries])))
-  (settled-of id (:entries (:ok (a/rpc {:op :journal})))))
+  (wait/await-settled-entry! (wait/bound-state) id)
+  (wait/settled-of id (:entries (:ok (a/rpc {:op :journal})))))
 
 (deftest approve-runs-the-tool-exactly-once
   (let [asker (approving! [{:decision :approve :approver "ana"}] 1000)

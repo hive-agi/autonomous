@@ -3,12 +3,16 @@
    browser): a trifecta locks the answers of `rpc-str` for stateless
    requests; scenario tests cover what needs state over time (async
    results, leases between two actors, the journal, middleware)."
-  (:require [autonomous.core :as a]
+  (:require [autonomous.approval :as approval]
+            [autonomous.core :as a]
+            [autonomous.decorator :as decorator]
             [autonomous.domain.wire :as wire]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.test.check.generators :as gen]
             [hive-test.trifecta :refer [deftrifecta]]
-            [autonomous.runtime.rpc :as rpc]))
+            [autonomous.runtime.registry :as registry]
+            [autonomous.runtime.rpc :as rpc]
+            [autonomous.support.wait :as wait]))
 
 (defn install-fixture-app! []
   (a/reset-registry!)
@@ -69,10 +73,16 @@
 
 (defn- call [grant tool args] (a/rpc (merge grant {:op :call :tool tool :args args})))
 
-(defn- poll-until-settled [id]
-  (loop [i 0]
-    (let [r (a/rpc {:op :poll :id id})]
-      (if (and (:pending r) (< i 200)) (do (Thread/sleep 5) (recur (inc i))) r))))
+(def ^:private state
+  "The default runtime's state atom, the one these tests' rpc acts on."
+  (wait/state-of registry/default-runtime))
+
+(defn- poll-until-settled
+  "The poll answer of parked `id` once the runtime has settled it; throws
+   naming the id when it has not within the wait's deadline."
+  [id]
+  (wait/await-settled! state id)
+  (a/rpc {:op :poll :id id}))
 
 (deftest async-results-park-then-settle
   (let [p (promise)]
@@ -92,13 +102,68 @@
     (is (= "late" (get-in (poll-until-settled pending) [:error :message])))))
 
 (defn- settled-entry
-  "The :autonomous/settled journal entry of parked `id`, waiting for it: the
-   runtime journals it just after the answer is settled."
+  "The :autonomous/settled journal entry of parked `id`, as the journal op
+   reads it, once the runtime state holds it (collected or not); throws
+   naming the id when it does not within the wait's deadline."
   [id]
-  (loop [i 0]
-    (let [es (:entries (:ok (a/rpc {:op :journal})))
-          e  (first (filter #(and (= :autonomous/settled (:kind %)) (= id (:pending %))) es))]
-      (if (or e (>= i 200)) e (do (Thread/sleep 5) (recur (inc i)))))))
+  (wait/await-settled-entry! state id)
+  (wait/settled-of id (:entries (:ok (a/rpc {:op :journal})))))
+
+(deftest no-state-holds-a-settled-answer-without-its-journal-entry
+  (let [torn (atom [])
+        k    ::torn
+        p    (promise)]
+    (add-watch state k (fn [_ _ _ st]
+                         (doseq [[id {:keys [status]}] (:pending st)
+                                 :when (and (= :settled status)
+                                            (nil? (wait/settled-of id (get-in st [:journal :entries]))))]
+                           (swap! torn conj id))))
+    (try
+      (a/reg-tool :slow {:description "Slow" :handler (fn [_ _] p)})
+      (let [{:keys [pending]} (call rw "slow" {})]
+        (deliver p {:done true})
+        (wait/await-settled! state pending)
+        (is (= [] @torn) "every state that holds the settled answer holds its entry too")
+        (is (some? (settled-entry pending))))
+      (finally (remove-watch state k)))))
+
+(defn- settle-under-detail
+  "Call tool `tool-name` (its handler answers promise `p`), swap CallDetail
+   `detail` into the runtime state while the call is parked, deliver `v`,
+   and answer [poll-answer settled-entry]."
+  [tool-name p detail v]
+  (let [{:keys [pending]} (call rw tool-name {})]
+    (is (string? pending))
+    (swap! state assoc :call-detail detail)
+    (deliver p v)
+    [(poll-until-settled pending) (settled-entry pending)]))
+
+(deftest an-approved-answer-that-cannot-be-journaled-settles-as-unknown-keeping-the-decision
+  (let [p (promise)]
+    (a/reg-tool :pay {:description "Pay" :handler (fn [_ _] p)})
+    (a/decorate! (a/each-tool (decorator/require-approval
+                               {:asker (approval/queue-asker [{:decision :approve :approver "ana"}])
+                                :timeout-ms 1000})))
+    (let [[r e] (settle-under-detail "pay" p {:redact 42} {:paid 1})]
+      (testing "the poll: a refusal that says the tool ran and its result is unknown"
+        (is (= :settle-failed (get-in r [:error :type])))
+        (is (re-find #"^the tool ran, .*unknown.*before you retry" (get-in r [:error :message])))
+        (is (= {:outcome :ok} (get-in r [:error :data]))))
+      (testing "the journal: a literal entry that keeps the Decision, its approver masked"
+        (is (= {:kind :autonomous/settled :pending (:pending e) :outcome :settle-failed}
+               (dissoc e :approval :seq :at)))
+        (is (= {:decision :approve :approver "<redacted>"} (dissoc (:approval e) :ms)))
+        (is (nat-int? (get-in e [:approval :ms])))))))
+
+(deftest a-journal-failure-that-does-not-depend-on-the-answer-still-settles-the-call
+  (let [p (promise)]
+    (a/reg-tool :slow {:description "Slow" :handler (fn [_ _] p)})
+    (let [[r e] (settle-under-detail "slow" p (sorted-map 1 1) {:done true})]
+      (is (= :settle-failed (get-in r [:error :type])) "settled, not Pending for ever")
+      (is (re-find #"^the tool ran, " (get-in r [:error :message])))
+      (is (= {:kind :autonomous/settled :pending (:pending e) :outcome :settle-failed}
+             (dissoc e :seq :at))
+          "no :approval when there was no human Decision"))))
 
 (deftest an-async-call-joins-its-settled-entry-by-pending-id
   (a/reg-tool :slow-boom {:description "x" :handler (fn [_ _] (future (throw (ex-info "late" {:why 1}))))})
