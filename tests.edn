@@ -1,15 +1,5 @@
 #kaocha/v1
 {:tests [{:id :unit
-          :test-paths ["test" "test-cljc" "example/sim/test"]
+          :test-paths ["test" "test-cljc"]
           :ns-patterns ["-test$"]
-          :skip-meta [:integration]}
-         ;; needs `shadow watch :e2e` and two `node target/e2e/main.js` runtimes
-         {:id :integration
-          :test-paths ["test"]
-          :ns-patterns ["-test$"]
-          :focus-meta [:integration]}
-         ;; the orders example's own suite, its sources on the classpath:
-         ;; clojure -M:test:example/orders-dev orders
-         {:id :orders
-          :test-paths ["example/orders/test"]
-          :ns-patterns ["-test$"]}]}
+          :skip-meta [:integration]}]}

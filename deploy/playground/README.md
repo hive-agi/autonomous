@@ -52,7 +52,7 @@ the cluster pulls without a pull secret. Put the pushed digests into
 
 ```sh
 dir=$(mktemp -d)
-bb -cp src:deploy/playground -m tokens "$dir"
+bb -cp src:bridge/src:deploy/playground -m tokens "$dir"
 kubectl create namespace autonomous-playground --dry-run=client -o yaml | kubectl apply -f -   # or apply playground.yaml first
 kubectl -n autonomous-playground create secret generic playground-tokens \
   --from-file=autonomous.edn="$dir/autonomous.edn" \

@@ -31,5 +31,6 @@ rm "$out/bb.edn"
 find "$out/m2" -type f ! -name '*.jar' -delete
 
 cp -r src "$out/src"
+cp -r bridge/src/. "$out/src/"
 cp deploy/playground/bridge/entrypoint.sh "$out/entrypoint.sh"
 echo "classpath: $(cat "$out/classpath")"
