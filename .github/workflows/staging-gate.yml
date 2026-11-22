@@ -40,6 +40,60 @@ jobs:
       - name: Test
         run: clojure -M:test unit
 
+  # The bridge artifact (bridge/, io.github.hive-agi/autonomous-bridge),
+  # built against THIS checkout's runtime. The :dev/local alias is passed
+  # with -Sdeps because a committed deps.edn never names a local path.
+  jvm-bridge:
+    name: JVM suite (bridge)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: bridge
+    env:
+      DEV_LOCAL: '{:aliases {:dev/local {:override-deps {io.github.hive-agi/autonomous {:local/root ".."}}}}}'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: DeLaGuardo/setup-clojure@13.0
+        with:
+          cli: latest
+      - name: Resolve declared classpath
+        run: clojure -Sdeps "$DEV_LOCAL" -P -M:dev/local:test
+      # Every bridge source must load on its declared classpath, so a
+      # namespace that needs a dependency bridge/deps.edn lacks fails here.
+      - name: Compile
+        run: |
+          set -euo pipefail
+          clojure -Sdeps "$DEV_LOCAL" -M:dev/local -e '
+            (require (quote clojure.java.io) (quote clojure.string))
+            (let [files (->> (file-seq (clojure.java.io/file "src"))
+                             (filter #(re-find #"\.clj[c]?$" (.getName %)))
+                             (sort-by str))]
+              (doseq [f files]
+                (let [ns-sym (-> (str (.relativize (.toPath (clojure.java.io/file "src")) (.toPath f)))
+                                 (clojure.string/replace #"\.clj[c]?$" "")
+                                 (clojure.string/replace "/" ".")
+                                 (clojure.string/replace "_" "-")
+                                 symbol)]
+                  (require ns-sym)))
+              (println "loaded" (count files) "bridge source files"))'
+      # kaocha exits 0 when it finds no tests. With test files present the
+      # run must report at least one test, or the suite config is wrong.
+      - name: Test
+        run: |
+          set -euo pipefail
+          clojure -Sdeps "$DEV_LOCAL" -M:dev/local:test unit --no-color 2>&1 | tee kaocha.log
+          FILES=$(find test -name '*_test.clj*' | wc -l)
+          if [ "$FILES" -gt 0 ] && ! grep -Eq '^[1-9][0-9]* tests?, ' kaocha.log; then
+            echo "bridge/test holds $FILES test files but kaocha ran no tests"
+            exit 1
+          fi
+          echo "bridge test files: $FILES"
+
   bb:
     name: babashka suite
     runs-on: ubuntu-latest
