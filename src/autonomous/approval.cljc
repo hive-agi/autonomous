@@ -305,26 +305,39 @@
 #?(:cljs nil
    :default
    (defn- retire!
-     "L1 Boundary: `terminal`'s input has ended: move it out of `terminals`
-      into `ended`, a registry that holds the stream and its Terminal only
-      weakly. While the stream and an asker on it can still be reached, a
-      later asker on the stream finds that Terminal (and is denied) rather
-      than starting a second reader; once they cannot, the entry is gone,
-      so ended streams do not accumulate."
-     [{:keys [stream] :as terminal}]
+     "L1 Boundary: `terminal`'s input has ended: remove it from `terminals`
+      and mark its stream ended with {:state :out}, the Terminal's state
+      atom and writer (a weak key, held while the stream is; the mark never
+      references the stream)."
+     [{:keys [stream state out] :as terminal}]
      (locking terminals
-       (.put ^java.util.WeakHashMap ended stream (java.lang.ref.WeakReference. terminal))
+       (.put ^java.util.WeakHashMap ended stream {:state state :out out})
        (swap! terminals #(if (identical? terminal (get % stream)) (dissoc % stream) %)))))
 
 #?(:cljs nil
    :default
+   (defn- ended-terminal
+     "L1: a Terminal of `stream` rebuilt from its ended `mark` (see
+      retire!): it never reads, shares the ended Terminal's state and
+      writer, and denies every request at once."
+     [stream read-line! ready? {:keys [state out]}]
+     (assoc (new-terminal stream read-line! ready? out)
+            :state state :pumping (atom true) :drained (doto (promise) (deliver true)))))
+
+#?(:cljs nil
+   :default
    (defn- registered
-     "L1 Boundary: the Terminal registered for `stream`: a live one, else an
-      ended one still reachable, else nil."
+     "L1 Boundary: the live Terminal of `stream`, or nil."
      [stream]
-     (or (get @terminals stream)
-         (when-let [^java.lang.ref.WeakReference r (.get ^java.util.WeakHashMap ended stream)]
-           (.get r)))))
+     (get @terminals stream)))
+
+#?(:cljs nil
+   :default
+   (defn- ended-mark
+     "L1 Boundary: the ended mark of `stream` (see retire!), nil while its
+      input has not ended."
+     [stream]
+     (.get ^java.util.WeakHashMap ended stream)))
 
 #?(:cljs nil
    :default
@@ -344,15 +357,17 @@
      "L1 Boundary: the process-wide Terminal of input `stream`, made once
       (reading with `read-line!` and its `ready?`, else `default-read` and
       `default-ready?`; prompting on `out` or *err*); a later asker on the
-      stream must pass the same ports or none. A stream whose input has
-      ended keeps its Terminal while it can be reached (see retire!)."
+      stream must pass the same ports or none. On a stream whose input has
+      ended (see retire!) it answers an unregistered ended-terminal."
      [stream read-line! ready? default-read default-ready? out]
      (-> (locking terminals
-           (or (registered stream)
-               (let [t (new-terminal stream (or read-line! default-read)
-                                     (if read-line! ready? default-ready?) (or out *err*))]
-                 (swap! terminals assoc stream t)
-                 t)))
+           (let [read! (or read-line! default-read) ready? (if read-line! ready? default-ready?) out (or out *err*)]
+             (or (registered stream)
+                 (if-let [mark (ended-mark stream)]
+                   (ended-terminal stream read! ready? mark)
+                   (let [t (new-terminal stream read! ready? out)]
+                     (swap! terminals assoc stream t)
+                     t)))))
          (same-ports! read-line! out))))
 
 (defn- enqueued

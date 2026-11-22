@@ -435,7 +435,7 @@
     (deliver eof true)
     (is (= :deny (decision (approval/ask! early (assoc request :tool "a") 50000))))
     (let [later (approval/stdin-asker {:read-line read! :ready? never-ready :out (:w out) :approver "op" :wait-ms 60000})]
-      (is (identical? (:terminal early) (:terminal later)) "a later asker on the ended stream shares its Terminal")
+      (is (:eof? @(:state (:terminal later))) "a later asker on the ended stream finds it ended")
       (is (= :deny (decision (approval/ask! later (assoc request :tool "b") 50000))))
       (is (= 1 @reads) "no second reader was started on the ended stream"))))
 
@@ -486,8 +486,35 @@
     (is (= :deny (decision a)))
     (is (await-ref @#'approval/terminals #(not (contains? % (:stream asker))))
         "at end of input its Terminal moves out of the live registry")
-    (is (identical? (:terminal asker) (:terminal (approval/stdin-asker {:read-line (:stream asker) :ready? never-ready :out (:w out)})))
-        "while the stream is reachable, a later asker still finds its ended Terminal")))
+    (is (:eof? @(:state (:terminal (approval/stdin-asker {:read-line (:stream asker) :ready? never-ready :out (:w out)}))))
+        "a later asker on the stream finds it ended")))
+
+(defn- collected?
+  "Is the referent of WeakReference `r` collected after at most 50 System/gc
+   calls?"
+  [^java.lang.ref.WeakReference r]
+  (loop [i 0] (cond (nil? (.get r)) true (= i 50) false :else (do (System/gc) (recur (inc i))))))
+
+(deftest an-ended-stream-stays-ended-once-its-terminal-is-collected
+  (let [out   (screen)
+        eof   (promise)
+        reads (atom 0)
+        read! (ended-stream eof reads)
+        gone  (let [asker (approval/stdin-asker {:read-line read! :ready? never-ready :out (:w out) :wait-ms 60000})
+                    a     (approval/ask! asker request 50000)]
+                (deliver eof true)
+                (is (= :deny (decision a)))
+                (is (await-ref @#'approval/terminals #(not (contains? % read!))))
+                (java.lang.ref.WeakReference. (:terminal asker)))]
+    ;; babashka's interpreter keeps the Terminal reachable, so only the JVM
+    ;; collects it on demand; the ended stream is denied either way.
+    (when (or (System/getProperty "babashka.version")
+              (is (collected? gone) "nothing holds the ended Terminal any more"))
+      (let [later (approval/stdin-asker {:read-line read! :ready? never-ready :out (:w out) :wait-ms 60000})]
+        (is (= :deny (decision (approval/ask! later request 50000))) "denied at once")
+        (is (= 1 @reads) "no second reader was started on the ended stream")
+        (is (= 2 (:next @(:state (:terminal later)))) "the stream's numbering went on, not back to 1")
+        (is (shows? out #"request 2 denied, not run: input has ended"))))))
 
 (deftest a-second-asker-with-other-ports-is-refused
   (let [t (typist)]
