@@ -581,6 +581,9 @@
       compared with. stdin-asker passes System/in and (root-in); a test
       passes a stream of its own, so it never reads the real System/in."
      [system-in root {:keys [in read-line ready? stream out approver wait-ms] :or {approver "stdin" wait-ms 60000}}]
+     (when (and read-line (not ready?))
+       (throw (ex-info "a stdin asker with a :read-line needs its :ready?"
+                       {:autonomous/error :invalid-approval})))
      (let [stream (stream-key stream read-line in system-in root)
            reader (or in root)]
        (->StdinAsker (terminal-for stream read-line ready? (line-reader reader) (ready-check reader) out)
@@ -598,20 +601,18 @@
       how every request ended. Give require-approval a :timeout-ms that
       covers the queue wait too. A request that times out before its turn is
       dropped unprompted. Refuses (ex-info :invalid-approval) a :read-line
-      or :out other than the stream's first asker's, and a request with
-      more than max-shown-args argument values is denied unshown.
+      without :ready?, a :read-line or :out other than the stream's first
+      asker's, and a request with more than max-shown-args argument values
+      is denied unshown.
       Options :in (a BufferedReader that does NOT read System/in: one over
       System/in, or the root *in*, is keyed on System/in like the default),
-      or :read-line (a zero-argument function) with :stream (its identity,
-      default the function) and :ready? (a zero-argument function: can a
-      line be read without blocking?), :out (default *err*), :approver
-      (default \"stdin\"). Building an asker reads nothing: the stream's
-      reader starts at its first ask and then reads for the life of the
-      process, holding at most max-typed-lines unread. Before the first
-      prompt it reads what is already typed (by .ready on the reader, or
-      :ready?), so the prompt discards a line typed ahead. A custom
-      :read-line without :ready? cannot be drained without blocking: a line
-      it buffered before the first prompt may answer that prompt.
-      Pass :stream System/in with a custom :read-line over System/in."
+      or :read-line (a zero-argument function) with :ready? (required: a
+      zero-argument function, true when a line can be read without
+      blocking) and :stream (its identity, default the function), :out
+      (default *err*), :approver (default \"stdin\"). Building an asker
+      reads nothing; the stream's reader starts at its first ask, holds at
+      most max-typed-lines unread, and every line typed before a prompt is
+      discarded by it. Pass :stream System/in with a custom :read-line over
+      System/in."
      ([] (stdin-asker {}))
      ([opts] (stdin-asker-on System/in (root-in) opts))))
