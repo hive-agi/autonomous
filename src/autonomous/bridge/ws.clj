@@ -99,10 +99,13 @@
   (answer/refusal :auth/unauthorized "this token does not grant the runtime scope"))
 
 (defn- authenticated
-  "Promote: authenticate result `a` when it is an Ok or a Refusal; anything
-   else (nil, a Pending) is the :auth/unauthorized refusal."
+  "Promote: authenticate result `a` as an Answer: its refusal alone when it
+   carries :error (even beside :ok), else `a` when Ok, else the
+   :auth/unauthorized refusal."
   [a]
-  (if (or (answer/ok? a) (answer/refused? a)) a (unauthorized)))
+  (cond (answer/refused? a) {:error (:error a)}
+        (answer/ok? a)      a
+        :else               (unauthorized)))
 
 (defn- runtime-grant
   "Promote: Ok of the grant whose scopes include :runtime itself, else an
@@ -326,14 +329,24 @@
       (answer/refusal :ws/unknown-target
                       (str "this bridge serves no websocket target " target)))))
 
-(def ^:private hello-close-kind
-  "Promote: the close-code kind each hello refusal type names (closed set)."
-  {:auth/unauthorized :unauthorized :ws/unknown-target :unknown-target})
+(defn- grant-close-kind
+  "Promote: the close-code kind a hello-grant refusal `error` names:
+   :unauthorized for :auth/unauthorized, else :bad-frame."
+  [error]
+  (if (= :auth/unauthorized (:type error)) :unauthorized :bad-frame))
+
+(defn- closing
+  "Promote: Answer `a` with its refusal tagged by the close-code kind
+   `kind-of` names for it; an Ok or a Pending unchanged."
+  [kind-of a]
+  (if-let [e (:error a)] (assoc a :ws/close (kind-of e)) a))
 
 (defn- refuse-hello!
-  "Boundary: close a refused hello with the code its `error`'s type names."
-  [io error]
-  (refuse! io (hello-close-kind (:type error) :bad-frame) error))
+  "Boundary: close a refused hello `a` with the code its :ws/close kind
+   names; nil."
+  [io a]
+  (refuse! io (:ws/close a) (:error a))
+  nil)
 
 (defn- welcome!
   "Boundary: register the granted runtime on its hub and say welcome.
@@ -347,12 +360,14 @@
 
 (defn- hello!
   "Boundary: authenticate the :hello frame and join the runtime to its
-   target's hub; any refusal on the way closes the socket."
+   target's hub; any refusal on the way closes the socket. nil."
   [opts link frame]
-  (let [a (answer/let-answer [g (hello-grant (:authenticate opts) frame fresh-id)
-                              h (hub-of-grant opts g)]
+  (let [a (answer/let-answer
+            [g (closing grant-close-kind (hello-grant (:authenticate opts) frame fresh-id))
+             h (closing (constantly :unknown-target) (hub-of-grant opts g))]
             (welcome! link h (:runtime g)))]
-    (some->> (:error a) (refuse-hello! (:io @link)))))
+    (when (:error a) (refuse-hello! (:io @link) a))
+    nil))
 
 (defn- response-answer
   "Promote: the Answer a :response frame carries — its EDN text read, or
