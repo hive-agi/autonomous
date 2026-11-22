@@ -562,15 +562,24 @@
       (is (= 1 @reads) "no second reader was started on the ended stream"))))
 
 (deftest a-reader-that-throws-ends-input-and-every-request-is-denied-at-once
-  (let [out   (screen)
-        boom  (promise)
-        asker (approval/stdin-asker {:read-line #(do @boom (throw (java.io.IOException. "stream closed")))
+  (let [out      (screen)
+        boom     (promise)
+        uncaught (atom nil)
+        reader   (promise)
+        asker (approval/stdin-asker {:read-line #(do (deliver reader (Thread/currentThread))
+                                                     (.setUncaughtExceptionHandler
+                                                       (Thread/currentThread)
+                                                       (reify Thread$UncaughtExceptionHandler
+                                                         (uncaughtException [_ _ e] (reset! uncaught e))))
+                                                     @boom (throw (java.io.IOException. "stream closed")))
                                      :ready? never-ready :out (:w out) :approver "op" :wait-ms 60000})
         a     (approval/ask! asker (assoc request :tool "a") 50000)]
     (is (await-ref (:text out) #(re-find #"\[1\] approval requested" %)))
     (deliver boom true)
     (is (= :deny (decision a)) "the waiting request is denied at once, not left to wait 50 s")
     (is (await-ref (:state (:terminal asker)) :eof?) "the failed reader marked the terminal ended")
+    (.join ^Thread @reader 5000)
+    (is (nil? @uncaught) "the reader's throw is caught, not left to the thread's handler")
     (is (= :deny (decision (approval/ask! asker (assoc request :tool "b") 50000)))
         "a later request is denied at once too")
     (is (shows? out #"request 2 denied, not run: input has ended"))))

@@ -446,6 +446,7 @@
        (daemon! #(try (loop []
                         (when-not (or (realized? drained) (ready-now? ready?)) (deliver drained true))
                         (when-let [l (read-line!)] (keep-line! terminal l) (recur)))
+                      (catch Throwable _ nil)
                       (finally
                         (swap! state assoc :eof? true)
                         (deliver drained true)
