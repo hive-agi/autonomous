@@ -52,9 +52,7 @@
 
 (defn- settled-entry
   "The :autonomous/settled journal entry of parked `id`, as the journal op
-   reads it. The runtime settles the answer, then journals it in a second
-   swap, so a poll can see the answer before the entry exists: this waits
-   for the swap that appends the entry."
+   reads it, once the runtime state holds it; nil if it does not within 5 s."
   [id]
   (await-state #(settled-of id (get-in % [:journal :entries])))
   (settled-of id (:entries (:ok (a/rpc {:op :journal})))))
