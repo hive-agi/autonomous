@@ -118,6 +118,55 @@
       (testing "the approver comes from verify's pin, never from the answer"
         (is (= "pin" (:approver (signed/judge ctx pending {:statement "s" :signature "sig"}))))))))
 
+(deftest the-hive-ask-is-never-sent-when-the-gate-console-renders-nothing
+  (testing "no hive-cloak and no gpg needed: the cloak functions are passed in as plain functions"
+    (let [pending   {:request request :nonce (apply str (repeat 32 "a"))
+                     :request-sha256 (apply str (repeat 64 "b")) :expires-ms 1}
+          statement (fn [_] {:ok "hive-approval/1\n"})
+          asked     (atom 0)
+          ask!      (fn [& _] (swap! asked inc) {:answer "-----BEGIN PGP SIGNATURE-----\nx\n-----END PGP SIGNATURE-----\n"})
+          error-of  (fn [p] (try @p nil (catch Exception e (:autonomous/error (ex-data (or (ex-cause e) e))))))]
+      (doseq [[label lines] [["renders nil" (fn [_ _] nil)]
+                             ["renders no line" (fn [_ _] [])]]]
+        (testing label
+          (let [console (java.io.StringWriter.)
+                solicit (signed/hive-solicit-with {:statement statement :lines lines}
+                                                  {:ask! ask! :agent-id "ling-1" :console console})]
+            (reset! asked 0)
+            (is (= :invalid-approval (error-of (solicit pending))) "the solicit fails instead of answering")
+            (is (zero? @asked) "the hive ask never went out")
+            (is (= "" (str console)) "and nothing half-printed on the console"))))
+      (testing "the asker turns that failure into a deny, never an approval or a timeout"
+        (let [why   (atom [])
+              asker (signed/map->SignedAsker
+                     {:solicit        (signed/hive-solicit-with {:statement statement :lines (fn [_ _] nil)}
+                                                                {:ask! ask! :agent-id "ling-1"
+                                                                 :console (java.io.StringWriter.)})
+                      :verify         (fn [& _] {:ok {:decision :approve :approver "pin" :nonce "n" :expires-ms 0}})
+                      :request-sha256 (fn [_] {:ok (apply str (repeat 64 "b"))})
+                      :new-nonce      (constantly (apply str (repeat 32 "a")))
+                      :pins           {"F" {}} :ttl-ms 5000 :seen (atom {})
+                      :now-ms         (constantly 0) :on-refusal #(swap! why conj %)})]
+          (reset! asked 0)
+          (is (= {:decision :deny :approver "unverified"} (decide asker)))
+          (is (zero? @asked))))
+      (testing "the console uses the lines it was given: a working renderer prints before the ask"
+        (let [console (java.io.StringWriter.)
+              seen    (atom nil)
+              solicit (signed/hive-solicit-with
+                       {:statement statement :lines (fn [req _] [(str "tool " (:tool req))])}
+                       {:ask! (fn [& _] (reset! seen (str console)) {:answer "no"}) :agent-id "ling-1" :console console})]
+          (is (nil? @(solicit pending)) "no signature in the answer: nil, so the asker denies")
+          (is (str/includes? @seen "tool sim.pix.pay") "the console was written before the ask went out")))
+      (testing "a renderer that is not a function refuses to build"
+        (is (= :invalid-approval
+               (try (signed/hive-solicit-with {:statement statement :lines nil} {:ask! ask!}) nil
+                    (catch clojure.lang.ExceptionInfo e (:autonomous/error (ex-data e))))))
+        (is (= :invalid-approval
+               (try (signed/console! (java.io.StringWriter.) nil "n" request "h") nil
+                    (catch clojure.lang.ExceptionInfo e (:autonomous/error (ex-data e)))))
+            "console! itself throws rather than print nothing")))))
+
 (deftest a-valid-signature-approves-and-the-approver-is-the-pin
   (with-keys
     (let [[asker why] (asker-with (fn [p] (let [s (statement p)] {:statement s :signature (sign-as :pedro s)})))]
