@@ -42,6 +42,16 @@
               :extra-paths ["example"]
               :task (apply (requiring-resolve 'fleet.demo/-main) *command-line-args*)}
 
+  fleet-preflight {:doc  "Check the fleet's tools and ports, start nothing: one line per missing tool or taken port, exit 1 on any; [--headless] (doc/fleet-demo.md)"
+                   :extra-paths ["example"]
+                   :task (apply (requiring-resolve 'fleet.preflight/-main) *command-line-args*)}
+
+  fleet-preflight-test {:doc  "The unit test of the preflight's pure part (fleet.preflight-test)"
+                        :extra-paths ["example"]
+                        :task (do (require 'fleet.preflight-test)
+                                  (let [{:keys [fail error]} (clojure.test/run-tests 'fleet.preflight-test)]
+                                    (System/exit (if (zero? (+ fail error)) 0 1))))}
+
   e2e   {:doc  "Live e2e from a bb bridge: shadow :e2e, two node runtimes, MCP over HTTP; stdio smokes on bb and cljw (doc/babashka.md)"
          :task (exec 'autonomous.e2e.bb-runner/-main)}
 

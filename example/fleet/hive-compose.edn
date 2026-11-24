@@ -1,6 +1,8 @@
-;; The fleet demo as a hive-compose project: one tiny compose service (the
-;; anchor every section needs) and the three apps as host programs. Each
-;; program starts with its nREPL; the fleet bridge reaches all three.
+;; The fleet demo as a hive-compose project with no compose file and no
+;; service (:project/compose? false, hive-compose pull request #66): only
+;; the three apps, as host programs. Each program starts with its nREPL;
+;; the fleet bridge reaches all three. No program pairs with a service
+;; (:program/with), which a programs-only project refuses.
 ;;
 ;; hive-compose reads projects from the operator's config (see
 ;; doc/fleet-demo.md for the snippet); `bb fleet-demo` reads THIS file and
@@ -8,6 +10,7 @@
 ;; Relative dirs resolve against this file's directory (example/fleet).
 {:project/id "autonomous-fleet"
  :project/dir "."
+ :project/compose? false
  :project/ttl-minutes 30
  :project/programs
  [{:program/id "todo"
