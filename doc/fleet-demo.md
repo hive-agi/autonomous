@@ -24,11 +24,13 @@ wants two mice. The agent
 
 ## Run it with hive-compose
 
-The apps are declared as hive-compose host programs in the repository:
-`example/fleet/hive-compose.edn` (the project and its three programs) and
-`example/fleet/compose.yaml` (one do-nothing `anchor` service, because a
-section starts its programs once its containers are up). hive-compose takes
-its projects from the operator's config, so add this once under
+**This needs hive-compose with pull request #66 (`:project/compose? false`); an older hive-compose refuses a project without a compose file.**
+
+The apps are declared as hive-compose host programs in
+`example/fleet/hive-compose.edn`: a programs-only project
+(`:project/compose? false`), with no compose file and no service, so
+hive-compose never calls docker for it. hive-compose takes its projects
+from the operator's config, so add this one entry once under
 `:addons {"hive.compose" {...}}` in `~/.config/hive-mcp/config.edn`
 (replace `<repo>` with the absolute path of this checkout):
 
@@ -36,6 +38,7 @@ its projects from the operator's config, so add this once under
 {:compose/projects
  [{:project/id "autonomous-fleet"
    :project/dir "<repo>/example/fleet"
+   :project/compose? false
    :project/ttl-minutes 30
    :project/programs
    [{:program/id "todo"
@@ -55,14 +58,27 @@ its projects from the operator's config, so add this once under
 ```
 
 It is the content of `example/fleet/hive-compose.edn`, which stays the
-single source: `bb fleet-demo` reads the same file. Then `compose reload`,
-and:
+single source: `bb fleet-demo` reads the same file. Then `compose reload`.
+
+Before bringing it up, check the host (starts nothing):
+
+```sh
+bb fleet-preflight              # clojure, bb, npm if node_modules lacks react; ports 8280, 7888, 7872
+bb fleet-preflight --headless   # also a Chromium for the headless page
+```
+
+It prints one line per missing tool or taken port and exits 1 on any
+(`bb fleet-preflight-test` tests its pure part). Then:
 
 ```
-compose up target=autonomous-fleet/anchor     # busybox anchor + the three programs
-compose programs                              # pid, log, nREPL port, nrepl-ready?
-compose claim target=autonomous-fleet/anchor note="fleet demo"   # optional: hold it
+compose up target=autonomous-fleet         # the three programs, no container
+compose programs                           # pid, log, nREPL port, nrepl-ready?
+compose down target=autonomous-fleet       # stops the three programs
 ```
+
+`compose claim target=autonomous-fleet note="fleet demo"` holds it;
+otherwise the reaper stops the programs after 30 idle minutes. Nothing
+outside the section is touched.
 
 Open http://localhost:8280 (the todo page is the UI's runtime), then run
 the bridge, by hand or registered with Claude Code:
@@ -76,11 +92,6 @@ claude mcp add fleet -- bb --config "$PWD/bb.edn" serve --dir "$PWD" --build app
   --target-id todo --dir "$PWD/example/orders" --clj --port 7872 --target-id inventory \
   --actor fleet-agent --scopes read,write,billing
 ```
-
-`compose release target=autonomous-fleet/anchor stop=true` (or `compose
-down target=autonomous-fleet/anchor`) stops the programs and the anchor;
-otherwise the reaper stops them after 30 idle minutes. Nothing outside
-the section is touched.
 
 ## Run it without hive-compose
 
