@@ -32,10 +32,20 @@ threaded, `-fPIC` build of the Chez version jolt was made with, found at
 `JOLT_CHEZ_CSV`). Then:
 
 ```sh
-bb cabi        # cabi/build/libautonomous.so, then the C smoke test (16 checks)
+bb cabi        # cabi/build/libautonomous.so, then the C smoke test as a 0.3 and a 0.2 host
 bb cabi-rust   # the Rust example app
+bb cabi-go     # the Go (cgo) example: registers a tool, dispatches calls, prints answers
+bb cabi-zig    # the same in Zig (zig build run)
+bb cabi-bindings  # all of the above in one go
 bb cabi-e2e    # live: the Rust app dials a bb bridge, agents call it over MCP
 ```
+
+| language | binding | example |
+|---|---|---|
+| C | `cabi/include/autonomous.h` | `cabi/examples/c/smoke.c` |
+| Rust | `cabi/bindings/rust` (crate) | `cabi/examples/rust` |
+| Go | `cabi/bindings/go` (cgo package) | `cabi/bindings/go/example`, see its README for `runtime.LockOSThread` |
+| Zig | `cabi/bindings/zig/autonomous.zig` | `cabi/bindings/zig/example`, `zig build run` |
 
 The library is about 30 MB: it carries the jolt runtime, its GC, malli and
 the autonomous runtime. It builds in about a minute.
@@ -59,16 +69,52 @@ frames are opaque text you pass through.
 | `autonomous_ws_reply(frame)` | the frame answering a request, `""` if none is due |
 | `autonomous_rpc(request_edn)` | answer one request in process (tests) |
 
-The app defines, and exports from its executable (`-rdynamic`, or
-`-Wl,--export-dynamic`):
+The app defines one dispatcher, and exports it from its executable
+(`-rdynamic`, or `-Wl,--export-dynamic`):
 
 ```c
+/* 0.3 and later: told who called */
+const char *autonomous_host_dispatch_v2(const char *tool_id, const char *args_json,
+                                        const char *grant_json);
+/* 0.2: grant-blind, still supported */
 const char *autonomous_host_dispatch(const char *tool_id, const char *args_json);
 ```
 
 It receives arguments that already passed the tool's schema and answers the
 result as JSON. `{"error": {"message": "..."}}` reports a failure; the agent
 sees it as a tool error and the journal records `:tool-threw`.
+
+`grant_json` is the caller, in the shape `autonomous.js` hands its handlers:
+`{"actor": "agent-1", "scopes": ["read", "write"]}`. Use the actor to say
+who changed what. The library shows the actor the way it shows actors
+everywhere else (`autonomous.domain.naming/shown-actor`). It is printable
+ASCII only: a double quote, a backslash and every other UTF-16 code unit is
+escaped as `\uxxxx` (lowercase hex), so a bidi override (`\u202e`), a
+zero-width space (`\u200b`) or a control character is visible, and an emoji
+arrives as its surrogate pair (`\ud83d\ude00`). The require-approval prompt
+shows actors through the same function. The actor reaches the
+host whole: one whose shown form is longer than `AUTONOMOUS_MAX_SHOWN_ACTOR`
+(64) characters is refused with `:host/actor-too-long` before your code runs,
+so two different actors never reach the host as the same string. A decoded
+actor is at most 64 printable-ASCII bytes. Parse `grant_json` with a JSON
+parser, and never slice it or size a buffer from it: a JSON writer may
+escape any character (jolt writes `/` as `\/`), so the encoded actor can
+take up to 6 bytes per character. Scopes are sorted names. The
+library looks `_v2` up once per process and process-wide (dlsym over every
+loaded object), so a process must hold exactly one definition of each
+dispatcher. If any loaded object exports `_v2`, the library calls only
+`_v2`. The Rust binding crate exports both dispatchers, so do not link it
+into a process that defines its own. It
+never hands `_v2` an actor that names no one: an empty, whitespace-only or
+invisible-only actor (controls, zero-width, bidi, separators) is refused with
+`:host/grant-missing` before your code runs. A request with no actor at all
+reaches the host as `"anonymous"`, as everywhere in autonomous. An app built
+against 0.2 keeps working unchanged; the version is in
+`AUTONOMOUS_VERSION_MAJOR` / `AUTONOMOUS_VERSION_MINOR`.
+
+In Rust, `Runtime::tool_as(id, spec, |args, who| ..)` gives the handler a
+`Grant`. Such a handler fails closed under a 0.2 library, which passes no
+grant. `Runtime::tool` stays grant-blind.
 
 A tool spec:
 
@@ -78,6 +124,47 @@ A tool spec:
  :read-only?  false          ; read-only tools need only the :read scope
  :scopes      #{:write}}     ; optional; any keyword the app invents
 ```
+
+### The same spec as JSON
+
+An author who does not write Clojure can describe tools in JSON instead
+(`autonomous.json-spec`). `input` and `output` are either a JSON Schema
+object or a string of malli EDN; `$ref`s resolve within the file, so tools
+can share `$defs`. A file holds one tool, an array of them, or
+`{"tools": [...]}`:
+
+```json
+{"$defs": {"Sku": {"type": "string", "minLength": 1}},
+ "tools": [{"id": "inventory/receive",
+            "description": "Receive qty units of sku into stock.",
+            "input": {"type": "object",
+                      "properties": {"sku": {"$ref": "#/$defs/Sku"},
+                                     "qty": {"type": "integer", "minimum": 1}},
+                      "required": ["sku", "qty"]},
+            "readOnly": false,
+            "scopes": ["write"]}]}
+```
+
+`bb tool-spec tools.json` prints each tool as `id<TAB>edn-spec`: the text
+`autonomous_reg_tool` takes, so the ABI is the same for both forms. In a
+Clojure host, `autonomous.json-spec.load/register-file!` registers the file
+with a handler per tool id. An invalid spec is refused with what to fix
+(`:invalid-tool`), never half-registered for want of a handler, and
+`bb tool-spec` then prints nothing and exits 1.
+
+A spec is refused rather than read loosely:
+
+- a `$ref` that does not resolve within the file (a typo, a path out of it,
+  a URL), a `$ref` cycle, or a `type` that is not a JSON Schema type, any of
+  which would otherwise accept any argument;
+- a key the form does not know (`scope`, `readonly`, ...), naming the key
+  meant (`scopes`, `readOnly`);
+- malli EDN that does not compile as a tool, blank EDN, and EDN that
+  carries code (`[:fn ...]`, a list). Only the host can allow code, with
+  `{:allow-fn? true}`; a file cannot.
+
+The OpenAPI source refuses the first kind too
+(`:openapi/unresolved-schema`), except a cycle, which OpenAPI allows.
 
 ## The loop
 
@@ -112,8 +199,12 @@ serves it (see [websocket.md](websocket.md)).
 
 ## What is still open
 
-- Bindings: the header plus a C smoke test and a Rust app exist; Go (cgo),
-  Zig and a JSON-only spec form are next.
+- Bindings: C, Rust, Go and Zig. The Go and Zig examples run in process
+  (`autonomous_rpc`); only the Rust app dials a bridge (`bb cabi-e2e`). The
+  ABI takes EDN specs; a JSON spec reaches it through `bb tool-spec`, not
+  through a JSON export of its own.
+- The host dispatcher sees the args only, not the caller's grant (actor,
+  scopes), which autonomous.js already passes.
 - The library is one process-wide runtime; the per-instance runtime of the
   surface work could give each embedder several.
 - Size: 30 MB per app. A thin, library-free client (the frame protocol

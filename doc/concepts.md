@@ -38,7 +38,9 @@ A tool is something an agent may do. Register one with `reg-tool`:
 
 The MCP name derives from the id: `:todo/add` becomes `todo_add`. Every
 character outside `[A-Za-z0-9_-]` becomes `_`, and the name is cut at 64
-characters. Registering a second tool under a name another tool uses throws.
+characters; hyphens stay (`:todos/clear-done` is `todos_clear-done`).
+Registering a second tool under a name another tool uses throws. The whole
+rule, with fleet names, is in [naming](naming.md).
 `reg-tool` answers the name; `unreg-tool` takes the id or the name.
 
 An invalid spec throws at registration, so an author error fails while the app
@@ -153,7 +155,11 @@ to one.
 
 A **lease** gives one actor exclusive write access to one runtime until a
 time. Other actors keep reading; their calls to tools that are not read-only
-are refused with `:leased`, naming the holder. `autonomous_lease` takes
+are refused with `:leased`, naming the holder. The refusal's `:data` is the
+lease: `:actor` is the holder's raw actor, data for code to compare, never
+text to display (it may hold control, bidi or zero-width characters).
+Display `:shown-actor` beside it, the holder as `naming/shown-actor` shows
+it, or the refusal's message. `autonomous_lease` takes
 `ttl_seconds` (default 60, at most 3600); the holder may call it again to
 renew. `autonomous_release` ends it, and releasing a lease you do not hold
 changes nothing. Taking and releasing a lease need `:write`.
@@ -165,8 +171,8 @@ It records:
 
 | kind | when | fields |
 |---|---|---|
-| `:autonomous/call` | every tool call | `:actor :tool :outcome :ms` |
-| `:autonomous/settled` | a pending result settles | `:pending :outcome` |
+| `:autonomous/call` | every tool call | `:actor :tool :outcome :ms`, `:pending` (the id) when the answer is pending, `:session :args :error` as `journal-calls!` asks |
+| `:autonomous/settled` | a pending result settles | `:pending :outcome`, `:error` when `journal-calls!` asks for errors |
 | `:autonomous/lease`, `:autonomous/release` | lease changes | `:actor` |
 | `:re-frame/event` | `observe-events!` is on | `:event-id :origin :actor`, `:payload` if asked |
 | anything | the app calls `autonomous.core/journal!` | the app's own |
@@ -211,6 +217,17 @@ Two stores ship:
   never reads a stale cache.
 - `expose-db!` registers app-db as the resource `re-frame://app-db`, limited
   to `:paths` when given, with `:redact` paths shown as `<redacted>`.
+- re-frame2 keeps one app-db per frame and refuses a bare `subscribe` outside
+  a frame. Its apps load `autonomous.re-frame2` instead. It has
+  `reg-event-tool`, `reg-sub-tool` and `expose-db!` (not yet `observe-events!`
+  or `install-dev-tools!`), and each also takes `:frame`, a frame-id keyword such as `:app/main`. A
+  call then goes through re-frame2's frame-targeted API: `dispatch` and
+  `dispatch-sync` with `{:frame f}`, `subscribe-once` with `{:frame f}`, and
+  `app-db-value`. A frame that is not registered when the call runs is
+  refused with `:re-frame/unknown-frame`, never read as an empty app-db.
+  Without `:frame`, the ambient frame (`with-frame`, `frame-provider`) is
+  used. `autonomous.re-frame` has no frames and refuses `:frame` with
+  `:re-frame/no-frames`.
 - `observe-events!` journals every re-frame event with its origin: `:agent`
   when a tool dispatched it (the actor rides on the event's metadata), `:app`
   otherwise. Event arguments are kept only with `:payloads? true`, since they

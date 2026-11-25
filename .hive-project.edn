@@ -4,4 +4,4 @@
  :type        :library
  :language    :clojure
  :tags        ["mcp" "agentic-ui" "re-frame" "babashka" "cljw" "nrepl"]
- :carto       {:source-roots ["src" "test" "test-cljs" "example/src" "hive/src" "hive/test"]}}
+ :carto       {:source-roots ["src" "test" "test-cljs" "bridge/src" "bridge/test" "example/src" "hive/src" "hive/test"]}}

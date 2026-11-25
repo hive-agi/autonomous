@@ -120,10 +120,13 @@ so it carries no hive runtime libraries.
 
 | suite | command | runs |
 |---|---|---|
-| JVM unit | `clojure -M:test unit` | everything but `^:integration` |
+| JVM unit (runtime) | `clojure -M:test unit` | the runtime suites |
+| JVM unit (bridge) | `clojure -M:dev/local:test unit` in `bridge/` | the bridge suites but `^:integration` |
 | babashka | `bb test` | the decision, rpc and re-frame model suites |
 | ClojureScript | `clojure -M:cljs -m shadow.cljs.devtools.cli compile test && node target/cljs-test/test.js` | the re-frame adapter |
-| integration | `clojure -M:test integration` | the live swarm test (see [swarms.md](swarms.md)) |
+| integration | `clojure -M:dev/local:test integration` in `bridge/` | the live swarm test (see [swarms.md](swarms.md)) |
+
+`:dev/local` comes from the `-Sdeps` in the README's Develop and test section.
 
 Most suites are trifectas (golden, property and mutation tests) built with
 hive-test, a test-only dependency; the golden files live under `test/golden/`.

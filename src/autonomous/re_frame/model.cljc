@@ -148,3 +148,9 @@
     event
     (vary-meta event #(cond-> (assoc % :autonomous/trace ctx)
                         (and actor (not (:autonomous/actor %))) (assoc :autonomous/actor actor)))))
+
+(defn frame-problem
+  "nil when `frame` is absent or a frame-id keyword, else why it is not."
+  [frame]
+  (when-not (or (nil? frame) (keyword? frame))
+    (str "a re-frame2 :frame is a frame-id keyword, got " (pr-str frame))))

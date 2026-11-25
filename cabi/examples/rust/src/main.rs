@@ -4,7 +4,8 @@
 //!
 //! It dials the bridge, says hello, and answers every request frame through
 //! the library, which validates args, checks scopes, journals the call and
-//! calls back into `autonomous_host_dispatch` for the tool itself. Every call
+//! calls back into `autonomous_host_dispatch_v2`, with the caller's grant,
+//! for the tool itself. Every call
 //! into the library happens on the main thread (the jolt runtime's rule).
 
 use std::cell::RefCell;
@@ -94,7 +95,8 @@ thread_local! {
     static LAST: RefCell<CString> = RefCell::new(CString::default());
 }
 
-fn run_tool(tool: &str, args: &Value) -> Value {
+/// Run `tool` with `args` for `grant` ({"actor": .., "scopes": [..]}).
+fn run_tool(tool: &str, args: &Value, grant: &Value) -> Value {
     match tool {
         "inventory/receive" => {
             let sku = args["sku"].as_str().unwrap_or_default().to_string();
@@ -105,19 +107,25 @@ fn run_tool(tool: &str, args: &Value) -> Value {
                 *e += qty;
                 *e
             });
-            json!({"sku": sku, "on_hand": now, "by": "rust"})
+            json!({"sku": sku, "on_hand": now, "by": "rust", "actor": grant["actor"]})
         }
         "inventory/stock" => STOCK.with(|s| json!(*s.borrow())),
         other => json!({"error": {"message": format!("no tool {other}")}}),
     }
 }
 
-/// Called by libautonomous, on this thread, with validated args.
+/// Called by libautonomous, on this thread, with validated args and the
+/// caller's grant.
 #[no_mangle]
-pub extern "C" fn autonomous_host_dispatch(tool: *const c_char, args: *const c_char) -> *const c_char {
+pub extern "C" fn autonomous_host_dispatch_v2(
+    tool: *const c_char,
+    args: *const c_char,
+    grant: *const c_char,
+) -> *const c_char {
     let tool = text(tool);
     let args: Value = serde_json::from_str(&text(args)).unwrap_or(Value::Null);
-    let out = run_tool(&tool, &args).to_string();
+    let grant: Value = serde_json::from_str(&text(grant)).unwrap_or(Value::Null);
+    let out = run_tool(&tool, &args, &grant).to_string();
     LAST.with(|l| {
         *l.borrow_mut() = CString::new(out).unwrap();
         l.borrow().as_ptr()

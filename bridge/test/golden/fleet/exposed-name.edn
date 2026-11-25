@@ -1,0 +1,19 @@
+{:case-0
+ {:in ("zpfRs3J23kHWb" "6uq0c01wCa7KrKIC9vRS76eTINLmkHFW1lRzye"),
+  :out "zpfRs3J23kHWb__6uq0c01wCa7KrKIC9vRS76eTINLmkHFW1lRzye"},
+ :case-1 {:in ("O7t" "guS6Mq558aH"), :out "O7t__guS6Mq558aH"},
+ :case-2
+ {:in
+  ("uVPHgR486muITYN755Bn"
+   "7l44zy0l9CoZfG367RooQ39DeY1wP29i6rxFKcCjjGX7Qps2hy9SRE9BrWmi7n7kzh4"),
+  :out
+  "uVPHgR486muITYN755Bn__7l44zy0l9CoZfG367RooQ39DeY1wP-i95w4adaoiiv"},
+ :case-3
+ {:in ("6l1ZQp6" "dgY24neSjD38qZ8UtH"),
+  :out "6l1ZQp6__dgY24neSjD38qZ8UtH"},
+ :case-4
+ {:in
+  ("7dt" "NIA70uvQR6s7BATpid1BLZhc7cdPeOg01is7jbEUb69XS8Mvb71iKlf"),
+  :out "7dt__NIA70uvQR6s7BATpid1BLZhc7cdPeOg01is7jbEUb69XS8Mvb71iKlf"},
+ :case-5
+ {:in ("3H22a324jfYb6y0x9s6Z6" "4"), :out "3H22a324jfYb6y0x9s6Z6__4"}}

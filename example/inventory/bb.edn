@@ -1,7 +1,7 @@
 ;; The inventory microservice on babashka. Its own sources plus the
 ;; autonomous runtime from this checkout (an app outside this repository
 ;; would take io.github.hive-agi/autonomous from Clojars instead).
-{:paths ["src" "../../src"]
+{:paths ["src" "../../src" "../../bridge/src"]
  :deps  {metosin/malli {:mvn/version "0.20.3"}}
 
  :tasks

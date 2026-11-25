@@ -1,0 +1,8 @@
+;; The bridge root's own babashka config: the bridge sources over this
+;; checkout's runtime. The full task set lives in the repo root bb.edn.
+{:paths ["src" "test" "../src"]
+ :deps  {metosin/malli {:mvn/version "0.20.3"}}
+
+ :tasks
+ {tool-spec {:doc  "Print a JSON tool-spec file as EDN specs for autonomous_reg_tool: FILE.json (autonomous.json-spec)"
+             :task (apply (requiring-resolve 'autonomous.json-spec.load/-main) *command-line-args*)}}}

@@ -32,12 +32,86 @@ jobs:
       - uses: DeLaGuardo/setup-clojure@13.0
         with:
           cli: latest
+          bb: latest
       # The pins must resolve from the registries before anything else is
       # worth running: this is the step a dependency bump can break.
       - name: Resolve declared classpath
         run: clojure -P -M:test
       - name: Test
         run: clojure -M:test unit
+
+  # The bridge artifact (bridge/), built against this checkout's runtime.
+  jvm-bridge:
+    name: JVM suite (bridge)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: bridge
+    env:
+      DEV_LOCAL: '{:aliases {:dev/local {:override-deps {io.github.hive-agi/autonomous {:local/root ".."}}}}}'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: DeLaGuardo/setup-clojure@13.0
+        with:
+          cli: latest
+          bb: latest
+      - name: Resolve declared classpath
+        run: clojure -Sdeps "$DEV_LOCAL" -P -M:dev/local:test
+      # Every bridge source loads on the bare classpath, except OPTIONAL
+      # (ns:alias), each of which loads with its one alias only.
+      - name: Compile
+        env:
+          OPTIONAL: >-
+            autonomous.bridge.ledger.datahike:datahike
+            autonomous.mcp.http.kit:ws
+            autonomous.ws.ring-listener:ring
+            autonomous.bridge.nrepl-wire:cljw
+        run: |
+          set -euo pipefail
+          LOAD='
+            (require (quote clojure.java.io) (quote clojure.string))
+            (let [mode (System/getenv "PASS")
+                  optional (->> (clojure.string/split (System/getenv "OPTIONAL") #"\s+")
+                                (map #(symbol (first (clojure.string/split % #":"))))
+                                set)
+                  root (.toPath (clojure.java.io/file "src"))
+                  all (->> (file-seq (clojure.java.io/file "src"))
+                           (filter #(re-find #"\.clj[c]?$" (.getName %)))
+                           (map #(-> (str (.relativize root (.toPath %)))
+                                     (clojure.string/replace #"\.clj[c]?$" "")
+                                     (clojure.string/replace "/" ".")
+                                     (clojure.string/replace "_" "-")
+                                     symbol))
+                           sort)
+                  missing (remove (set all) optional)
+                  nses (if (= mode "base") (remove optional all) [(symbol mode)])]
+              (when (seq missing)
+                (throw (ex-info "OPTIONAL names a ns with no source file" {:missing missing})))
+              (doseq [n nses] (require n))
+              (println "loaded" (count nses) mode "of" (count all) "bridge namespaces"))'
+          PASS=base clojure -Sdeps "$DEV_LOCAL" -M:dev/local -e "$LOAD"
+          for entry in $OPTIONAL; do
+            PASS="${entry%%:*}" clojure -Sdeps "$DEV_LOCAL" -M:dev/local:"${entry##*:}" -e "$LOAD"
+          done
+      # Every non-integration *_test ns under the unit test paths must run
+      # (kaocha exits 0 when a suite silently drops a namespace).
+      - name: Test
+        run: |
+          set -euo pipefail
+          clojure -Sdeps "$DEV_LOCAL" -M:dev/local:test unit --no-color --reporter documentation 2>&1 | tee kaocha.log
+          grep -rL --include='*_test.clj' --include='*_test.cljc' '^(ns \^:integration' test ../example/sim/test \
+            | xargs -r grep -ho '^(ns [^ ]*' | sed 's/^(ns //' | sort -u > expected.txt
+          grep -Eo '^[a-z][A-Za-z0-9.*+!?_-]*-test$' kaocha.log | sort -u > ran.txt
+          echo "bridge unit test namespaces: $(wc -l < expected.txt) expected, $(wc -l < ran.txt) ran"
+          if [ ! -s expected.txt ] || ! diff expected.txt ran.txt; then
+            echo "the namespaces kaocha ran differ from the *_test files (< missing, > unexpected)"
+            exit 1
+          fi
 
   bb:
     name: babashka suite
@@ -74,3 +148,33 @@ jobs:
         run: clojure -M:cljs -m shadow.cljs.devtools.cli compile test
       - name: Test
         run: node target/cljs-test/test.js
+
+  # bb test-rf2: autonomous.re-frame2 against real re-frame2, a gitlib
+  # (day8/re-frame2 at the sha deps.edn :cljs-rf2 pins) in place of re-frame 1.
+  cljs-rf2:
+    name: ClojureScript suite on re-frame2
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: DeLaGuardo/setup-clojure@13.0
+        with:
+          cli: latest
+      - name: Install node dependencies
+        run: npm ci
+      # The git dep is fetched here, so a moved or unreachable sha fails
+      # this step rather than the compile.
+      - name: Resolve declared classpath
+        run: clojure -P -M:cljs-rf2
+      - name: Compile the test build
+        run: clojure -M:cljs-rf2 -m shadow.cljs.devtools.cli compile rf2-test
+      - name: Test
+        run: node target/cljs-rf2-test/test.js

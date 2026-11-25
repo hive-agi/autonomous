@@ -1,0 +1,220 @@
+(ns autonomous.bridge.schema
+  "Value objects of the bridge context (see autonomous.domain.schema for the
+   shared language).
+
+   Target       where runtimes are reached. :nrepl mode :shadow (a
+                ClojureScript build) or :clj (a Clojure process), or :local
+                (this JVM, for a backend embedding the bridge).
+   TokenEntry   one credential: the SHA-256 of a bearer token, the actor it
+                names and the scopes it grants. The token itself is never
+                stored.
+   Session      one agent's conversation: its grant and pinned runtime.
+   LedgerEntry  a journal entry promoted for durable storage, keyed so that
+                re-draining a journal never stores it twice.
+   Config       everything `autonomous.cli serve` runs on."
+  (:require [autonomous.bridge.url :as url]
+            [autonomous.domain.schema :as ds]
+            [autonomous.domain.naming :as naming]))
+
+(def Mode [:enum :shadow :clj])
+
+(def NreplTarget
+  [:map
+   [:target/kind [:= :nrepl]]
+   [:target/id :string]
+   [:nrepl/host {:optional true} :string]
+   [:nrepl/port {:optional true} [:maybe [:int {:min 1 :max 65535}]]]
+   [:nrepl/port-file {:optional true} :string]
+   [:nrepl/mode Mode]
+   [:shadow/build {:optional true} [:maybe :keyword]]
+   [:timeout-ms {:optional true} [:int {:min 100}]]])
+
+(def LocalTarget
+  [:map
+   [:target/kind [:= :local]]
+   [:target/id :string]])
+
+(def WsTarget
+  "Runtimes that dial the bridge over a websocket (production, no nREPL),
+   authenticating with a runtime token whose actor is this :target/id."
+  [:map
+   [:target/kind [:= :ws]]
+   [:target/id :string]
+   [:timeout-ms {:optional true} [:int {:min 100}]]])
+
+(def CredentialReference
+  "A remote credential by secret-store reference; a token value is never
+   config, so the map is closed: {:token-env \"X\" :token \"...\"} fails."
+  [:map {:closed true} [:token-env :string]])
+
+(def ^:private no-literal-token
+  "A key whose presence alone is the error: credentials are references."
+  [:fn {:error/message "a credential is a reference (:token-env or :credentials), never a literal :token"}
+   (constantly false)])
+
+(def ^:private CleanUrl
+  [:and [:string {:min 1}]
+   [:fn {:error/message "a remote url carries no userinfo, query or fragment: credentials are references"}
+    url/clean?]])
+
+(defn- bearer-transport-ok?
+  "True unless `target` would send a bearer token over plain http to a
+   host other than this one."
+  [target]
+  (or (not (or (:token-env target) (seq (:credentials target))))
+      (url/bearer-allowed? (:url target))))
+
+(def CredentialPolicy
+  "Remote credential references by caller actor, with an optional :default.
+   Never empty: a present but empty policy would read as no policy at all."
+  [:map-of {:min 1} [:or :string [:= :default]] CredentialReference])
+
+(def HttpTarget
+  "A remote app reached by URL over MCP-over-HTTP (its own /mcp, the handler
+   autonomous.ring mounts), so no nREPL and no inbound port. Credentials
+   name environment variables; :credentials selects one by actor or :default,
+   falling back to the target-wide :token-env."
+  [:and
+   [:map
+    [:target/kind [:= :http]]
+    [:target/id :string]
+    [:url CleanUrl]
+    [:token-env {:optional true} :string]
+    [:token {:optional true} no-literal-token]
+    [:credentials {:optional true} CredentialPolicy]
+    [:timeout-ms {:optional true} [:int {:min 100}]]
+    [:ttl-ms {:optional true} [:int {:min 0}]]
+    [:stream-retry-ms {:optional true} [:int {:min 0}]]
+    [:lock-wait-ms {:optional true} [:int {:min 1}]]]
+   [:fn {:error/message "a bearer token rides https, or plain http to this host only"}
+    bearer-transport-ok?]])
+
+(def Target
+  [:multi {:dispatch :target/kind}
+   [:nrepl NreplTarget]
+   [:local LocalTarget]
+   [:ws WsTarget]
+   [:http HttpTarget]])
+
+(def TargetId
+  [:and :string [:fn {:error/message "a target id is 1..48 of [A-Za-z0-9._-]"}
+                 naming/valid-target-id?]])
+
+(def ProbeStatus [:enum :up :down :slow])
+
+(def Probe
+  "What one look at a target found: its manifest when :up, why not otherwise."
+  [:map
+   [:target TargetId]
+   [:status ProbeStatus]
+   [:at :int]
+   [:manifest {:optional true} [:maybe :map]]
+   [:error {:optional true} [:maybe :map]]])
+
+(def FleetMode [:enum :single :fleet])
+
+(def AppRow
+  "One line of autonomous_apps."
+  [:map
+   [:app TargetId]
+   [:prefix :string]
+   [:status ProbeStatus]
+   [:tools {:optional true} :int]
+   [:version {:optional true} [:maybe :int]]
+   [:description {:optional true} :string]
+   [:dropped {:optional true} [:vector :string]]
+   [:error {:optional true} :map]])
+
+(def ^:private hex-chars (set "0123456789abcdef"))
+
+(defn sha256-hex?
+  "True for 64 lowercase hex characters."
+  [s]
+  (and (string? s) (= 64 (count s)) (every? hex-chars s)))
+
+(def Sha256Hex [:fn {:error/message "64 lowercase hex characters"} sha256-hex?])
+
+(def TokenEntry
+  [:map
+   [:sha256 Sha256Hex]
+   [:actor ds/Actor]
+   [:scopes [:or [:set :keyword] [:sequential :keyword]]]])
+
+(def Session
+  [:map
+   [:session/id :string]
+   [:session/actor ds/Actor]
+   [:session/scopes ds/Scopes]
+   [:session/runtime {:optional true} [:maybe :any]]
+   [:session/runtimes {:optional true} [:map-of :string :any]]])
+
+(def LedgerEntry
+  [:map
+   [:entry/key :string]
+   [:entry/target :string]
+   [:entry/runtime :string]
+   [:entry/seq :int]
+   [:entry/at :int]
+   [:entry/kind :keyword]
+   [:entry/actor {:optional true} [:maybe :string]]
+   [:entry/tool {:optional true} [:maybe :string]]
+   [:entry/outcome {:optional true} [:maybe :keyword]]
+   [:entry/data :string]])
+
+(def LedgerQuery
+  [:map
+   [:actor {:optional true} :string]
+   [:kind {:optional true} :keyword]
+   [:tool {:optional true} :string]
+   [:target {:optional true} :string]
+   [:since {:optional true} :int]
+   [:until {:optional true} :int]
+   [:limit {:optional true} [:int {:min 1 :max 1000}]]])
+
+(def HttpConfig
+  [:map
+   [:bind {:optional true} :string]
+   [:port [:int {:min 0 :max 65535}]]
+   [:allowed-origins {:optional true} [:vector :string]]])
+
+(def LedgerConfig
+  [:map
+   [:ledger/kind [:enum :memory :datahike]]
+   [:datahike/config {:optional true} :map]
+   [:datahike/path {:optional true} :string]])
+
+(def ExporterConfig
+  "One span exporter (autonomous.bridge.trace.export). Open: a provider
+   reads its own namespaced keys."
+  [:map
+   [:exporter/kind :keyword]
+   [:exporter/name {:optional true} :string]])
+
+(def TraceConfig
+  "Telemetry on the bridge: where collected spans go, and how often the
+   runtimes are read without an agent asking."
+  [:map
+   [:exporters {:optional true} [:vector ExporterConfig]]
+   [:cap {:optional true} [:int {:min 1}]]
+   [:poll-ms {:optional true} [:int {:min 100}]]])
+
+(def Config
+  "One :target serves single mode (names as the app gives them); :targets
+   (two or more, or :fleet? true) serves a fleet (names prefixed by app)."
+  [:and
+   [:map
+    [:target {:optional true} Target]
+    [:targets {:optional true} [:vector {:min 1} Target]]
+    [:fleet? {:optional true} :boolean]
+    [:probe-ms {:optional true} [:int {:min 50}]]
+    [:transport [:enum :stdio :http]]
+    [:http {:optional true} HttpConfig]
+    [:ws {:optional true} HttpConfig]
+    [:tokens {:optional true} [:vector TokenEntry]]
+    [:stdio/actor {:optional true} ds/Actor]
+    [:stdio/scopes {:optional true} [:set :keyword]]
+    [:ledger {:optional true} LedgerConfig]
+    [:trace {:optional true} TraceConfig]
+    [:call-timeout-ms {:optional true} [:int {:min 100}]]]
+   [:fn {:error/message "configure :target or :targets"}
+    (fn [c] (or (:target c) (seq (:targets c))))]])
