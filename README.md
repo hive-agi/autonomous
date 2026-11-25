@@ -46,6 +46,15 @@ path a human click does (for re-frame: a real `dispatch-sync` through
 interceptors and effects). Every call is
 attributed to an actor and recorded, so several agents can share one app.
 
+## Try it live
+
+<https://autonomous.buddhilw.com> runs the [fullstack todo](example/fullstack)
+for anyone: one shared list, a Rust backend that agents drive over MCP, and an
+Elm page that shows what they do. The page prints the command that connects
+your own agent. The list resets every 10 minutes, and todo text is untrusted
+input written by other visitors. How the sandbox is built:
+[deploy/playground](deploy/playground/README.md).
+
 ## Quickstart
 
 The repository ships a re-frame todo app (`example/`). Run it and drive it
