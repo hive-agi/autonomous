@@ -12,6 +12,7 @@
             [autonomous.domain.wire :as wire]
             [autonomous.runtime.registry :as registry]
             [autonomous.runtime.chain :as chain]
+            [autonomous.runtime.trace :as trace]
             [autonomous.decorator :as decorator]
             [autonomous.thenable :as thenable]))
 
@@ -106,15 +107,30 @@
     (catch #?(:clj Throwable :cljs :default) e
       (registry/settle-unrecorded! id (unrecorded a e)))))
 
+(defn- settled-span!
+  "L2 Boundary: record the :agent/settled span of parked call `id` ending
+   with Answer `a`, a child of context `ctx`. Never throws."
+  [ctx id a]
+  (try
+    (when (trace/enabled?)
+      (trace/event! (str "settled " id) :agent/settled
+                    (merge {:parent ctx :attrs {:autonomous.pending id :autonomous.outcome (answer/outcome a)}}
+                           (when (answer/refused? a)
+                             {:status :error :error {:message (get-in a [:error :message])}}))))
+    (catch #?(:clj Throwable :cljs :default) _ nil)))
+
 (defn- settle-later!
   "L2 Pipeline: park thenable `x` and answer its Pending. Its value
    `completed` through `project`, or the refusal of what it fails with,
-   then `finish` (Answer -> Answer, already guarded) settles the call."
+   then `finish` (Answer -> Answer, already guarded) settles the call. With
+   tracing on, the settlement is an :agent/settled span under the span
+   current when the call was parked."
   [x project finish]
-  (let [id (registry/park!)]
+  (let [id  (registry/park!)
+        ctx (trace/current)]
     (thenable/chain (thenable/attempt #(thenable/chain x (fn [v] (completed v project)))
                                       answer/from-exception)
-                    (comp (partial settled! id) finish))
+                    (comp (fn [a] (let [r (settled! id a)] (settled-span! ctx id a) r)) finish))
     (answer/pending id)))
 
 (defn settle
@@ -162,6 +178,19 @@
   [{:keys [tool args]} grant links]
   (chain/run links {:tool tool :args args :grant grant} terminal))
 
+(defn span-outcome
+  "How an :agent/call span ends for Answer `a`: an error when refused, the
+   pending id when still running, the result when payloads are kept."
+  [a]
+  (cond
+    (answer/refused? a) {:status :error
+                         :error  (select-keys (:error a) [:type :message])
+                         :attrs  {:autonomous.outcome :refused
+                                  :error.type (str (get-in a [:error :type]))}}
+    (answer/pending? a) {:attrs {:autonomous.outcome :pending :autonomous.pending (:pending a)}}
+    :else               {:attrs (cond-> {:autonomous.outcome :ok}
+                                  (trace/payloads?) (assoc :autonomous.result (wire/->wire (:ok a))))}))
+
 (defn call!
   "Plan and run a call of `tool-name` with `args` for `grant` through the
    surface's call chain; journal the actor and outcome. Answers an Answer."
@@ -169,9 +198,16 @@
   (let [t0   (registry/now-ms)
         snap (registry/snapshot)
         plan (decision/plan-call snap tool-name args grant t0)
-        ans  (case (:plan/action plan)
-               :invoke (run-invoke plan grant (:interceptors snap))
-               :refuse (:refusal plan))]
+        span (when (trace/enabled?)
+               (trace/start tool-name :agent/call
+                            {:actor (:actor grant)
+                             :attrs (cond-> {:autonomous.tool tool-name}
+                                      (trace/payloads?) (assoc :autonomous.args (wire/->wire args)))}))
+        ans  (trace/with-context (or (trace/context-of span) (trace/current))
+               #(case (:plan/action plan)
+                  :invoke (run-invoke plan grant (:interceptors snap))
+                  :refuse (:refusal plan)))]
+    (when span (trace/finish! span (span-outcome ans)))
     (registry/record! (journal/call-entry tool-name args grant ans (- (registry/now-ms) t0)
                                           (:call-detail snap)))
     ans))

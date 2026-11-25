@@ -31,7 +31,9 @@
             [autonomous.domain.wire :as wire]
             [autonomous.re-frame.kernel :as kernel]
             [autonomous.re-frame.model :as model]
+            [autonomous.re-frame.trace :as rf-trace]
             [autonomous.spi :as spi]
+            [autonomous.trace.browser :as browser]
             [re-frame.core :as rf]
             [re-frame.db :as rf-db]
             [re-frame.registrar :as registrar]
@@ -133,6 +135,21 @@
       (when-not (contains? (set ignore) (first event))
         (core/journal! (model/event-entry event (meta event) payloads?)))))
    (reset! !observing? true)
+   nil))
+
+(defn install-tracing!
+  "Record the page as OpenTelemetry spans: clicks and other UI events,
+   every re-frame event (what it changed in app-db, its effects, the
+   events it dispatched, each a child of its cause), fetch and XHR calls
+   (carrying `traceparent` to same-origin servers), uncaught errors and
+   console.error, and agent tool calls. Agents read them with
+   autonomous_trace; the bridge exports them (OTLP, files).
+   opts: those of autonomous.trace.browser/install! (:payloads? :cap
+   :dom? :fetch? :xhr? :errors? :console? :propagate?)."
+  ([] (install-tracing! {}))
+  ([opts]
+   (browser/install! opts)
+   (rf-trace/install! opts)
    nil))
 
 (defn- refuse-unregistered [kind id]

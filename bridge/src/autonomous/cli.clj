@@ -16,6 +16,13 @@
                                no nREPL); without --dir/--port the target is
                                --target-id, served over the websocket only
             --ledger memory|datahike [--datahike-path PATH]
+            --trace-otlp URL   export collected spans to an OpenTelemetry
+                               collector (OTLP/HTTP JSON, e.g.
+                               http://localhost:4318/v1/traces)
+            --trace-dir DIR    export them as files, --trace-format
+                               otlp-json (default) | jsonl | edn
+            --trace-poll-ms N  collect spans every N ms, not only when an
+                               agent asks (autonomous_trace)
             --actor NAME --scopes read,write   (stdio identity; --actor or
                                AUTONOMOUS_ACTOR also names the caller of
                                HTTP without tokens)
@@ -34,6 +41,7 @@
             [autonomous.mcp.server :as server]
             [autonomous.mcp.stdio :as stdio]
             [autonomous.bridge.fleet :as fleet]
+            [autonomous.bridge.trace :as trace]
             [autonomous.domain.naming :as naming]))
 
 ;; HTTP and token minting load on demand: they need hashing and an HTTP
@@ -75,12 +83,21 @@
   "MCP server for validated `cfg`: one target in single mode, or a fleet of
    :targets sharing one ledger."
   [cfg]
-  (let [ledger (some-> (:ledger cfg) ledger/open)]
-    (if-let [targets (seq (:targets cfg))]
-      (server/fleet-server
-       (fleet/make (mapv (fn [t] [(:target/id t) (member-context cfg ledger t)]) targets)
-                   {:mode :fleet :probe-ms (:probe-ms cfg)}))
-      (server/server (member-context cfg ledger (:target cfg))))))
+  (let [ledger (some-> (:ledger cfg) ledger/open)
+        coll   (trace/collector (select-keys (:trace cfg) [:exporters :cap]))
+        srv    (if-let [targets (seq (:targets cfg))]
+                 (server/fleet-server
+                  (fleet/make (mapv (fn [t] [(:target/id t) (member-context cfg ledger t)]) targets)
+                              {:mode :fleet :probe-ms (:probe-ms cfg) :trace coll}))
+                 (let [t (:target cfg)]
+                   (server/fleet-server
+                    (fleet/make [[(:target/id t "app") (member-context cfg ledger t)]]
+                                {:mode :single :trace coll}))))]
+    (doseq [[n a] (:failed coll)]
+      (err "autonomous: span exporter" n "not started:" (get-in a [:error :message])))
+    (when-let [ms (get-in cfg [:trace :poll-ms])]
+      (trace/start-poller! coll (:fleet srv) ms))
+    srv))
 
 (defn anonymous-grant
   "The grant of every caller of an HTTP server without tokens (loopback

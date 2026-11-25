@@ -52,3 +52,13 @@
   (-resolve-token! [source reference]
     "Ok of the secret string named by `reference`, or Ok nil when unset.
      The reference, not the secret, belongs in configuration and logs."))
+
+(defprotocol ISpanExporter
+  "Hands collected spans (autonomous.domain.trace/Span, with :source) to a
+   telemetry backend: an OpenTelemetry collector, a file, a test double.
+   One method, so every provider is substitutable for every other (LSP):
+   the collector calls it the same way for each, and none may throw."
+  (-export! [exporter spans]
+    "Deliver `spans` (a batch, oldest first). Answers Ok of the number
+     delivered, or a refusal typed :export/* when the backend refused or
+     could not be reached; the spans stay collected either way."))

@@ -49,4 +49,5 @@
 
   (arf/expose-db! {:paths [[:todos] [:filter]]})
   (arf/observe-events! {:payloads? true})
+  (arf/install-tracing! {:payloads? dev?})
   (when dev? (arf/install-dev-tools!)))

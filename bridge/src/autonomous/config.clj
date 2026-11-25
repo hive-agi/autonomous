@@ -65,7 +65,8 @@
   {"--config" :config "--dir" :dir "--build" :build "--port" :port "--host" :host
    "--port-file" :port-file "--http" :http "--ledger" :ledger "--datahike-path" :datahike-path
    "--actor" :actor "--scopes" :scopes "--target-id" :target-id "--timeout-ms" :timeout-ms "--probe-ms" :probe-ms
-   "--ws" :ws})
+   "--ws" :ws "--trace-otlp" :trace-otlp "--trace-dir" :trace-dir "--trace-format" :trace-format
+   "--trace-poll-ms" :trace-poll-ms})
 
 (def ^:private switches {"--clj" :clj? "--fleet" :fleet?})
 
@@ -173,6 +174,23 @@
                  (:datahike-path opts) (assoc :datahike/path (:datahike-path opts)))
     {:ledger/kind (keyword (:ledger opts))}))
 
+(defn trace-config
+  "TraceConfig of the file's :trace with the command line's exporters
+   added: --trace-otlp URL (OTLP/HTTP, e.g. http://localhost:4318/v1/traces),
+   --trace-dir DIR (files, --trace-format otlp-json|jsonl|edn) and
+   --trace-poll-ms. nil when neither names any."
+  [file-trace opts]
+  (let [cli (cond-> []
+              (:trace-otlp opts) (conj {:exporter/kind :otlp-http :exporter/name "otlp"
+                                        :otlp/endpoint (:trace-otlp opts)})
+              (:trace-dir opts)  (conj {:exporter/kind :file :exporter/name "file"
+                                        :file/dir (:trace-dir opts)
+                                        :file/format (keyword (or (:trace-format opts) "otlp-json"))}))
+        t   (cond-> (or file-trace {})
+              (seq cli)             (update :exporters #(into (vec %) cli))
+              (:trace-poll-ms opts) (assoc :poll-ms (parse-long* (:trace-poll-ms opts))))]
+    (when (seq t) t)))
+
 (defn- clean-target [t] (into {} (remove (comp nil? val)) t))
 
 (defn- file-target
@@ -228,6 +246,7 @@
                    (:fleet? opts)     (assoc :fleet? true)
                    http               (assoc :transport :http :http (merge (:http file) http))
                    ledger             (assoc :ledger ledger)
+                   (trace-config (:trace file) opts) (assoc :trace (trace-config (:trace file) opts))
                    (:actor opts)      (assoc :stdio/actor (:actor opts))
                    (:scopes opts)     (assoc :stdio/scopes (split-scopes (:scopes opts)))
                    (:timeout-ms opts) (assoc :call-timeout-ms (parse-long* (:timeout-ms opts)))

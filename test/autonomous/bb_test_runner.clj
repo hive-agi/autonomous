@@ -38,6 +38,7 @@
     autonomous.runtime.chain-test
     autonomous.runtime.intercept-test
     autonomous.surface-transform-test
+    autonomous.trace-test
     autonomous.re-frame.model-trifecta-test
     autonomous.re-frame.model-frame-test
     autonomous.openapi-test

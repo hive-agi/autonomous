@@ -9,7 +9,8 @@
   (:require [autonomous.bridge.client :as client]
             [autonomous.bridge.session :as s]
             [autonomous.domain.answer :as answer]
-            [autonomous.bridge.fleet :as fleet]))
+            [autonomous.bridge.fleet :as fleet]
+            [autonomous.bridge.trace :as trace]))
 
 (defn- same [session a] {:answer a :session session})
 
@@ -174,14 +175,125 @@
    :run (fn [f session _]
           (same session (answer/ok {:apps (:apps (fleet/surface f session))})))})
 
+;; =============================================================================
+;; Telemetry
+;; =============================================================================
+
+(defn collector-of
+  "The span collector of fleet `f`, made on first use when the server was
+   built without one (no exporters then)."
+  [f]
+  (or @(:trace f)
+      (swap! (:trace f) #(or % (trace/collector)))))
+
+(defn- readable-sources
+  "Boundary: the span sources `session` may read in fleet `f`: every target
+   except those whose runtime refuses a :trace read under the session's own
+   view as :forbidden (the runtime checks its scopes, as for the journal),
+   plus bridge-side marks. A target that is down or unreachable keeps its
+   collected spans: that is when they are read."
+  [f session]
+  (into #{"bridge"}
+        (remove nil?
+                (map (fn [tid]
+                       (let [a (when-not (trace/known-down? @(:last f) tid)
+                                 (try (client/send! (fleet/member f tid) (fleet/on f session tid)
+                                                    {:op :trace :since 0 :limit 1})
+                                      (catch Exception e (answer/from-exception e))))]
+                         (when-not (= :forbidden (get-in a [:error :type])) (str tid))))
+                     (:order f)))))
+
+(def trace
+  {:id :autonomous/trace
+   :spec {:description
+          (str "Telemetry of the run, as OpenTelemetry spans collected from every instance (and, in a "
+               "fleet, every app): clicks, re-frame events with what they changed and dispatched, HTTP "
+               "requests and the server spans that answered them, agent tool calls, uncaught errors. "
+               "view = traces (one summary per root cause, default), trace (one trace as an outline "
+               "and a tree; pass trace_id, a prefix is enough), timeline (every span through time), "
+               "findings (errors, failed requests, slow spans, errors with no cause, each with its "
+               "chain of causes) or metrics (count, errors, p50/p95 duration per span). Spans are "
+               "recorded only once the app enables tracing (autonomous_trace_config or its own code).")
+          :read-only? true
+          :scopes [:read]
+          :input [:map
+                  [:view {:optional true} [:maybe [:enum "traces" "trace" "timeline" "findings" "metrics"]]]
+                  [:trace_id {:optional true} [:maybe :string]]
+                  [:target {:optional true} [:maybe :string]]
+                  [:since {:optional true} [:maybe :int]]
+                  [:limit {:optional true} [:maybe [:int {:min 1 :max 5000}]]]
+                  [:slow_ms {:optional true} [:maybe [:int {:min 1}]]]]}
+   :run (fn [f session {:keys [view trace_id target since limit slow_ms]}]
+          (let [coll (collector-of f)
+                r    (trace/collect! coll f)
+                ok?  (readable-sources f session)
+                a    (trace/view (filterv #(ok? (get-in % [:source :target])) (:spans @(:state coll)))
+                                 {:view view :trace-id trace_id :target target :since since
+                                  :limit limit :slow-ms slow_ms})]
+            (same session (if (answer/ok? a)
+                            (answer/ok (cond-> (:ok a) (seq (:errors r)) (assoc :collect-errors (:errors r))))
+                            a))))})
+
+(def trace-mark
+  {:id :autonomous/trace_mark
+   :spec {:description (str "Mark a boundary in the telemetry (\"test: checkout happy path\"), so "
+                            "what follows reads as one story in autonomous_trace and in exported "
+                            "traces. Answers the mark's trace id.")
+          :scopes [:read]
+          :input [:map [:label [:string {:min 1 :max 200}]]]}
+   :run (fn [f session {:keys [label]}]
+          (let [coll (collector-of f)]
+            (trace/collect! coll f)
+            (same session (answer/ok {:trace-id (trace/mark! coll label (:session/actor session) nil)}))))})
+
+(def trace-export
+  {:id :autonomous/trace_export
+   :spec {:description (str "Send the collected spans (all, or one trace_id) to the exporters this "
+                            "bridge was configured with: an OpenTelemetry collector over OTLP/HTTP, "
+                            "or files (OTLP JSON, JSON Lines, EDN). Omit exporter for all of them. "
+                            "Answers what each delivered and the collector's status.")
+          :scopes [:read]
+          :input [:map
+                  [:exporter {:optional true} [:maybe :string]]
+                  [:trace_id {:optional true} [:maybe :string]]]}
+   :run (fn [f session {:keys [exporter trace_id]}]
+          (let [coll (collector-of f)]
+            (trace/collect! coll f)
+            (same session
+                  (if (and (empty? (:exporters coll)) (nil? exporter))
+                    (answer/refusal :export/none
+                                    (str "this bridge has no span exporter; start it with --trace-otlp URL "
+                                         "or --trace-dir DIR (or :trace {:exporters [...]} in autonomous.edn)"))
+                    (answer/ok {:delivered (update-vals (trace/export-now! coll exporter trace_id)
+                                                        #(if (answer/ok? %) (:ok %) (:error %)))
+                                :status (trace/status coll)})))))})
+
+(def trace-config
+  {:id :autonomous/trace_config
+   :spec {:description (str "Turn span recording on or off in the attached instance, keep payloads "
+                            "(event arguments, request and response bodies: they may hold what a "
+                            "person typed) or not, and size its span ring. Admin only.")
+          :scopes [:admin]
+          :input [:map
+                  [:enabled {:optional true} [:maybe :boolean]]
+                  [:payloads {:optional true} [:maybe :boolean]]
+                  [:cap {:optional true} [:maybe [:int {:min 1 :max 100000}]]]]}
+   :run (fn [f session {:keys [enabled payloads cap target]}]
+          (with-target f session target
+            (fn [ctx ses _]
+              (same session (client/send! ctx ses (cond-> {:op :trace-config}
+                                                    (some? enabled)  (assoc :enabled? enabled)
+                                                    (some? payloads) (assoc :payloads? payloads)
+                                                    cap              (assoc :cap cap)))))))})
+
 (def all
   "The built-ins of a single-target server."
-  [whoami runtimes attach journal ledger poll lease release])
+  [whoami runtimes attach journal ledger poll lease release trace trace-mark trace-export trace-config])
 
 (def targeted
   "Built-ins that act on one app of a fleet, and so take a target."
   #{:autonomous/runtimes :autonomous/attach :autonomous/journal :autonomous/ledger
-    :autonomous/lease :autonomous/release})
+    :autonomous/lease :autonomous/release :autonomous/trace_config})
 
 (defn with-target-arg
   "Built-in `b` with an optional string `target` argument (the app id) and

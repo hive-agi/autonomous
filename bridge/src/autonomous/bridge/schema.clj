@@ -183,6 +183,21 @@
    [:datahike/config {:optional true} :map]
    [:datahike/path {:optional true} :string]])
 
+(def ExporterConfig
+  "One span exporter (autonomous.bridge.trace.export). Open: a provider
+   reads its own namespaced keys."
+  [:map
+   [:exporter/kind :keyword]
+   [:exporter/name {:optional true} :string]])
+
+(def TraceConfig
+  "Telemetry on the bridge: where collected spans go, and how often the
+   runtimes are read without an agent asking."
+  [:map
+   [:exporters {:optional true} [:vector ExporterConfig]]
+   [:cap {:optional true} [:int {:min 1}]]
+   [:poll-ms {:optional true} [:int {:min 100}]]])
+
 (def Config
   "One :target serves single mode (names as the app gives them); :targets
    (two or more, or :fleet? true) serves a fleet (names prefixed by app)."
@@ -199,6 +214,7 @@
     [:stdio/actor {:optional true} ds/Actor]
     [:stdio/scopes {:optional true} [:set :keyword]]
     [:ledger {:optional true} LedgerConfig]
+    [:trace {:optional true} TraceConfig]
     [:call-timeout-ms {:optional true} [:int {:min 100}]]]
    [:fn {:error/message "configure :target or :targets"}
     (fn [c] (or (:target c) (seq (:targets c))))]])

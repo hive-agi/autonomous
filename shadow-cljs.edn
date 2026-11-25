@@ -40,4 +40,8 @@
                                              registerTool   autonomous.js/registerTool
                                              unregisterTool autonomous.js/unregisterTool
                                              journal        autonomous.js/journal
-                                             connect        autonomous.js/connect}}}}}}
+                                             connect        autonomous.js/connect
+                                             startTracing   autonomous.js/startTracing
+                                             traceMark      autonomous.js/traceMark
+                                             traceSpans     autonomous.js/traceSpans
+                                             traceJson      autonomous.trace.browser/dump-json}}}}}}

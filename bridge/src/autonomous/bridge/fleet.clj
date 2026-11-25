@@ -33,12 +33,14 @@
   "A fleet over `members`, a vector of [target-id client-context] in fleet
    order. opts: :mode (:fleet, or :single for exactly one member),
    :probe-ms, :clock (ms), :view-ttl-ms and :max-views (bounds of :last;
-   :max-views is the total over all targets, default 1024 per target).
+   :max-views is the total over all targets, default 1024 per target),
+   :trace (a span collector, autonomous.bridge.trace/collector; the trace
+   built-ins make one on first use when none is given).
 
    :last is {view-key {:probe Probe :up Probe :touched ms}}, a view-key being
    [target-id actor scopes runtime]: :probe the latest look, :up the latest
    look that answered a manifest."
-  [members {:keys [mode probe-ms clock view-ttl-ms max-views]}]
+  [members {:keys [mode probe-ms clock view-ttl-ms max-views trace]}]
   (let [ids  (mapv first members)
         mode (or mode (if (= 1 (count ids)) :single :fleet))]
     {:mode        mode
@@ -50,7 +52,8 @@
      :view-ttl-ms (or view-ttl-ms default-view-ttl-ms)
      :max-views   (or max-views (* default-max-views (max 1 (count ids))))
      :inflight    (atom {})
-     :last        (atom {})}))
+     :last        (atom {})
+     :trace       (atom trace)}))
 
 (defn from-context
   "The single-mode fleet of client context `ctx` (the bridge as it always

@@ -161,6 +161,7 @@ is the example's, shortened:
 | [websocket](doc/websocket.md) | production: the app dials the bridge with a runtime token, no nREPL, no inbound port |
 | [any language](doc/cabi.md) | `libautonomous`, the runtime as a C library: apps in Rust, C, Go, Zig dial the bridge and keep validation, scopes and the journal |
 | [OpenAPI](doc/openapi.md) | an OpenAPI 3 service's operations as agent tools, with no change to the service |
+| [telemetry](doc/telemetry.md) | OpenTelemetry spans of a run: clicks, re-frame events, requests, server spans, agent calls and errors, one trace per cause; findings, metrics, OTLP export |
 | [middleware](doc/middleware.md) | `autonomous.ring`: MCP from the app's own Ring/reitit stack, routes opted in by route data |
 | [sim](doc/sim.md) | provider allowlist on money-moving tools; agents pay a simulated bank over a port-forward |
 | [bb-mcp](doc/bb-mcp.md) | an app fleet mounted inside bb-mcp, beside its own tools |
