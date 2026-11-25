@@ -168,7 +168,12 @@
    (op :poll [:id :string])
    (op :journal [:since {:optional true} [:maybe :int]] [:limit {:optional true} [:maybe :int]])
    (op :lease [:ttl-ms {:optional true} [:maybe [:int {:min 1}]]])
-   (op :release)])
+   (op :release)
+   (op :trace [:since {:optional true} [:maybe :int]] [:limit {:optional true} [:maybe :int]])
+   (op :trace-mark [:label [:string {:min 1 :max 200}]]
+       [:attrs {:optional true} [:maybe [:map-of :any :any]]])
+   (op :trace-config [:enabled? {:optional true} :boolean] [:payloads? {:optional true} :boolean]
+       [:cap {:optional true} [:int {:min 1 :max 100000}]])])
 
 (def Manifest
   [:map

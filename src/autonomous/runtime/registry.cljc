@@ -16,6 +16,11 @@
 
 (def pending-ttl-ms (* 10 60 1000))
 
+(def trace-default-cap
+  "Spans the trace ring keeps when the app sets no :cap. Spans are many
+   more than journal entries (a click can make ten), so the ring is its own."
+  5000)
+
 (defn now-ms []
   #?(:clj (System/currentTimeMillis) :cljs (js/Date.now)))
 
@@ -31,6 +36,8 @@
    :middleware []
    :version    0
    :journal    journal/empty-journal
+   :trace      journal/empty-journal
+   :trace-opts {:enabled? false :cap trace-default-cap}
    :lease      nil
    :pending    {}
    :next-id    0})
@@ -157,6 +164,26 @@
   [entry]
   (-> (swap! (state-ref) update :journal journal/append entry (now-ms) journal/default-cap)
       (get-in [:journal :seq])))
+
+(defn trace-opts
+  "How this runtime traces: {:enabled? :cap :payloads? ...}."
+  []
+  (:trace-opts @(state-ref)))
+
+(defn configure-trace!
+  "Merge `opts` into the trace options; answers them. A smaller :cap
+   trims the ring at the next span."
+  [opts]
+  (:trace-opts (swap! (state-ref) update :trace-opts merge opts)))
+
+(defn record-span!
+  "Append finished span `span` to the trace ring; answers its sequence
+   number."
+  [span]
+  (-> (swap! (state-ref)
+             (fn [st] (update st :trace journal/append span (now-ms)
+                              (get-in st [:trace-opts :cap] trace-default-cap))))
+      (get-in [:trace :seq])))
 
 (defn acquire-lease!
   "Apply the domain's lease decision for `actor`. Answers Ok lease or a

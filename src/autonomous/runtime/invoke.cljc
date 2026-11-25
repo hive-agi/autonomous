@@ -10,6 +10,7 @@
             [autonomous.domain.decision :as decision]
             [autonomous.domain.wire :as wire]
             [autonomous.runtime.registry :as registry]
+            [autonomous.runtime.trace :as trace]
             [clojure.string :as str]))
 
 (defmulti invoke-kind
@@ -58,9 +59,15 @@
    entry (:autonomous/settled), so the ledger knows how an async call ended."
   [x]
   (let [id      (registry/park!)
+        ctx     (trace/current)
         settle! (fn [a]
                   (registry/settle! id a)
-                  (registry/record! {:kind :autonomous/settled :pending id :outcome (answer/outcome a)}))]
+                  (registry/record! {:kind :autonomous/settled :pending id :outcome (answer/outcome a)})
+                  (when (trace/enabled?)
+                    (trace/event! (str "settled " id) :agent/settled
+                                  (merge {:parent ctx :attrs {:pending id :outcome (answer/outcome a)}}
+                                         (when (answer/refused? a)
+                                           {:status :error :error {:message (get-in a [:error :message])}})))))]
     #?(:cljs    (-> ^js x
                     (.then (fn [v] (settle! (answer/ok (wire/->wire v)))))
                     (.catch (fn [e] (settle! (answer/from-exception e)))))
@@ -82,6 +89,18 @@
     (catch #?(:clj Throwable :cljs :default) e
       (answer/from-exception e))))
 
+(defn span-outcome
+  "How an :agent/call span ends for Answer `a`: an error when refused, the
+   pending id when still running, the result when payloads are kept."
+  [a]
+  (cond
+    (answer/refused? a) {:status :error
+                         :error  (select-keys (:error a) [:type :message])
+                         :attrs  {:outcome :refused}}
+    (answer/pending? a) {:attrs {:outcome :pending :pending (:pending a)}}
+    :else               {:attrs (cond-> {:outcome :ok}
+                                  (trace/payloads?) (assoc :result (:ok a)))}))
+
 (defn call!
   "Plan and run a call of `tool-name` with `args` for `grant`; journal the
    actor and outcome. Answers an Answer."
@@ -89,9 +108,16 @@
   (let [t0   (registry/now-ms)
         snap (registry/snapshot)
         plan (decision/plan-call snap tool-name args grant t0)
-        ans  (case (:plan/action plan)
-               :invoke (run-invoke plan grant (:middleware snap))
-               :refuse (:refusal plan))]
+        span (when (trace/enabled?)
+               (trace/start tool-name :agent/call
+                            {:actor (:actor grant)
+                             :attrs (cond-> {:tool tool-name}
+                                      (trace/payloads?) (assoc :args (wire/->wire args)))}))
+        ans  (trace/with-context (or (trace/context-of span) (trace/current))
+               #(case (:plan/action plan)
+                  :invoke (run-invoke plan grant (:middleware snap))
+                  :refuse (:refusal plan)))]
+    (when span (trace/finish! span (span-outcome ans)))
     (registry/record! {:kind    :autonomous/call
                        :actor   (:actor grant)
                        :tool    tool-name
