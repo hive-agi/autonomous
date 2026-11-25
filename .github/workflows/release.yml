@@ -43,9 +43,12 @@ jobs:
         with:
           fetch-depth: 0
 
+      # bb too: the bridge suite runs bb tasks (json-spec-test), as in
+      # staging-gate.yml; without it those tests assert nothing and fail.
       - uses: DeLaGuardo/setup-clojure@13.0
         with:
           cli: latest
+          bb: latest
 
       # Gate BEFORE the tag: a red suite must not mint a version.
       # The :integration suite needs live app runtimes and stays local.
