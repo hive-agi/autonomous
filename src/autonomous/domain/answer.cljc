@@ -37,6 +37,18 @@
              (or (ex-message e) (str e))
              (not-empty (dissoc data :autonomous/error)))))
 
+(defn complete
+  "L0: Answer `a` marked complete, so a pipeline settling a tool's value
+   keeps its variant instead of treating it as an opaque payload (which
+   can itself be a map containing :ok or :error). Pure."
+  [a]
+  (vary-meta a assoc ::complete true))
+
+(defn complete?
+  "L0: is `x` an Answer marked complete (see `complete`)? Pure."
+  [x]
+  (true? (::complete (meta x))))
+
 (defn bind
   "Railway: when answer `a` is Ok of v, (f v) — itself an Answer; a Pending
    or Refusal passes through untouched, so the next step never runs. Pure."

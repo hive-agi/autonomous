@@ -7,22 +7,53 @@
   "Every unit suite. The datahike ledger contract is gated to the JVM
    inside bridge-trifecta-test; the live e2e runs as `bb e2e`."
   '[autonomous.domain.answer-railway-test
+    autonomous.approval-test
+    autonomous.require-approval-test
+    autonomous.approval.signed-test
+    autonomous.provider-allowlist-test
+    autonomous.surface-test
+    autonomous.spi-test
+    autonomous.contract-test
+    autonomous.ring-contract-test
     autonomous.domain.decision-trifecta-test
     autonomous.domain.primitives-trifecta-test
+    autonomous.domain.naming-test
     autonomous.domain.fleet-trifecta-test
     autonomous.bridge.bridge-trifecta-test
+    autonomous.bridge.sources-strata-test
     autonomous.bridge.fleet-test
     autonomous.bridge.ws-test
+    autonomous.bridge.ws-strata-test
+    autonomous.mcp.builtins-test
+    autonomous.bridge.http-test
+    autonomous.bridge.failure-test
+    autonomous.bridge.http-smoke-test
     autonomous.mcp.transport-test
+    autonomous.mcp.protocol-strata-test
     autonomous.ring-test
     autonomous.e2e.check-trifecta-test
     autonomous.demo.plan-test
     autonomous.runtime.rpc-test
+    autonomous.runtime.registry-test
+    autonomous.runtime.chain-test
+    autonomous.runtime.intercept-test
+    autonomous.surface-transform-test
+    autonomous.trace-test
     autonomous.re-frame.model-trifecta-test
+    autonomous.re-frame.model-frame-test
     autonomous.openapi-test
+    autonomous.openapi-derive-test
+    autonomous.openapi-surface-test
     autonomous.openapi-codec-test
+    autonomous.openapi-codec-strata-test
     autonomous.openapi-invoke-test
-    autonomous.bb-mcp.mount-test])
+    autonomous.openapi-boundary-strata-test
+    autonomous.openapi-pure-strata-test
+    autonomous.asyncapi-core-test
+    autonomous.asyncapi-source-test
+    autonomous.json-spec-test
+    autonomous.bb-mcp.mount-test
+    sim.control-test])
 
 (defn -main [& _]
   (apply require suites)

@@ -1,5 +1,5 @@
 (ns tokens
-  "`bb -cp src:deploy/playground -m tokens OUT-DIR`: mint the playground's
+  "`bb -cp src:bridge/src:deploy/playground -m tokens OUT-DIR`: mint the playground's
    tokens and write, into OUT-DIR (created mode 0700):
 
      autonomous.edn  the bridge config: one websocket target \"backend\",

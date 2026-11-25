@@ -12,5 +12,9 @@ rm -rf "$out"
 mkdir -p "$out"
 cp "$bin" "$out/todo-backend"
 cp cabi/build/libautonomous.so "$out/libautonomous.so"
-cp -r example/fullstack/frontend/dist "$out/dist"
+# Only the page's files: the same list as statics::ALLOWED in the backend.
+mkdir -p "$out/dist"
+for f in index.html app.js autonomous.js elm.js style.css; do
+  cp "example/fullstack/frontend/dist/$f" "$out/dist/$f"
+done
 ls -la "$out" "$out/dist"

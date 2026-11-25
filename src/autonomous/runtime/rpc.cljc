@@ -13,6 +13,7 @@
             [autonomous.domain.wire :as wire]
             [autonomous.runtime.invoke :as invoke]
             [autonomous.runtime.registry :as registry]
+            [autonomous.runtime.trace :as trace]
             [malli.core :as m]
             [malli.error :as me]))
 
@@ -58,6 +59,23 @@
 (defmethod handle :release [_ grant]
   (registry/record! {:kind :autonomous/release :actor (:actor grant)})
   (registry/release-lease! (:actor grant)))
+
+(defmethod handle :trace [req grant]
+  (requires grant #{:read}
+            #(let [snap (registry/snapshot)]
+               (answer/ok (assoc (journal/since (:trace snap) (:since req) (or (:limit req) 1000))
+                                 :epoch (:epoch snap)
+                                 :enabled? (boolean (get-in snap [:trace-opts :enabled?])))))))
+
+(defmethod handle :trace-mark [req grant]
+  (requires grant #{:read}
+            #(answer/ok {:trace-id (trace/mark! (:label req) {:actor (:actor grant)
+                                                               :attrs (some-> (:attrs req) wire/->wire)})
+                         :recorded? (trace/enabled?)})))
+
+(defmethod handle :trace-config [req grant]
+  (requires grant #{:admin}
+            #(answer/ok (registry/configure-trace! (select-keys req [:enabled? :payloads? :cap])))))
 
 (defmethod handle :default [req _]
   (answer/refusal :unknown-op (str "unknown op " (pr-str (:op req)))))

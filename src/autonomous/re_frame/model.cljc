@@ -54,3 +54,103 @@
    observer can tell an agent's dispatch from the app's own."
   [event grant]
   (vary-meta event assoc :autonomous/actor (:actor grant)))
+
+;; =============================================================================
+;; Tracing: what an event span records, and how its children find it
+;; =============================================================================
+
+(defn- dispatch-later-event [x] (if (map? x) (:event x) x))
+
+(defn- map-dispatch-later [f x]
+  (if (map? x) (update x :event #(when % (f %))) x))
+
+(defn- map-fx-entry
+  "One [:fx] entry with every event it dispatches passed through `f`."
+  [f [id arg :as entry]]
+  (case id
+    :dispatch       [id (f arg)]
+    :dispatch-n     [id (mapv #(when % (f %)) arg)]
+    :dispatch-later [id (if (sequential? arg) (mapv #(map-dispatch-later f %) arg) (map-dispatch-later f arg))]
+    entry))
+
+(defn map-dispatches
+  "Effects map `effects` with every event it dispatches (:dispatch,
+   :dispatch-n, :dispatch-later and their :fx forms) passed through `f`,
+   so a child event can carry its cause. Anything else is untouched."
+  [effects f]
+  (cond-> effects
+    (vector? (:dispatch effects))  (update :dispatch f)
+    (:dispatch-n effects)          (update :dispatch-n #(mapv (fn [e] (when e (f e))) %))
+    (:dispatch-later effects)      (update :dispatch-later
+                                           #(if (sequential? %) (mapv (fn [x] (map-dispatch-later f x)) %)
+                                                (map-dispatch-later f %)))
+    (sequential? (:fx effects))    (update :fx #(mapv (fn [e] (if (vector? e) (map-fx-entry f e) e)) %))))
+
+(defn dispatched
+  "Ids of the events `effects` dispatches, in order."
+  [effects]
+  (let [seen (atom [])]
+    (map-dispatches effects (fn [ev] (swap! seen conj (first ev)) ev))
+    @seen))
+
+(defn effect-ids
+  "The effects `effects` asks for besides :db, :fx entries included, in
+   order and without repeats."
+  [effects]
+  (into [] (distinct)
+        (concat (remove #{:db :fx} (keys effects))
+                (keep #(when (vector? %) (first %)) (:fx effects)))))
+
+(defn changed-paths
+  "Paths of app-db that differ between `before` and `after`: top-level keys,
+   and one level deeper inside a changed map, at most `limit` paths. Cheap
+   on persistent data: unchanged branches are identical and skipped."
+  [before after limit]
+  (if (identical? before after)
+    []
+    (let [ks (into (sorted-set-by #(compare (str %1) (str %2))) (concat (keys before) (keys after)))]
+      (->> ks
+           (mapcat (fn [k]
+                     (let [a (get before k) b (get after k)]
+                       (cond
+                         (identical? a b) nil
+                         (= a b)          nil
+                         (and (map? a) (map? b))
+                         (let [kks (into (sorted-set-by #(compare (str %1) (str %2))) (concat (keys a) (keys b)))
+                               ch  (filter #(not= (get a %) (get b %)) kks)]
+                           (if (<= (count ch) 5) (map #(vector k %) ch) [[k]]))
+                         :else [[k]]))))
+           (take limit)
+           vec))))
+
+(defn event-span-attrs
+  "Attributes of the span of `event` (payload only when `payloads?`)."
+  [event payloads?]
+  (cond-> {:re-frame.event.id (first event)}
+    payloads? (assoc :re-frame.event.payload (wire/->wire (vec (rest event))))))
+
+(defn effects-span-attrs
+  "Attributes an event span ends with: what changed in app-db, which
+   effects ran, which events it dispatched."
+  [db-before effects]
+  (let [d (dispatched effects)
+        e (effect-ids effects)]
+    (cond-> {}
+      (contains? effects :db) (assoc :re-frame.db.changed (changed-paths db-before (:db effects) 20))
+      (seq e)                 (assoc :re-frame.effects e)
+      (seq d)                 (assoc :re-frame.dispatched d))))
+
+(defn tag-cause
+  "`event` carrying context `ctx` (and `actor`, when the event has none) on
+   its metadata, unless it already names a cause."
+  [event ctx actor]
+  (if (or (nil? ctx) (:autonomous/trace (meta event)))
+    event
+    (vary-meta event #(cond-> (assoc % :autonomous/trace ctx)
+                        (and actor (not (:autonomous/actor %))) (assoc :autonomous/actor actor)))))
+
+(defn frame-problem
+  "nil when `frame` is absent or a frame-id keyword, else why it is not."
+  [frame]
+  (when-not (or (nil? frame) (keyword? frame))
+    (str "a re-frame2 :frame is a frame-id keyword, got " (pr-str frame))))

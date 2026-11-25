@@ -14,13 +14,15 @@
  :aliases
  {;; Canonical hive release entrypoint (clojure -T:build <task>): jar / install /
   ;; bump / verify-license / kondo / changelog / deploy. No per-repo build.clj.
-  :build {:deps {io.github.hive-agi/hive-build {:mvn/version "0.3.1"}}
+  :build {:deps {io.github.hive-agi/hive-build {:mvn/version "0.3.3"}}
           :jvm-opts ["-Xmx1g"]
           :ns-default hive-build.api}
 
   ;; clojure -M:serve --dir ../my-app --build app
-  :serve {:main-opts ["-m" "autonomous.cli" "serve"]}
-  :token {:main-opts ["-m" "autonomous.cli" "token"]}
+  :serve {:main-opts ["-m" "autonomous.cli" "serve"]
+          :extra-paths ["bridge/src"]}
+  :token {:main-opts ["-m" "autonomous.cli" "token"]
+          :extra-paths ["bridge/src"]}
 
   ;; Runtimes dial the bridge over a websocket: `clojure -M:ws:serve --ws 7070`
   ;; (babashka carries http-kit built in; an app with its own Ring stack
@@ -31,7 +33,7 @@
   :datahike {:extra-deps {io.replikativ/datahike {:mvn/version "0.7.1624"}}}
 
   :test
-  {:extra-paths ["test"]
+  {:extra-paths ["test" "test-cljc"]
    :extra-deps {lambdaisland/kaocha             {:mvn/version "1.91.1392"}
                 org.clojure/test.check          {:mvn/version "1.1.3"}
                 io.github.hive-agi/hive-test    {:mvn/version "0.5.2"}
@@ -48,14 +50,26 @@
   ;; ClojureWasm host: cljw -A:cljw -m autonomous.cli serve --dir ../todo
   ;; (stdio only; the nREPL channel speaks bencode through bb-mcp).
   :cljw
-  {:extra-deps {io.github.hive-agi/bb-mcp {:mvn/version "1.3.7"}}}
+  {:extra-deps {io.github.hive-agi/bb-mcp {:mvn/version "1.3.8"}}
+   :extra-paths ["bridge/src"]}
 
   ;; ClojureScript: adapter tests and the e2e node runtime.
   :cljs
-  {:extra-paths ["test-cljs" "example/src"]
+  {:extra-paths ["test-cljs" "test-cljc" "example/src"]
    :extra-deps {thheller/shadow-cljs {:mvn/version "3.4.11"}
+                org.clojure/test.check {:mvn/version "1.1.3"}
                 re-frame/re-frame    {:mvn/version "1.4.3"}
                 reagent/reagent      {:mvn/version "1.2.0"}}}
+
+  ;; ClojureScript against real re-frame2 (autonomous.re-frame2), which
+  ;; replaces re-frame.core and so cannot share the :cljs classpath:
+  ;; clojure -M:cljs-rf2 -m shadow.cljs.devtools.cli compile rf2-test
+  :cljs-rf2
+  {:extra-paths ["test-cljs-rf2"]
+   :extra-deps {thheller/shadow-cljs {:mvn/version "3.4.11"}
+                day8/re-frame2 {:git/url "https://github.com/day8/re-frame2.git"
+                                :git/sha "3d443d44d613d4b7631c1ee508a4db80ed56c914"
+                                :deps/root "implementation/core"}}}
 
   ;; Backend example: an orders service hosting its own autonomous bindings
   ;; (clojure -M:example/orders), see example/orders/README.md.
@@ -65,6 +79,6 @@
    :main-opts ["-m" "orders.main"]}
 
   ;; The orders sources and tests on the classpath, without a main: a REPL
-  ;; for the example (clojure -M:test:example/orders-dev).
+  ;; for the example. Its suite is a bridge suite: example/orders/README.md.
   :example/orders-dev
   {:extra-paths ["example/orders/src" "example/orders/test"]}}}

@@ -153,6 +153,7 @@ is the example's, shortened:
 | guide | what |
 |---|---|
 | [concepts](doc/concepts.md) | tools, resources, scopes, grants, sessions, leases, journal, ledger, actors |
+| [naming](doc/naming.md) | how a tool id becomes its MCP name: `[A-Za-z0-9_-]{1,64}`, hyphens kept, fleet names |
 | [security](doc/security.md) | remote exposure, tokens, Origin checks, tunnels, secrets via hive-compose |
 | [swarms](doc/swarms.md) | many agents on one app: spread over instances or share one under leases |
 | [fleet](doc/fleet.md) | one bridge over many apps: UI builds and microservices, each with its own tools and nREPL |
@@ -160,7 +161,9 @@ is the example's, shortened:
 | [websocket](doc/websocket.md) | production: the app dials the bridge with a runtime token, no nREPL, no inbound port |
 | [any language](doc/cabi.md) | `libautonomous`, the runtime as a C library: apps in Rust, C, Go, Zig dial the bridge and keep validation, scopes and the journal |
 | [OpenAPI](doc/openapi.md) | an OpenAPI 3 service's operations as agent tools, with no change to the service |
+| [telemetry](doc/telemetry.md) | OpenTelemetry spans of a run: clicks, re-frame events, requests, server spans, agent calls and errors, one trace per cause; findings, metrics, OTLP export |
 | [middleware](doc/middleware.md) | `autonomous.ring`: MCP from the app's own Ring/reitit stack, routes opted in by route data |
+| [sim](doc/sim.md) | provider allowlist on money-moving tools; agents pay a simulated bank over a port-forward |
 | [bb-mcp](doc/bb-mcp.md) | an app fleet mounted inside bb-mcp, beside its own tools |
 | [babashka](doc/babashka.md) | the bridge on babashka (stdio and HTTP) and ClojureWasm (stdio), `bb` tasks, `bb e2e` |
 | [architecture](doc/architecture.md) | strata, ports and adapters, how a call travels |
@@ -188,17 +191,23 @@ is the example's, shortened:
 ## Develop and test
 
 ```sh
-clojure -M:test unit                                     # JVM suite
+clojure -M:test unit                                     # JVM suite (runtime)
+(cd bridge && clojure -Sdeps '{:aliases {:dev/local {:override-deps {io.github.hive-agi/autonomous {:local/root ".."}}}}}' -M:dev/local:test unit)  # JVM suite (bridge)
 bb test                                                  # babashka suite
 bb e2e                                                   # live swarm story from a bb bridge
 bb cabi && bb cabi-rust && bb cabi-e2e                   # libautonomous, C smoke, Rust app live (needs jolt)
-npm install
-clojure -M:cljs -m shadow.cljs.devtools.cli compile test && node target/cljs-test/test.js
+bb test-cljs                                             # ClojureScript suite on re-frame 1 (node)
+bb test-rf2                                              # autonomous.re-frame2 against real re-frame2 (node)
 ```
 
-The `:integration` suite (`clojure -M:test integration`) needs live runtimes:
-compile and watch the `:e2e` build, start two `node target/e2e/main.js`, then
-run it. It proves isolation across instances, lease coordination and ledger
+`bb test-cljs` and `bb test-rf2` are the ClojureScript gate; both run
+`npm ci` first when `node_modules` is absent.
+
+The `:integration` suite (`clojure -M:dev/local:test integration` in `bridge/`, with the `-Sdeps` above) needs live runtimes:
+compile and watch the `:e2e` build at the repo root, start two
+`node target/e2e/main.js`, then run it from `bridge/` with
+`AUTONOMOUS_E2E_PORT_FILE=../.shadow-cljs/nrepl.port` (shadow writes the port
+file at the root). It proves isolation across instances, lease coordination and ledger
 attribution over the real nREPL channel.
 
 ## Status

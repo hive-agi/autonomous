@@ -92,7 +92,10 @@ npm install
 clojure -M:cljs -m shadow.cljs.devtools.cli watch e2e   # writes .shadow-cljs/nrepl.port
 node target/e2e/main.js &                                # two runtimes
 node target/e2e/main.js &
-clojure -M:test integration
+cd bridge
+AUTONOMOUS_E2E_PORT_FILE=../.shadow-cljs/nrepl.port \
+  clojure -Sdeps '{:aliases {:dev/local {:override-deps {io.github.hive-agi/autonomous {:local/root ".."}}}}}' \
+  -M:dev/local:test integration
 ```
 
 Without two connected runtimes the test prints why it skipped and passes.

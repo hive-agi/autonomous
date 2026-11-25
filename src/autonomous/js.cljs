@@ -17,6 +17,8 @@
    until it settles."
   (:require [autonomous.core :as a]
             [autonomous.domain.wire :as wire]
+            [autonomous.runtime.trace :as trace]
+            [autonomous.trace.browser :as browser]
             [autonomous.ws :as ws]))
 
 (defn- js-spec->spec
@@ -54,6 +56,30 @@
   [entry]
   (let [e (js->clj entry :keywordize-keys true)]
     (a/journal! (update e :kind keyword))))
+
+(defn ^:export startTracing
+  "Record this page as OpenTelemetry spans: clicks, submits, navigation,
+   fetch/XHR (with traceparent on same-origin requests) and errors.
+   opts: {payloads, cap, console}. Agents read the spans with the
+   autonomous_trace tool."
+  ([] (startTracing #js {}))
+  ([opts]
+   (let [o (js->clj opts :keywordize-keys true)]
+     (browser/install! (cond-> {}
+                         (contains? o :payloads) (assoc :payloads? (boolean (:payloads o)))
+                         (:cap o)                (assoc :cap (:cap o))
+                         (contains? o :console)  (assoc :console? (boolean (:console o)))))
+     nil)))
+
+(defn ^:export traceMark
+  "Start a new story in the trace, such as 'test: add then remove'. Answers its trace id."
+  ([label] (trace/mark! label))
+  ([label attrs] (trace/mark! label {:attrs (js->clj attrs :keywordize-keys true)})))
+
+(defn ^:export traceSpans
+  "Every span this page holds, as plain objects, oldest first."
+  []
+  (clj->js (trace/dump)))
 
 (defn ^:export connect
   "Dial the bridge and keep the connection up: {url, token, runtimeId,
