@@ -126,8 +126,8 @@
 (defn event-span-attrs
   "Attributes of the span of `event` (payload only when `payloads?`)."
   [event payloads?]
-  (cond-> {:event-id (first event)}
-    payloads? (assoc :payload (wire/->wire (vec (rest event))))))
+  (cond-> {:re-frame.event.id (first event)}
+    payloads? (assoc :re-frame.event.payload (wire/->wire (vec (rest event))))))
 
 (defn effects-span-attrs
   "Attributes an event span ends with: what changed in app-db, which
@@ -136,9 +136,9 @@
   (let [d (dispatched effects)
         e (effect-ids effects)]
     (cond-> {}
-      (contains? effects :db) (assoc :db/changed (changed-paths db-before (:db effects) 20))
-      (seq e)                 (assoc :effects e)
-      (seq d)                 (assoc :dispatched d))))
+      (contains? effects :db) (assoc :re-frame.db.changed (changed-paths db-before (:db effects) 20))
+      (seq e)                 (assoc :re-frame.effects e)
+      (seq d)                 (assoc :re-frame.dispatched d))))
 
 (defn tag-cause
   "`event` carrying context `ctx` (and `actor`, when the event has none) on

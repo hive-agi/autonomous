@@ -26,3 +26,13 @@
   (-query [ledger q]
     "Ok of entries matching `q`: {:actor :kind :tool :target :since :until
      :limit}, newest first."))
+
+(defprotocol ISpanExporter
+  "Hands collected spans (autonomous.domain.trace/Span, with :source) to a
+   telemetry backend: an OpenTelemetry collector, a file, a test double.
+   One method, so every provider is substitutable for every other (LSP):
+   the collector calls it the same way for each, and none may throw."
+  (-export! [exporter spans]
+    "Deliver `spans` (a batch, oldest first). Answers Ok of the number
+     delivered, or a refusal typed :export/* when the backend refused or
+     could not be reached; the spans stay collected either way."))

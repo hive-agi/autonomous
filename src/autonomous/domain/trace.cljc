@@ -37,6 +37,39 @@
 
 (def Status [:enum :ok :error])
 
+(def Kind
+  "OpenTelemetry SpanKind: who is on which side of the work."
+  [:enum :internal :server :client :producer :consumer])
+
+(def semconv
+  "Attribute names, OpenTelemetry semantic conventions where one exists
+   (https://opentelemetry.io/docs/specs/semconv/), autonomous.* where not.
+   Adapters write these keys; readers (findings, outline, OTLP) read them."
+  {:http-method  :http.request.method
+   :http-status  :http.response.status_code
+   :url          :url.full
+   :route        :http.route
+   :error-type   :error.type
+   :exc-message  :exception.message
+   :exc-type     :exception.type
+   :exc-stack    :exception.stacktrace
+   :event-id     :re-frame.event.id
+   :db-changed   :re-frame.db.changed
+   :effects      :re-frame.effects
+   :dispatched   :re-frame.dispatched
+   :tool         :autonomous.tool
+   :actor        :autonomous.actor
+   :element      :ui.element
+   :service      :service.name})
+
+(defn kind-of
+  "The SpanKind of span `s`: its own :kind, else the one its type implies
+   (an HTTP client call is :client, a request served is :server)."
+  [s]
+  (or (:kind s)
+      ({:http/client :client :http/server :server} (:type s))
+      :internal))
+
 (def Span
   "One recorded span, as the runtime's trace ring holds it (:seq and :at are
    added by the ring)."
@@ -46,6 +79,7 @@
    [:parent-id {:optional true} [:maybe SpanId]]
    [:name :string]
    [:type :keyword]
+   [:kind {:optional true} Kind]
    [:start number?]
    [:end {:optional true} [:maybe number?]]
    [:status {:optional true} Status]
@@ -194,10 +228,11 @@
   (let [t0 (when (seq spans) (reduce min (map :start spans)))
         fmt (fn [x] (let [r (/ (Math/round (* 10.0 (double x))) 10.0)] (str r)))
         hint (fn [s] (let [a (:attrs s)]
-                       (->> [(when-let [st (:http/status a)] (str "status=" st))
-                             (when-let [u (:http/url a)] u)
-                             (when-let [d (:db/changed a)] (str "db=" (pr-str d)))
-                             (when-let [d (:dispatched a)] (str "dispatched=" (pr-str d)))
+                       (->> [(when-let [m (:http.request.method a)] m)
+                             (when-let [u (:url.full a)] u)
+                             (when-let [st (:http.response.status_code a)] (str "status=" st))
+                             (when-let [d (:re-frame.db.changed a)] (str "db=" (pr-str d)))
+                             (when-let [d (:re-frame.dispatched a)] (str "dispatched=" (pr-str d)))
                              (when-let [e (get-in s [:error :message])] (str "error=" (pr-str e)))]
                             (remove nil?)
                             (str/join " "))))
@@ -231,7 +266,7 @@
 (defn- finding-of
   "The finding kind span `s` is, given `slow-ms`, or nil."
   [s slow-ms]
-  (let [status (get-in s [:attrs :http/status])]
+  (let [status (get-in s [:attrs :http.response.status_code])]
     (cond
       (and (#{:error/uncaught :error/unhandled-rejection} (:type s)) (nil? (:parent-id s)))
       :error-without-cause
@@ -262,11 +297,38 @@
            (chronological spans)))))
 
 ;; =============================================================================
+;; Metrics derived from spans
+;; =============================================================================
+
+(defn- quantile
+  "The `q` quantile (0..1) of sorted numbers `xs`, nearest rank."
+  [xs q]
+  (when (seq xs)
+    (nth xs (min (dec (count xs)) (int (Math/floor (* q (count xs))))))))
+
+(defn metrics
+  "Span-derived metrics, one row per span type and name: count, errors,
+   error rate and duration (milliseconds) min / p50 / p95 / max. The RED
+   view (rate, errors, duration) of what the run did, highest count first."
+  [spans]
+  (->> (group-by (juxt :type :name) spans)
+       (map (fn [[[type nm] ss]]
+              (let [ds (vec (sort (map duration ss)))
+                    n  (count ss)
+                    e  (count (filter error? ss))]
+                {:type type :name nm :count n :errors e
+                 :error-rate (if (pos? n) (/ (double e) n) 0.0)
+                 :ms {:min (first ds) :p50 (quantile ds 0.5) :p95 (quantile ds 0.95) :max (peek ds)}})))
+       (sort-by (juxt (comp - :count) :name))
+       vec))
+
+;; =============================================================================
 ;; OTLP JSON export
 ;; =============================================================================
 
 (def ^:private otlp-kind
-  {:http/client 3 :http/server 2})
+  "SpanKind as OTLP numbers it."
+  {:internal 1 :server 2 :client 3 :producer 4 :consumer 5})
 
 (defn- otlp-value [v]
   (cond
@@ -277,26 +339,41 @@
     (keyword? v) {:stringValue (if (namespace v) (str (namespace v) "/" (name v)) (name v))}
     :else        {:stringValue (pr-str v)}))
 
-(defn- attr-name [k]
-  (if (keyword? k) (str/replace (str (when (namespace k) (str (namespace k) "."))
-                                     (name k)) "/" ".")
-      (str k)))
+(defn attr-name
+  "The OpenTelemetry attribute name of key `k`: :http.request.method is
+   \"http.request.method\", :autonomous/type is \"autonomous.type\"."
+  [k]
+  (if (keyword? k)
+    (str (when (namespace k) (str (namespace k) ".")) (name k))
+    (str k)))
 
 (defn- otlp-attrs [m]
   (mapv (fn [[k v]] {:key (attr-name k) :value (otlp-value v)}) (sort-by (comp str key) m)))
 
-(defn- nanos [ms]
-  (str (long (* 1000000 (double ms)))))
+(defn nanos
+  "Unix nanoseconds of epoch milliseconds `ms` (fractional allowed), as the
+   decimal string OTLP JSON carries. Built from the whole and fractional
+   milliseconds separately, so no precision is lost in a double (or a JS
+   number) on the way."
+  [ms]
+  (let [whole (long (Math/floor (double ms)))
+        frac  (long (Math/round (* 1000000.0 (- (double ms) whole))))
+        [whole frac] (if (>= frac 1000000) [(inc whole) 0] [whole frac])
+        f     (str frac)]
+    (str whole (subs "000000" (count f)) f)))
 
 (defn- otlp-span [s]
   (cond-> {:traceId           (:trace-id s)
            :spanId            (:span-id s)
            :name              (:name s)
-           :kind              (otlp-kind (:type s) 1)
+           :kind              (otlp-kind (kind-of s) 1)
            :startTimeUnixNano (nanos (:start s))
            :endTimeUnixNano   (nanos (or (:end s) (:start s)))
-           :attributes        (otlp-attrs (cond-> (assoc (:attrs s) :autonomous/type (:type s))
-                                            (:actor s) (assoc :autonomous/actor (:actor s))))
+           :attributes        (otlp-attrs (cond-> (assoc (:attrs s) :autonomous.type (:type s))
+                                            (:actor s) (assoc :autonomous.actor (:actor s))
+                                            (get-in s [:error :message]) (assoc :exception.message (get-in s [:error :message]))
+                                            (get-in s [:error :class])   (assoc :exception.type (get-in s [:error :class]))
+                                            (get-in s [:error :stack])   (assoc :exception.stacktrace (get-in s [:error :stack]))))
            :status            (if (error? s)
                                 (cond-> {:code 2} (get-in s [:error :message]) (assoc :message (get-in s [:error :message])))
                                 {:code 1})}

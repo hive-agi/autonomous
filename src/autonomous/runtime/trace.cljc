@@ -120,14 +120,17 @@
 (defn start
   "A started span named `nm` of type `type` (a keyword such as
    :re-frame/event). opts: :parent (a context; default the current one,
-   nil starts a new trace), :actor, :attrs, :start (milliseconds)."
+   nil starts a new trace), :kind (OpenTelemetry SpanKind, default the
+   one the type implies), :actor, :attrs (semantic-convention keys, see
+   autonomous.domain.trace/semconv), :start (milliseconds)."
   ([nm type] (start nm type {}))
-  ([nm type {:keys [actor attrs] :as opts}]
+  ([nm type {:keys [actor attrs kind] :as opts}]
    (let [parent (if (contains? opts :parent) (:parent opts) (current))]
      (cond-> {:trace-id (or (:trace-id parent) (new-trace-id))
               :span-id  (new-span-id)
               :name     (str nm)
               :type     type
+              :kind     (or kind (dt/kind-of {:type type}))
               :start    (or (:start opts) (now))}
        (:span-id parent) (assoc :parent-id (:span-id parent))
        actor             (assoc :actor (str actor))

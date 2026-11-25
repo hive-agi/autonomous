@@ -96,10 +96,11 @@
   (cond
     (answer/refused? a) {:status :error
                          :error  (select-keys (:error a) [:type :message])
-                         :attrs  {:outcome :refused}}
-    (answer/pending? a) {:attrs {:outcome :pending :pending (:pending a)}}
-    :else               {:attrs (cond-> {:outcome :ok}
-                                  (trace/payloads?) (assoc :result (:ok a)))}))
+                         :attrs  {:autonomous.outcome :refused
+                                  :error.type (str (get-in a [:error :type]))}}
+    (answer/pending? a) {:attrs {:autonomous.outcome :pending :autonomous.pending (:pending a)}}
+    :else               {:attrs (cond-> {:autonomous.outcome :ok}
+                                  (trace/payloads?) (assoc :autonomous.result (:ok a)))}))
 
 (defn call!
   "Plan and run a call of `tool-name` with `args` for `grant`; journal the
@@ -111,8 +112,8 @@
         span (when (trace/enabled?)
                (trace/start tool-name :agent/call
                             {:actor (:actor grant)
-                             :attrs (cond-> {:tool tool-name}
-                                      (trace/payloads?) (assoc :args (wire/->wire args)))}))
+                             :attrs (cond-> {:autonomous.tool tool-name}
+                                      (trace/payloads?) (assoc :autonomous.args (wire/->wire args)))}))
         ans  (trace/with-context (or (trace/context-of span) (trace/current))
                #(case (:plan/action plan)
                   :invoke (run-invoke plan grant (:middleware snap))

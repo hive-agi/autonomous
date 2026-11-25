@@ -21,8 +21,10 @@
 
 (defn make
   "A fleet over `members`, a vector of [target-id client-context] in fleet
-   order. opts: :mode (:fleet, or :single for exactly one member), :probe-ms."
-  [members {:keys [mode probe-ms]}]
+   order. opts: :mode (:fleet, or :single for exactly one member), :probe-ms,
+   :trace (a span collector, autonomous.bridge.trace/collector; the trace
+   built-ins make one on first use when none is given)."
+  [members {:keys [mode probe-ms trace]}]
   (let [ids  (mapv first members)
         mode (or mode (if (= 1 (count ids)) :single :fleet))]
     {:mode     mode
@@ -31,7 +33,8 @@
      :members  (into {} members)
      :probe-ms (or probe-ms default-probe-ms)
      :inflight (atom {})
-     :last     (atom {})}))
+     :last     (atom {})
+     :trace    (atom trace)}))
 
 (defn from-context
   "The single-mode fleet of client context `ctx` (the bridge as it always
