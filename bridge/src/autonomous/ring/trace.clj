@@ -86,7 +86,10 @@
              (let [s   (start request)
                    ctx (trace/context-of s)
                    reg (or registry nil)
-                   end (fn [extra] (if reg (registry/with-instance reg #(trace/finish! s extra)) (trace/finish! s extra)))]
+                   ended (atom false)
+                   end (fn [extra]
+                         (when (compare-and-set! ended false true)
+                           (if reg (registry/with-instance reg #(trace/finish! s extra)) (trace/finish! s extra))))]
                (try
                  (trace/with-context ctx
                    #(handler request

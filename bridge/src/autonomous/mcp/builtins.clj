@@ -187,17 +187,21 @@
       (swap! (:trace f) #(or % (trace/collector)))))
 
 (defn- readable-sources
-  "Boundary: the span sources `session` may read in fleet `f`: each target
-   whose runtime answers a :trace read under the session's own view (so the
-   runtime checks its scopes, as for the journal), plus bridge-side marks."
+  "Boundary: the span sources `session` may read in fleet `f`: every target
+   except those whose runtime refuses a :trace read under the session's own
+   view as :forbidden (the runtime checks its scopes, as for the journal),
+   plus bridge-side marks. A target that is down or unreachable keeps its
+   collected spans: that is when they are read."
   [f session]
   (into #{"bridge"}
-        (keep (fn [tid]
-                (let [a (try (client/send! (fleet/member f tid) (fleet/on f session tid)
-                                           {:op :trace :since 0 :limit 1})
-                             (catch Exception e (answer/from-exception e)))]
-                  (when (answer/ok? a) (str tid)))))
-        (:order f)))
+        (remove nil?
+                (map (fn [tid]
+                       (let [a (when-not (trace/known-down? @(:last f) tid)
+                                 (try (client/send! (fleet/member f tid) (fleet/on f session tid)
+                                                    {:op :trace :since 0 :limit 1})
+                                      (catch Exception e (answer/from-exception e))))]
+                         (when-not (= :forbidden (get-in a [:error :type])) (str tid))))
+                     (:order f)))))
 
 (def trace
   {:id :autonomous/trace
