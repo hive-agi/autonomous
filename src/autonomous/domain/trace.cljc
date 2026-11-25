@@ -352,15 +352,16 @@
 
 (defn nanos
   "Unix nanoseconds of epoch milliseconds `ms` (fractional allowed), as the
-   decimal string OTLP JSON carries. Built from the whole and fractional
-   milliseconds separately, so no precision is lost in a double (or a JS
-   number) on the way."
+   decimal string OTLP JSON carries, to the microsecond (a double of epoch
+   milliseconds holds no finer digit). Built from the whole and fractional
+   milliseconds separately, so the whole part never passes through a
+   double of nanoseconds."
   [ms]
   (let [whole (long (Math/floor (double ms)))
-        frac  (long (Math/round (* 1000000.0 (- (double ms) whole))))
-        [whole frac] (if (>= frac 1000000) [(inc whole) 0] [whole frac])
+        frac  (long (Math/round (* 1000.0 (- (double ms) whole))))
+        [whole frac] (if (>= frac 1000) [(inc whole) 0] [whole frac])
         f     (str frac)]
-    (str whole (subs "000000" (count f)) f)))
+    (str whole (subs "000" (count f)) f "000")))
 
 (defn- otlp-span [s]
   (cond-> {:traceId           (:trace-id s)

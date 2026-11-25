@@ -94,6 +94,12 @@
   []
   (if-let [ctx (current)] {"traceparent" (dt/traceparent ctx)} {}))
 
+(defn traceparent-of
+  "The `traceparent` header value that makes the receiver a child of
+   context `ctx`."
+  [ctx]
+  (dt/traceparent ctx))
+
 (defn incoming
   "Context named by an incoming `traceparent` header value, or nil."
   [traceparent]
