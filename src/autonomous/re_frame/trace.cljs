@@ -34,13 +34,26 @@
 (defn- cause-of [event]
   (or (:autonomous/trace (meta event)) (trace/current)))
 
+(defn- close-stale!
+  "End an event span still open from an earlier event (one that threw while
+   an error handler registered after install! swallowed it), and restore the
+   context that event found, so it does not adopt every later span."
+  []
+  (when-let [{:keys [span finished? restore]} @!open]
+    (when-not finished?
+      (trace/finish! span {:status :error :error {:message "event did not complete"}
+                           :attrs {:error.type "incomplete"}}))
+    (set! trace/*context* restore)
+    (reset! !open nil)))
+
 (defn- interceptor [payloads?]
   (rf/->interceptor
    :id ::trace
    :before (fn [ctx]
              (if-not (trace/enabled?)
                ctx
-               (let [event (rf/get-coeffect ctx :event)
+               (let [_     (close-stale!)
+                     event (rf/get-coeffect ctx :event)
                      m     (meta event)
                      s     (trace/start (str (first event)) :re-frame/event
                                         {:parent (cause-of event)

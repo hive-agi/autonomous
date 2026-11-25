@@ -87,9 +87,14 @@
                    ctx (trace/context-of s)
                    reg (or registry nil)
                    end (fn [extra] (if reg (registry/with-instance reg #(trace/finish! s extra)) (trace/finish! s extra)))]
-               (trace/with-context ctx
-                 #(handler request
-                           (fn [resp] (end (response-outcome resp)) (respond resp))
-                           (fn [t] (end {:status :error :error (trace/error-info t)
-                                         :attrs {:error.type (str (type t))}})
-                             (raise t)))))))))))))
+               (try
+                 (trace/with-context ctx
+                   #(handler request
+                             (fn [resp] (end (response-outcome resp)) (respond resp))
+                             (fn [t] (end {:status :error :error (trace/error-info t)
+                                           :attrs {:error.type (str (type t))}})
+                               (raise t))))
+                 (catch Throwable t
+                   (end {:status :error :error (trace/error-info t)
+                         :attrs {:error.type (str (type t))}})
+                   (throw t))))))))))))

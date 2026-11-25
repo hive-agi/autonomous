@@ -189,7 +189,7 @@
                                   :error.type (str (get-in a [:error :type]))}}
     (answer/pending? a) {:attrs {:autonomous.outcome :pending :autonomous.pending (:pending a)}}
     :else               {:attrs (cond-> {:autonomous.outcome :ok}
-                                  (trace/payloads?) (assoc :autonomous.result (:ok a)))}))
+                                  (trace/payloads?) (assoc :autonomous.result (wire/->wire (:ok a))))}))
 
 (defn call!
   "Plan and run a call of `tool-name` with `args` for `grant` through the

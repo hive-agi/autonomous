@@ -111,14 +111,14 @@
 
 (defn error-info
   "What a span records of throwable or JS error `e`: message, class and a
-   bounded stack."
+   bounded stack; its ex-data only while payloads are kept."
   [e]
   (let [stack #?(:cljs (when (some? e) (some-> (unchecked-get e "stack") str))
                  :cljw nil
                  :default (when (instance? Throwable e)
                             (str/join "\n" (map str (take 20 (.getStackTrace ^Throwable e))))))]
     (cond-> {:message (or (ex-message e) (str e))}
-      (ex-data e) (assoc :data (wire/->wire (ex-data e)))
+      (and (ex-data e) (payloads?)) (assoc :data (wire/->wire (ex-data e)))
       (some? e)   (assoc :class #?(:cljs (or (some-> (unchecked-get e "name") str) "error")
                                    :default (str (type e))))
       stack       (assoc :stack (subs stack 0 (min 4000 (count stack)))))))

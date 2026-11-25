@@ -25,6 +25,8 @@
                    (apply str (map #(str "." %) (take 2 (words classes))))))]
     (str/join " > " (concat (map one (reverse parents)) [(one {:tag tag :id id :classes classes})]))))
 
+(declare safe-url)
+
 (defn describe
   "Span attributes of an element (`props` as autonomous.trace.browser
    reads them): tag, selector, visible text (60 characters), test id, role,
@@ -39,7 +41,7 @@
       (:aria-label props) (assoc :ui.element.label (:aria-label props))
       (:name props)       (assoc :ui.element.name (:name props))
       (:type props)       (assoc :ui.element.type (:type props))
-      (:href props)       (assoc :url.full (:href props)))))
+      (:href props)       (assoc :url.full (safe-url (:href props) false)))))
 
 (defn ui-span-name
   "\"click button 'Save'\", \"submit form#new\"."
@@ -70,6 +72,16 @@
         cut  (keep #(str/index-of s %) ["?" "#"])
         s    (if (seq cut) (subs s 0 (apply min cut)) s)]
     (if (str/blank? s) "/" s)))
+
+(defn safe-url
+  "`url` as a span records it: without its query string and fragment
+   (where tokens travel) unless `payloads?`."
+  [url payloads?]
+  (let [s (str url)]
+    (if payloads?
+      s
+      (let [cut (keep #(str/index-of s %) ["?" "#"])]
+        (if (seq cut) (subs s 0 (apply min cut)) s)))))
 
 (defn client-outcome
   "How an :http/client span ends for HTTP `status`: an error from 400 up,

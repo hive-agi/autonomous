@@ -186,6 +186,19 @@
   (or @(:trace f)
       (swap! (:trace f) #(or % (trace/collector)))))
 
+(defn- readable-sources
+  "Boundary: the span sources `session` may read in fleet `f`: each target
+   whose runtime answers a :trace read under the session's own view (so the
+   runtime checks its scopes, as for the journal), plus bridge-side marks."
+  [f session]
+  (into #{"bridge"}
+        (keep (fn [tid]
+                (let [a (try (client/send! (fleet/member f tid) (fleet/on f session tid)
+                                           {:op :trace :since 0 :limit 1})
+                             (catch Exception e (answer/from-exception e)))]
+                  (when (answer/ok? a) (str tid)))))
+        (:order f)))
+
 (def trace
   {:id :autonomous/trace
    :spec {:description
@@ -198,6 +211,7 @@
                "chain of causes) or metrics (count, errors, p50/p95 duration per span). Spans are "
                "recorded only once the app enables tracing (autonomous_trace_config or its own code).")
           :read-only? true
+          :scopes [:read]
           :input [:map
                   [:view {:optional true} [:maybe [:enum "traces" "trace" "timeline" "findings" "metrics"]]]
                   [:trace_id {:optional true} [:maybe :string]]
@@ -208,7 +222,8 @@
    :run (fn [f session {:keys [view trace_id target since limit slow_ms]}]
           (let [coll (collector-of f)
                 r    (trace/collect! coll f)
-                a    (trace/view (:spans @(:state coll))
+                ok?  (readable-sources f session)
+                a    (trace/view (filterv #(ok? (get-in % [:source :target])) (:spans @(:state coll)))
                                  {:view view :trace-id trace_id :target target :since since
                                   :limit limit :slow-ms slow_ms})]
             (same session (if (answer/ok? a)
@@ -220,7 +235,7 @@
    :spec {:description (str "Mark a boundary in the telemetry (\"test: checkout happy path\"), so "
                             "what follows reads as one story in autonomous_trace and in exported "
                             "traces. Answers the mark's trace id.")
-          :read-only? true
+          :scopes [:read]
           :input [:map [:label [:string {:min 1 :max 200}]]]}
    :run (fn [f session {:keys [label]}]
           (let [coll (collector-of f)]

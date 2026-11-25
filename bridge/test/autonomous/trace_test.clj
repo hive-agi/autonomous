@@ -15,6 +15,7 @@
             [autonomous.mcp.json :as json]
             [autonomous.ring.trace :as ring-trace]
             [autonomous.runtime.trace :as trace]
+            [autonomous.trace.dom :as dom]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [clojure.test.check.generators :as gen]
             [hive-test.trifecta :refer [deftrifecta]]))
@@ -45,6 +46,7 @@
 (deftrifecta parse-traceparent-trifecta
   autonomous.domain.trace/parse-traceparent
   {:golden-path "test/golden/trace/parse-traceparent.edn"
+   :apply? true
    :cases {:valid      ["00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"]
            :upper-case ["00-4BF92F3577B34DA6A3CE929D0E0E4736-00F067AA0BA902B7-01"]
            :padded     ["  00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01 "]
@@ -248,6 +250,23 @@
   ((ring-trace/wrap-trace (fn [_] {:status 502})) {:request-method :get :uri "/a"})
   (is (thrown? Exception ((ring-trace/wrap-trace (fn [_] (throw (ex-info "x" {})))) {:request-method :get :uri "/b"})))
   (is (= [:error :error] (map :status (filter #(= :http/server (:type %)) (trace/dump))))))
+
+(deftest an-async-handler-that-throws-still-ends-its-span
+  (trace/enable! {})
+  (let [h (ring-trace/wrap-trace (fn [_ _ _] (throw (ex-info "sync throw" {}))))]
+    (is (thrown? Exception (h {:request-method :get :uri "/t"} identity identity)))
+    (is (= :error (:status (first (filter #(= :http/server (:type %)) (trace/dump))))))))
+
+(deftest private-data-stays-out-without-payloads
+  (testing "ex-data only with payloads"
+    (trace/enable! {})
+    (is (nil? (:data (trace/error-info (ex-info "x" {:password "p"})))))
+    (trace/enable! {:payloads? true})
+    (is (= {:password "p"} (:data (trace/error-info (ex-info "x" {:password "p"}))))))
+  (testing "urls lose their query and fragment"
+    (is (= "https://a.b/cb" (dom/safe-url "https://a.b/cb?token=s3cret#access_token=t" false)))
+    (is (= "https://a.b/cb?q=1" (dom/safe-url "https://a.b/cb?q=1" true)))
+    (is (= "https://a.b/x" (:url.full (dom/describe {:tag "A" :href "https://a.b/x?t=1"}))))))
 
 (deftest async-ring-records-the-span-when-the-response-is-sent
   (trace/enable! {})

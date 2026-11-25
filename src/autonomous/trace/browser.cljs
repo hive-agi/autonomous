@@ -79,7 +79,7 @@
                                    (window! (trace/context-of
                                              (trace/event! (str "navigate " (.. js/window -location -pathname))
                                                            :ui/navigation
-                                                           {:parent nil :attrs {:url.full (.. js/window -location -href)}})))))))))
+                                                           {:parent nil :attrs {:url.full (dom/safe-url (.. js/window -location -href) (trace/payloads?))}})))))))))
 
 ;; =============================================================================
 ;; Network
@@ -95,7 +95,7 @@
 
 (defn- client-span [method url]
   (trace/start (str method " " (dom/url-path url)) :http/client
-               {:kind :client :attrs {:http.request.method method :url.full url}}))
+               {:kind :client :attrs {:http.request.method method :url.full (dom/safe-url url (trace/payloads?))}}))
 
 (defn- client-end! [s status extra]
   (trace/finish! s (merge-with merge (dom/client-outcome status) extra)))
@@ -134,7 +134,8 @@
           open  (.-open proto)
           send  (.-send proto)]
       (set! (.-open proto)
-            (fn [method url & _]
+            (fn [method url]
+              ;; fixed arity: a variadic fn's js-arguments would be its delegate's
               (this-as ^js xhr
                 (set! (.-__autonomous xhr) #js {:method (str/upper-case (str method)) :url (str url)})
                 (.apply open xhr (js-arguments)))))
