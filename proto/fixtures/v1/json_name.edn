@@ -1,0 +1,42 @@
+{;; Step 1 of AUTONOMOUS-PROTO-V1-FREEZE (card 20261127170917-4749e21b).
+ ;; fa8f9f: the transform reads the EFFECTIVE json_name from the descriptor.
+ ;; This file records the fixture that proves which spellings survive.
+ :evidence/json-name-check
+ {:date "2026-11-27"
+  :toolchain {:buf "1.75.0"
+              :protoc "libprotoc 33.5 (v6.33.5)"
+              :protoc-gen-go "v1.36.10"
+              :absent ["protoc-gen-prost" "protoc-gen-ts (ts-proto)" "protoc-gen-elm"]
+              :absent-note "prost/serde, ts-proto and Elm generators are NOT installed here; the brief says install nothing new. CI's `buf generate` (step 6 of the rollout) is where those run. This fixture covers buf + protoc + the generators present."}
+
+  :commands
+  ["buf lint"                                   ; STANDARD: exit 0
+   "buf build -o /tmp/x.binpb"                  ; compiles every file incl. WKTs: exit 0
+   "protoc --decode=google.protobuf.FileDescriptorSet google/protobuf/descriptor.proto < /tmp/x.binpb"
+   "protoc -I proto -I /usr/include --python_out=... proto/autonomous/v1/*.proto"
+   "protoc -I proto -I /usr/include --cpp_out=...    proto/autonomous/v1/*.proto"
+   "protoc -I proto -I /usr/include --java_out=...   proto/autonomous/v1/*.proto"
+   "protoc -I proto -I /usr/include --csharp_out=... proto/autonomous/v1/*.proto"
+   "protoc -I proto -I /usr/include --go_out=/tmp/gogen2 --go_opt=module=example.com/av1 --go_opt=M...=example.com/av1 proto/autonomous/v1/*.proto"]
+
+  ;; Every one of these exits 0. The generator emits the effective json_name
+  ;; verbatim: protoc-gen-go writes the struct tag `json=error`, `json=run/task-id`,
+  ;; `json=chat-point`, `json=run/attempt`, `json=entry/target`, `json=answer/truncated?`.
+  :exit-codes {:buf-lint 0 :buf-build 0 :python 0 :cpp 0 :java 0 :csharp 0 :go 0}
+
+  :effective-json-names
+  {;; slash, kebab and "?" all survive verbatim in the descriptor
+   :slash-kept     ["entry/target" "entry/runtime" "entry/at" "entry/seq" "entry/actor"
+                    "answer/truncated?" "run/task-id" "run/attempt"]
+   :kebab-kept     ["chat-point" "run-id" "event-id" "app-event"]
+   :question-kept  ["args?" "answers?" "errors?" "answer/truncated?"]
+   :plain-kept     ["ok" "pending" "error" "type" "message" "data" "redact" "correlation"
+                    "traceparent" "tracestate" "seq" "turn" "call" "settled" "tool"
+                    "outcome" "ms" "session" "args" "answer" "approval" "caller" "origin"
+                    "payload" "decision" "approver" "at" "runtime" "actor"]}
+
+  :verdict
+  {:survives? true
+   :action "KEEP every spelling in json_name; nothing moves to the rename table on account of the toolchain."
+   :reason "buf build, protoc --decode and every available generator (protoc-gen-go and protoc's built-in python/cpp/java/csharp) accept slash, kebab and '?' in json_name without error, and the descriptor carries them verbatim."
+   :open "prost/serde, ts-proto and Elm could not be exercised locally (not installed; install nothing new). Whether their ProtoJSON adapters reproduce a slash or '?' is a named question for the transform owner and is gated in CI by `buf generate` (rollout step 6)."}}}
