@@ -119,6 +119,21 @@
         cut? (assoc :answer/truncated? true)))
     entry))
 
+(defn- with-caller
+  "L0 Promote: `entry` with the caller coordinate of `detail` kept as :caller,
+   bounded by the shared detail bound (bounded-detail) and :redact paths that
+   start at :caller masked inside it, :caller/truncated? true when the bound
+   cut it. Recorded whenever detail carries one, independent of the :args? and
+   :answers? flags: it is coordinates, not content. Absent otherwise, so an
+   entry without a caller is unchanged. Total: never throws."
+  [entry detail]
+  (if-let [c (:caller detail)]
+    (let [paths        (into [] (comp (filter #(= :caller (first %))) (map rest)) (:redact detail))
+          [value cut?] (bounded-detail c)]
+      (cond-> (assoc entry :caller (redact-paths value paths))
+        cut? (assoc :caller/truncated? true)))
+    entry))
+
 (defn- with-approval
   "L0 Promote: `entry` with the human Decision Answer `ans` carries as
    :autonomous/approval metadata, as :approval {:decision :approver :ms},
@@ -134,33 +149,42 @@
    Answer `ans` after `ms`. A Pending answer's id is always kept as :pending,
    so the call joins the :autonomous/settled entry that says how it ended.
    `detail` is the app's CallDetail, nil for none: with it the entry carries
-   the grant's session; with :args? the args as sent, bounded, :redact paths
-   replaced; with :answers? an Ok answer's value, bounded, :redact paths under
-   :answer masked, :answer/truncated? when cut; with :errors? a refusal's
-   :error."
+   the grant's session; with :caller the agent step that issued the call,
+   bounded, :redact paths under :caller masked, :caller/truncated? when cut;
+   with :args? the args as sent, bounded, :redact paths replaced,
+   :args/truncated? true when the bound cut them; with :answers? an Ok
+   answer's value, bounded, :redact paths under :answer masked,
+   :answer/truncated? when cut; with :errors? a refusal's :error."
   [tool-name args grant ans ms detail]
-  (cond-> {:kind    :autonomous/call
-           :actor   (:actor grant)
-           :tool    tool-name
-           :outcome (answer/outcome ans)
-           :ms      ms}
-    (answer/pending? ans)
-    (assoc :pending (:pending ans))
+  (let [[bounded cut?] (when (:args? detail) (bounded-detail (or args {})))]
+    (cond-> {:kind    :autonomous/call
+             :actor   (:actor grant)
+             :tool    tool-name
+             :outcome (answer/outcome ans)
+             :ms      ms}
+      (answer/pending? ans)
+      (assoc :pending (:pending ans))
 
-    (and detail (:session grant))
-    (assoc :session (:session grant))
+      (and detail (:session grant))
+      (assoc :session (:session grant))
 
-    (:args? detail)
-    (assoc :args (redact-paths (first (bounded-detail (or args {}))) (:redact detail)))
+      (:args? detail)
+      (assoc :args (redact-paths bounded (:redact detail)))
 
-    (and (:answers? detail) (answer/ok? ans))
-    (with-answer ans detail)
+      (and (:args? detail) cut?)
+      (assoc :args/truncated? true)
 
-    (and (:errors? detail) (answer/refused? ans))
-    (assoc :error (:error ans))
+      (and (:answers? detail) (answer/ok? ans))
+      (with-answer ans detail)
 
-    :always
-    (with-approval ans detail)))
+      (and (:errors? detail) (answer/refused? ans))
+      (assoc :error (:error ans))
+
+      :always
+      (with-caller detail)
+
+      :always
+      (with-approval ans detail))))
 
 (defn settled-entry
   "The entry saying how the async call parked as `id` ended: Answer `ans`.

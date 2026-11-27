@@ -1,0 +1,31 @@
+{:bad-attempt {:caller nil, :dropped [:run/attempt]},
+ :bad-chat-point {:caller nil, :dropped [:chat-point]},
+ :empty-meta {:caller nil, :dropped []},
+ :full
+ {:caller
+  {:trace/traceparent
+   "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+   :trace/tracestate "rojo=00f067aa0ba902b7",
+   :chat-point {:run-id "r1", :seq 5, :turn 3},
+   :run/task-id "card-7",
+   :run/attempt 2},
+  :dropped []},
+ :invalid-tp {:caller nil, :dropped [:trace/traceparent]},
+ :keyword-meta
+ {:caller
+  {:trace/traceparent
+   "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+   :chat-point {:run-id "r", :seq 1, :turn 2}},
+  :dropped []},
+ :meta-itself
+ {:caller
+  #:trace{:traceparent
+          "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
+  :dropped []},
+ :no-meta {:caller nil, :dropped []},
+ :trace-only
+ {:caller
+  #:trace{:traceparent
+          "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"},
+  :dropped []},
+ :zeros-tp {:caller nil, :dropped [:trace/traceparent]}}
