@@ -36,11 +36,14 @@ use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_long, c_void, CStr, CString};
 use std::io::{Read, Write};
 use std::marker::PhantomData;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 pub use serde_json::{json, Value};
+use tungstenite::client::IntoClientRequest;
+use tungstenite::handshake::HandshakeError;
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{connect, Message, WebSocket};
+use tungstenite::{Message, WebSocket};
 
 mod liveness;
 pub use liveness::{Due, Link, Liveness, DEFAULT_IDLE_TIMEOUT, DEFAULT_PING_EVERY};
@@ -156,9 +159,16 @@ pub struct Dial {
     pub ping_every: Duration,
     /// Redial after this long without a frame from the bridge.
     pub idle_timeout: Duration,
+    /// Give up on a dial (TCP connect, and each read or write of the
+    /// websocket upgrade) after this long, so a bridge that accepts the
+    /// socket but never answers is redialed.
+    pub dial_timeout: Duration,
     /// When the bridge was last heard; clone it to report health.
     pub link: Link,
 }
+
+/// How long a dial may take by default; see [`Dial::dial_timeout`].
+pub const DEFAULT_DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl Dial {
     pub fn new(url: &str, token: &str) -> Self {
@@ -169,8 +179,14 @@ impl Dial {
             label: "rust runtime".into(),
             ping_every: DEFAULT_PING_EVERY,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            dial_timeout: DEFAULT_DIAL_TIMEOUT,
             link: Link::default(),
         }
+    }
+    /// How long a dial may take before it fails and is retried.
+    pub fn dial_timeout(mut self, d: Duration) -> Self {
+        self.dial_timeout = d;
+        self
     }
     /// Report the link's health through `link` (a clone of one the caller keeps).
     pub fn link(mut self, link: Link) -> Self {
@@ -311,8 +327,8 @@ impl Runtime {
     pub fn serve(&self, dial: &Dial, mut tick: impl FnMut(&Runtime)) -> ! {
         let mut attempt = 0u32;
         loop {
-            match connect(dial.url.as_str()) {
-                Ok((mut ws, _)) => {
+            match dial_ws(&dial.url, dial.dial_timeout) {
+                Ok(mut ws) => {
                     if let MaybeTlsStream::Plain(s) = ws.get_mut() {
                         s.set_read_timeout(Some(Duration::from_millis(100))).ok();
                     }
@@ -365,6 +381,46 @@ impl Runtime {
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
+    }
+}
+
+/// Open a websocket to `url`, bounding the TCP connect and every read and
+/// write of the upgrade by `timeout`: a bridge that accepts the socket but
+/// never answers the upgrade fails the dial instead of hanging it. The
+/// caller sets the session's own read timeout afterwards.
+fn dial_ws(url: &str, timeout: Duration) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, String> {
+    let req = url
+        .into_client_request()
+        .map_err(|e| format!("bad url: {e}"))?;
+    let uri = req.uri();
+    if uri.scheme_str() == Some("wss") {
+        return Err("wss needs TLS, which this crate is built without".into());
+    }
+    let host = uri.host().ok_or("the url names no host")?;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let port = uri.port_u16().unwrap_or(80);
+    let addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("resolve {host}: {e}"))?;
+    let mut last = format!("{host} resolves to no address");
+    let mut stream = None;
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, timeout) {
+            Ok(s) => {
+                stream = Some(s);
+                break;
+            }
+            Err(e) => last = format!("connect {addr}: {e}"),
+        }
+    }
+    let stream = stream.ok_or(last)?;
+    stream.set_read_timeout(Some(timeout)).ok();
+    stream.set_write_timeout(Some(timeout)).ok();
+    stream.set_nodelay(true).ok();
+    match tungstenite::client(req, MaybeTlsStream::Plain(stream)) {
+        Ok((ws, _)) => Ok(ws),
+        Err(HandshakeError::Failure(e)) => Err(format!("upgrade: {e}")),
+        Err(HandshakeError::Interrupted(_)) => Err(format!("no upgrade answer within {timeout:?}")),
     }
 }
 
@@ -463,11 +519,37 @@ mod session_tests {
     }
 
     fn dial(url: &str) -> WebSocket<MaybeTlsStream<TcpStream>> {
-        let (mut ws, _) = connect(url).unwrap();
+        let mut ws = dial_ws(url, 2000 * MS).unwrap();
         if let MaybeTlsStream::Plain(s) = ws.get_mut() {
             s.set_read_timeout(Some(20 * MS)).unwrap();
         }
         ws
+    }
+
+    #[test]
+    fn a_bridge_that_never_answers_the_upgrade_fails_the_dial() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("ws://{}/autonomous/ws", l.local_addr().unwrap());
+        thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            thread::sleep(5000 * MS);
+            drop(s);
+        });
+        let t0 = Instant::now();
+        let r = dial_ws(&url, 200 * MS);
+        assert!(r.is_err(), "the dial should fail");
+        assert!(t0.elapsed() < 400 * MS, "took {:?}", t0.elapsed());
+    }
+
+    #[test]
+    fn a_dial_with_no_listener_fails() {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let r = dial_ws(&format!("ws://127.0.0.1:{port}/autonomous/ws"), 200 * MS);
+        assert!(r.is_err());
     }
 
     #[test]

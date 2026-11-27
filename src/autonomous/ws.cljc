@@ -24,6 +24,10 @@
      :heartbeat   {:ping-ms 20000 :idle-ms 60000}: JVM and babashka ping a
                   quiet link and redial one silent for :idle-ms (a half-open
                   socket never closes on its own). Browsers cannot ping.
+     :dial-ms     JVM and babashka: give up on a dial (TCP connect plus the
+                  websocket upgrade) after this long and redial, so a
+                  bridge that accepts the socket but never answers does not
+                  hang the runtime                         [default: 10000]
      :on-status   (fn [status info]) on every change of status:
                   :connecting :hello :open :reconnecting :refused :stopped
      :websocket   ClojureScript: the WebSocket constructor  [default: global]"
@@ -35,6 +39,8 @@
 (def default-backoff {:base-ms 500 :max-ms 30000})
 
 (def default-heartbeat {:ping-ms 20000 :idle-ms 60000})
+
+(def default-dial-ms 10000)
 
 ;; =============================================================================
 ;; Pure
@@ -73,6 +79,7 @@
   (when-not (and (string? (:url opts)) (string? (:token opts)))
     (throw (ex-info "autonomous.ws/connect! needs :url and :token" {:keys (vec (keys opts))})))
   (merge {:backoff default-backoff
+          :dial-ms default-dial-ms
           :kind    (default-kind)
           :label   (str (name (default-kind)) " runtime")
           :on-status (fn [_ _] nil)}
@@ -116,8 +123,12 @@
    (defn- dial
      "java.net.http websocket (JVM and babashka). Text arriving in parts is
       joined; sends are serialized, as the API requires. Every frame,
-      control frames included, calls `on-heard`; `:ping!` sends a ping."
-     [url {:keys [on-open on-text on-close on-heard] :or {on-heard (fn [] nil)}}]
+      control frames included, calls `on-heard`; `:ping!` sends a ping. The
+      TCP connect and the upgrade together are bounded by `dial-ms`: a dial
+      still pending then closes (code 1006) so the caller redials, and a
+      socket that opens after that is aborted."
+     [url {:keys [on-open on-text on-close on-heard dial-ms]
+           :or   {on-heard (fn [] nil) dial-ms default-dial-ms}}]
      (let [buf        (StringBuilder.)
            sock       (atom nil)
            closed?    (atom false)
@@ -125,7 +136,10 @@
            send!      (fn [text] (when-let [^WebSocket w @sock]
                                    (locking w (.join (.sendText w ^CharSequence text true)))))
            listener   (reify WebSocket$Listener
-                        (onOpen [_ ws] (reset! sock ws) (.request ws 1) (on-open send!))
+                        (onOpen [_ ws]
+                          (if @closed?
+                            (.abort ws)
+                            (do (reset! sock ws) (.request ws 1) (on-open send!))))
                         (onPing [_ ws _message] (on-heard) (.request ws 1) nil)
                         (onPong [_ ws _message] (on-heard) (.request ws 1) nil)
                         (onText [_ ws data last?]
@@ -137,9 +151,22 @@
                           nil)
                         (onClose [_ _ws code reason] (close-once code reason) nil)
                         (onError [_ _ws e] (close-once 1006 (or (ex-message e) (str e)))))]
-       (-> (HttpClient/newHttpClient) (.newWebSocketBuilder) (.buildAsync (URI. url) listener)
-           (.exceptionally (reify java.util.function.Function
-                             (apply [_ e] (close-once 1006 (or (ex-message e) "could not connect")) nil))))
+       (let [client (-> (HttpClient/newBuilder)
+                        (.connectTimeout (java.time.Duration/ofMillis (long dial-ms)))
+                        (.build))]
+         (-> client (.newWebSocketBuilder) (.buildAsync (URI. url) listener)
+             (.orTimeout (long dial-ms) java.util.concurrent.TimeUnit/MILLISECONDS)
+             (.exceptionally
+              (reify java.util.function.Function
+                (apply [_ e]
+                  (let [cause (if (instance? java.util.concurrent.CompletionException e) (ex-cause e) e)]
+                    ;; a stuck upgrade still holds its socket: shutting the
+                    ;; client down (JDK 21+) releases it
+                    (try (.shutdownNow client) (catch Throwable _old-jdk nil))
+                    (close-once 1006 (if (instance? java.util.concurrent.TimeoutException cause)
+                                       (str "no upgrade answer in " dial-ms " ms")
+                                       (or (ex-message cause) (ex-message e) "could not connect"))))
+                  nil)))))
        {:send!  send!
         :ping!  (fn [] (when-let [^WebSocket w @sock]
                          (locking w (.sendPing w (java.nio.ByteBuffer/allocate 0)))))
@@ -218,7 +245,8 @@
           sock (atom nil)
           _    (swap! state assoc :heard (now-ms) :pinged (now-ms))
           handlers
-          {:on-heard (fn [] (when (mine) (swap! state assoc :heard (now-ms))))
+          {:dial-ms  (:dial-ms opts)
+           :on-heard (fn [] (when (mine) (swap! state assoc :heard (now-ms))))
            :on-open  (fn [send!]
                        (status! state opts :hello {:runtime-id (:runtime-id opts)})
                        (send! (wire/print-edn (hello opts))))
