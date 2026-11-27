@@ -34,12 +34,19 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_long, c_void, CStr, CString};
+use std::io::{Read, Write};
 use std::marker::PhantomData;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 pub use serde_json::{json, Value};
+use tungstenite::client::IntoClientRequest;
+use tungstenite::handshake::HandshakeError;
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{connect, Message};
+use tungstenite::{Message, WebSocket};
+
+mod liveness;
+pub use liveness::{Due, Link, Liveness, DEFAULT_IDLE_TIMEOUT, DEFAULT_PING_EVERY};
 
 extern "C" {
     fn jolt_library_init(argc: c_int, argv: *mut *mut c_char) -> c_int;
@@ -148,7 +155,20 @@ pub struct Dial {
     pub runtime_id: String,
     /// A label agents see.
     pub label: String,
+    /// Ping the bridge after this long without a frame either way.
+    pub ping_every: Duration,
+    /// Redial after this long without a frame from the bridge.
+    pub idle_timeout: Duration,
+    /// Give up on a dial (TCP connect, and each read or write of the
+    /// websocket upgrade) after this long, so a bridge that accepts the
+    /// socket but never answers is redialed.
+    pub dial_timeout: Duration,
+    /// When the bridge was last heard; clone it to report health.
+    pub link: Link,
 }
+
+/// How long a dial may take by default; see [`Dial::dial_timeout`].
+pub const DEFAULT_DIAL_TIMEOUT: Duration = Duration::from_secs(10);
 
 impl Dial {
     pub fn new(url: &str, token: &str) -> Self {
@@ -157,7 +177,27 @@ impl Dial {
             token: token.into(),
             runtime_id: format!("rust-{}", std::process::id()),
             label: "rust runtime".into(),
+            ping_every: DEFAULT_PING_EVERY,
+            idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            dial_timeout: DEFAULT_DIAL_TIMEOUT,
+            link: Link::default(),
         }
+    }
+    /// How long a dial may take before it fails and is retried.
+    pub fn dial_timeout(mut self, d: Duration) -> Self {
+        self.dial_timeout = d;
+        self
+    }
+    /// Report the link's health through `link` (a clone of one the caller keeps).
+    pub fn link(mut self, link: Link) -> Self {
+        self.link = link;
+        self
+    }
+    /// How often to ping a quiet link, and how long a silent one lives.
+    pub fn heartbeat(mut self, ping_every: Duration, idle_timeout: Duration) -> Self {
+        self.ping_every = ping_every;
+        self.idle_timeout = idle_timeout;
+        self
     }
     pub fn runtime_id(mut self, id: &str) -> Self {
         self.runtime_id = id.into();
@@ -279,54 +319,56 @@ impl Runtime {
     }
 
     /// Dial the bridge and serve agents for good: answer every request
-    /// frame, redial with backoff under the same runtime id when the
-    /// socket drops, and stop the process on a refusal a redial would
-    /// only repeat. `tick` runs on this thread about every 100 ms, so
+    /// frame, ping a quiet link, redial with backoff under the same runtime
+    /// id when the socket drops or the bridge goes silent for
+    /// `dial.idle_timeout`, and stop the process on a refusal a redial
+    /// would only repeat. `tick` runs on this thread about every 100 ms, so
     /// other threads can hand over work (journal entries, ...).
     pub fn serve(&self, dial: &Dial, mut tick: impl FnMut(&Runtime)) -> ! {
         let mut attempt = 0u32;
         loop {
-            match connect(dial.url.as_str()) {
-                Ok((mut ws, _)) => {
+            match dial_ws(&dial.url, dial.dial_timeout) {
+                Ok(mut ws) => {
                     if let MaybeTlsStream::Plain(s) = ws.get_mut() {
                         s.set_read_timeout(Some(Duration::from_millis(100))).ok();
                     }
                     ws.send(Message::text(self.hello(dial))).ok();
-                    loop {
-                        match ws.read() {
-                            Ok(Message::Text(t)) => {
-                                let frame = t.to_string();
-                                match self.kind(&frame).as_str() {
-                                    "request" => {
-                                        let r = self.reply(&frame);
-                                        if !r.is_empty() && ws.send(Message::text(r)).is_err() {
-                                            break;
-                                        }
-                                    }
-                                    "welcome" => {
-                                        attempt = 0;
-                                        eprintln!(
-                                            "autonomous: {} connected to {}",
-                                            dial.runtime_id, dial.url
-                                        );
-                                    }
-                                    "fatal" => {
-                                        eprintln!("autonomous: refused for good: {frame}");
-                                        std::process::exit(3);
-                                    }
-                                    _ => {}
-                                }
+                    let mut live =
+                        Liveness::new(Instant::now(), dial.ping_every, dial.idle_timeout);
+                    let end = session(
+                        &mut ws,
+                        &mut live,
+                        &dial.link,
+                        |frame| match self.kind(frame).as_str() {
+                            "request" => Step::Reply(self.reply(frame)),
+                            "welcome" => {
+                                attempt = 0;
+                                eprintln!(
+                                    "autonomous: {} connected to {}",
+                                    dial.runtime_id, dial.url
+                                );
+                                Step::Stay
                             }
-                            Ok(Message::Close(_)) => break,
-                            Ok(_) => {}
-                            Err(tungstenite::Error::Io(e))
-                                if matches!(
-                                    e.kind(),
-                                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                                ) => {}
-                            Err(_) => break,
+                            "refused" => {
+                                eprintln!("autonomous: refused, redialing: {frame}");
+                                Step::Redial
+                            }
+                            "fatal" => Step::Stop(frame.to_string()),
+                            _ => Step::Stay,
+                        },
+                        || tick(self),
+                    );
+                    match end {
+                        End::Fatal(frame) => {
+                            eprintln!("autonomous: refused for good: {frame}");
+                            std::process::exit(3);
                         }
-                        tick(self);
+                        End::Silent(d) => eprintln!(
+                            "autonomous: no frame from {} in {}s, redialing",
+                            dial.url,
+                            d.as_secs()
+                        ),
+                        End::Dropped => eprintln!("autonomous: lost {}, redialing", dial.url),
                     }
                 }
                 Err(e) => eprintln!("autonomous: dial {} failed: {e}", dial.url),
@@ -338,6 +380,234 @@ impl Runtime {
                 tick(self);
                 std::thread::sleep(Duration::from_millis(100));
             }
+        }
+    }
+}
+
+/// Open a websocket to `url`, bounding the TCP connect and every read and
+/// write of the upgrade by `timeout`: a bridge that accepts the socket but
+/// never answers the upgrade fails the dial instead of hanging it. The
+/// caller sets the session's own read timeout afterwards.
+fn dial_ws(url: &str, timeout: Duration) -> Result<WebSocket<MaybeTlsStream<TcpStream>>, String> {
+    let req = url
+        .into_client_request()
+        .map_err(|e| format!("bad url: {e}"))?;
+    let uri = req.uri();
+    if uri.scheme_str() == Some("wss") {
+        return Err("wss needs TLS, which this crate is built without".into());
+    }
+    let host = uri.host().ok_or("the url names no host")?;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    let port = uri.port_u16().unwrap_or(80);
+    let addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|e| format!("resolve {host}: {e}"))?;
+    let mut last = format!("{host} resolves to no address");
+    let mut stream = None;
+    for addr in addrs {
+        match TcpStream::connect_timeout(&addr, timeout) {
+            Ok(s) => {
+                stream = Some(s);
+                break;
+            }
+            Err(e) => last = format!("connect {addr}: {e}"),
+        }
+    }
+    let stream = stream.ok_or(last)?;
+    stream.set_read_timeout(Some(timeout)).ok();
+    stream.set_write_timeout(Some(timeout)).ok();
+    stream.set_nodelay(true).ok();
+    match tungstenite::client(req, MaybeTlsStream::Plain(stream)) {
+        Ok((ws, _)) => Ok(ws),
+        Err(HandshakeError::Failure(e)) => Err(format!("upgrade: {e}")),
+        Err(HandshakeError::Interrupted(_)) => Err(format!("no upgrade answer within {timeout:?}")),
+    }
+}
+
+/// What a session does with one text frame from the bridge.
+enum Step {
+    /// Keep reading.
+    Stay,
+    /// Send this text back (nothing when empty), then keep reading.
+    Reply(String),
+    /// End the session; the caller redials.
+    Redial,
+    /// End the session for good, with the frame that said so.
+    Stop(String),
+}
+
+/// How a session with the bridge ended.
+#[derive(Debug, PartialEq, Eq)]
+enum End {
+    /// The socket closed or failed, or the bridge asked for a redial.
+    Dropped,
+    /// Nothing arrived for this long: the link was dead without saying so.
+    Silent(Duration),
+    /// The bridge refused for good.
+    Fatal(String),
+}
+
+fn timed_out(e: &tungstenite::Error) -> bool {
+    matches!(e, tungstenite::Error::Io(io)
+             if matches!(io.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut))
+}
+
+/// Serve one connected socket until it ends. `ws` must have a read timeout
+/// so the loop wakes to ping, to check `live` and to run `tick`.
+fn session<S: Read + Write>(
+    ws: &mut WebSocket<S>,
+    live: &mut Liveness,
+    link: &Link,
+    mut on_text: impl FnMut(&str) -> Step,
+    mut tick: impl FnMut(),
+) -> End {
+    loop {
+        match ws.read() {
+            Ok(m) => {
+                live.heard(Instant::now());
+                link.heard();
+                match m {
+                    Message::Text(t) => match on_text(&t.to_string()) {
+                        Step::Stay => {}
+                        Step::Reply(r) => {
+                            if !r.is_empty() && ws.send(Message::text(r)).is_err() {
+                                return End::Dropped;
+                            }
+                        }
+                        Step::Redial => return End::Dropped,
+                        Step::Stop(frame) => return End::Fatal(frame),
+                    },
+                    Message::Close(_) => return End::Dropped,
+                    _ => {}
+                }
+            }
+            Err(e) if timed_out(&e) => {}
+            Err(_) => return End::Dropped,
+        }
+        let now = Instant::now();
+        match live.due(now) {
+            Due::Idle => {}
+            Due::Ping => {
+                if ws.send(Message::Ping(Default::default())).is_err() {
+                    return End::Dropped;
+                }
+                live.pinged(now);
+            }
+            Due::Dead => return End::Silent(live.silent_for(now)),
+        }
+        tick();
+    }
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+    use std::net::{TcpListener, TcpStream};
+    use std::thread;
+
+    const MS: Duration = Duration::from_millis(1);
+
+    /// A bridge on a local port that accepts one runtime and then runs `then`.
+    fn bridge(then: impl FnOnce(WebSocket<TcpStream>) + Send + 'static) -> String {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("ws://{}/autonomous/ws", l.local_addr().unwrap());
+        thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            then(tungstenite::accept(s).unwrap());
+        });
+        url
+    }
+
+    fn dial(url: &str) -> WebSocket<MaybeTlsStream<TcpStream>> {
+        let mut ws = dial_ws(url, 2000 * MS).unwrap();
+        if let MaybeTlsStream::Plain(s) = ws.get_mut() {
+            s.set_read_timeout(Some(20 * MS)).unwrap();
+        }
+        ws
+    }
+
+    #[test]
+    fn a_bridge_that_never_answers_the_upgrade_fails_the_dial() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("ws://{}/autonomous/ws", l.local_addr().unwrap());
+        thread::spawn(move || {
+            let (s, _) = l.accept().unwrap();
+            thread::sleep(5000 * MS);
+            drop(s);
+        });
+        let t0 = Instant::now();
+        let r = dial_ws(&url, 200 * MS);
+        assert!(r.is_err(), "the dial should fail");
+        assert!(t0.elapsed() < 400 * MS, "took {:?}", t0.elapsed());
+    }
+
+    #[test]
+    fn a_dial_with_no_listener_fails() {
+        let port = TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let r = dial_ws(&format!("ws://127.0.0.1:{port}/autonomous/ws"), 200 * MS);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn a_bridge_that_goes_silent_ends_the_session() {
+        let url = bridge(|ws| {
+            thread::sleep(2000 * MS);
+            drop(ws);
+        });
+        let mut ws = dial(&url);
+        let mut live = Liveness::new(Instant::now(), 50 * MS, 300 * MS);
+        let t0 = Instant::now();
+        let end = session(&mut ws, &mut live, &Link::default(), |_| Step::Stay, || {});
+        assert!(matches!(end, End::Silent(_)), "{end:?}");
+        assert!(t0.elapsed() < 1000 * MS, "took {:?}", t0.elapsed());
+    }
+
+    #[test]
+    fn a_bridge_that_answers_pings_keeps_the_session_until_it_closes() {
+        let url = bridge(|mut ws| {
+            ws.get_mut().set_read_timeout(Some(20 * MS)).unwrap();
+            let until = Instant::now() + 600 * MS;
+            while Instant::now() < until {
+                let _ = ws.read();
+                let _ = ws.flush();
+            }
+            ws.close(None).ok();
+            let _ = ws.flush();
+            thread::sleep(200 * MS);
+        });
+        let mut ws = dial(&url);
+        let mut live = Liveness::new(Instant::now(), 50 * MS, 300 * MS);
+        let end = session(&mut ws, &mut live, &Link::default(), |_| Step::Stay, || {});
+        assert_eq!(end, End::Dropped);
+    }
+
+    #[test]
+    fn a_refusal_ends_the_session_and_a_fatal_one_stops_it() {
+        for (frame, want) in [
+            ("refused", End::Dropped),
+            ("fatal", End::Fatal("fatal".into())),
+        ] {
+            let url = bridge(move |mut ws| {
+                ws.send(Message::text(frame)).unwrap();
+                thread::sleep(500 * MS);
+            });
+            let mut ws = dial(&url);
+            let mut live = Liveness::new(Instant::now(), 50 * MS, 300 * MS);
+            let end = session(
+                &mut ws,
+                &mut live,
+                &Link::default(),
+                |f| match f {
+                    "refused" => Step::Redial,
+                    other => Step::Stop(other.to_string()),
+                },
+                || {},
+            );
+            assert_eq!(end, want);
         }
     }
 }

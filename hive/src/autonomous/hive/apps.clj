@@ -23,12 +23,16 @@
             [autonomous.config :as config]
             [autonomous.domain.scope :as scope]
             [clojure.set :as set]
-            [clojure.string :as str]))
+            [hive-system.path :as path]))
 
-(defn expand-home [path]
-  (if (and (string? path) (str/starts-with? path "~"))
-    (str (System/getProperty "user.home") (subs path 1))
-    path))
+(defn expand-home
+  "PATH with a leading `~` replaced by this user's home directory: `~` alone
+   answers HOME, `~/x` answers HOME/x, and every other string comes back
+   unchanged. A `~user` form is left as written, because no user lookup
+   happens here. HOME is read once, here, at the boundary; the algebra is
+   hive-system.path/expand-tilde."
+  [path]
+  (path/expand-tilde path (System/getProperty "user.home")))
 
 (defn read-dir-facts
   "Collect: the app directory facts a target derives from, or nil."

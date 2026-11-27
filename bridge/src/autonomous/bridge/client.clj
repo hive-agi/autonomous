@@ -130,11 +130,16 @@
 
 (defn call!
   "Call tool `tool-name` with `args` as `session`; wait for a Pending result
-   up to the timeout; have the journal drained (see `drain-soon!`)."
-  [ctx session tool-name args]
-  (let [a (await! ctx session (send! ctx session {:op :call :tool tool-name :args (or args {})}))]
-    (drain-soon! ctx session)
-    a))
+   up to the timeout; have the journal drained (see `drain-soon!`). `caller`
+   is the optional agent coordinate of the issuing step, sent on the request
+   (so the runtime records it on the call entry) only when there is one; nil
+   for none, which leaves the request exactly as it was."
+  ([ctx session tool-name args] (call! ctx session tool-name args nil))
+  ([ctx session tool-name args caller]
+   (let [a (await! ctx session (send! ctx session (cond-> {:op :call :tool tool-name :args (or args {})}
+                                                  caller (assoc :caller caller))))]
+     (drain-soon! ctx session)
+     a)))
 
 (defn read-resource [ctx session uri]
   (await! ctx session (send! ctx session {:op :read :uri uri})))

@@ -233,8 +233,11 @@ spec:
           readinessProbe:
             httpGet: {path: /api/todos, port: http}
             periodSeconds: 10
+          # /healthz turns 503 once the bridge has sent nothing for
+          # TODO_MAX_BRIDGE_SILENT_SECS (default 180): a restart backstop for
+          # a link the runtime's own redial did not recover.
           livenessProbe:
-            httpGet: {path: /api/todos, port: http}
+            httpGet: {path: /healthz, port: http}
             initialDelaySeconds: 10
             periodSeconds: 20
           volumeMounts:

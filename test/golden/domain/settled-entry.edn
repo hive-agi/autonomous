@@ -1,7 +1,19 @@
-{:ok-errors-on
+{:answer-redacted
+ {:kind :autonomous/settled,
+  :pending "p7",
+  :outcome :ok,
+  :answer {:token "<redacted>", :id 7}},
+ :ok-answer
+ {:kind :autonomous/settled,
+  :pending "p6",
+  :outcome :ok,
+  :answer {:id 7}},
+ :ok-errors-on
  {:kind :autonomous/settled, :pending "p5", :outcome :ok},
  :ok-no-detail
  {:kind :autonomous/settled, :pending "p1", :outcome :ok},
+ :threw-answer-off
+ {:kind :autonomous/settled, :pending "p8", :outcome :tool-threw},
  :threw-args-only
  {:kind :autonomous/settled, :pending "p4", :outcome :tool-threw},
  :threw-kept

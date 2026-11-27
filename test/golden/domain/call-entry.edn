@@ -1,10 +1,48 @@
-{:args-redacted
+{:answer-and-args
+ {:kind :autonomous/call,
+  :actor "a",
+  :tool "todo_add",
+  :outcome :ok,
+  :ms 1,
+  :args {:text "x"},
+  :answer 1},
+ :answer-kept
+ {:kind :autonomous/call,
+  :actor "a",
+  :tool "todo_add",
+  :outcome :ok,
+  :ms 3,
+  :answer {:id 7, :title "milk"}},
+ :answer-redacted
+ {:kind :autonomous/call,
+  :actor "a",
+  :tool "login",
+  :outcome :ok,
+  :ms 2,
+  :answer {:token "<redacted>", :user "u"}},
+ :answer-refused
+ {:kind :autonomous/call,
+  :actor "a",
+  :tool "todo_add",
+  :outcome :invalid-args,
+  :ms 1},
+ :args-redacted
  {:kind :autonomous/call,
   :actor "a",
   :tool "todo_add",
   :outcome :ok,
   :ms 3,
   :args {:text "x", :token "<redacted>"}},
+ :args-truncated
+ {:kind :autonomous/call,
+  :actor "a",
+  :tool "t",
+  :outcome :ok,
+  :ms 1,
+  :args
+  {:text
+   "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx<cut>"},
+  :args/truncated? true},
  :nested-redact
  {:kind :autonomous/call,
   :actor "a",

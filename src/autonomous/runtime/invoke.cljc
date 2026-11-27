@@ -193,24 +193,29 @@
 
 (defn call!
   "Plan and run a call of `tool-name` with `args` for `grant` through the
-   surface's call chain; journal the actor and outcome. Answers an Answer."
-  [tool-name args grant]
-  (let [t0   (registry/now-ms)
-        snap (registry/snapshot)
-        plan (decision/plan-call snap tool-name args grant t0)
-        span (when (trace/enabled?)
-               (trace/start tool-name :agent/call
-                            {:actor (:actor grant)
-                             :attrs (cond-> {:autonomous.tool tool-name}
-                                      (trace/payloads?) (assoc :autonomous.args (wire/->wire args)))}))
-        ans  (trace/with-context (or (trace/context-of span) (trace/current))
-               #(case (:plan/action plan)
-                  :invoke (run-invoke plan grant (:interceptors snap))
-                  :refuse (:refusal plan)))]
-    (when span (trace/finish! span (span-outcome ans)))
-    (registry/record! (journal/call-entry tool-name args grant ans (- (registry/now-ms) t0)
-                                          (:call-detail snap)))
-    ans))
+   surface's call chain; journal the actor and outcome. `caller` is the
+   optional agent coordinate of the issuing step (autonomous.domain.schema/
+   Caller, read from the MCP tools/call _meta), kept on the entry as :caller
+   beside the app's CallDetail; nil for none. Answers an Answer."
+  ([tool-name args grant] (call! tool-name args grant nil))
+  ([tool-name args grant caller]
+   (let [t0   (registry/now-ms)
+         snap (registry/snapshot)
+         plan (decision/plan-call snap tool-name args grant t0)
+         span (when (trace/enabled?)
+                (trace/start tool-name :agent/call
+                             {:actor (:actor grant)
+                              :attrs (cond-> {:autonomous.tool tool-name}
+                                       (trace/payloads?) (assoc :autonomous.args (wire/->wire args)))}))
+         ans  (trace/with-context (or (trace/context-of span) (trace/current))
+                #(case (:plan/action plan)
+                   :invoke (run-invoke plan grant (:interceptors snap))
+                   :refuse (:refusal plan)))]
+     (when span (trace/finish! span (span-outcome ans)))
+     (registry/record! (journal/call-entry tool-name args grant ans (- (registry/now-ms) t0)
+                                           (cond-> (:call-detail snap)
+                                             caller (assoc :caller caller))))
+     ans)))
 
 (defn- resource-answer
   "Answer for resource result `x`: an Ok (value wire-normalized), Pending or
