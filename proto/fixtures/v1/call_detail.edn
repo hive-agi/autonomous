@@ -1,0 +1,30 @@
+;; proto/fixtures/v1/call_detail.edn
+;; Good and bad values for autonomous.v1.CallDetail, as EDN. Redacted.
+{:message "autonomous.v1.CallDetail"
+ :wire :edn
+
+ :good
+ {;; every flag off: an empty CallDetail (all keys absent)
+  :empty {}
+  ;; args? on
+  :args-on {:args? true}
+  ;; answers? on, with a redact path list
+  :answers-on {:answers? true :redact [[:answer :token]]}
+  ;; every flag on
+  :all-on {:args? true :answers? true :errors? true :redact [[:args :password] [:args 0 :secret]]}
+  ;; present false is different from absent
+  :present-false {:args? false}}
+
+ :bad
+ {;; a nil-valued flag (presence policy forbids it)
+  :nil-valued {:args? nil}
+  ;; an unknown flag (closed map)
+  :unknown-flag {:payloads? true}
+  ;; a redact path that is not a non-empty vector
+  :bad-redact {:redact []}}
+
+ :cases
+ {:absent-vs-false  {:absent {} :present-false {:args? false}}
+  :zero-vs-sentinel {:note "the flags are bool; false is a real value, not a sentinel"}
+  :spoofed-tag      {:note "CallDetail is a product with no tag; a :call-detail key on an entry is not this message"}
+  :unknown-fields   {:note "an unknown field number is ignored on read"}}}

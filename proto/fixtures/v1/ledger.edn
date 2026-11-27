@@ -1,0 +1,54 @@
+;; proto/fixtures/v1/ledger.edn
+;; Good and bad values for autonomous.v1.LedgerEntry, Call, Settled, AppEvent,
+;; Origin and Approval, as EDN. Redacted.
+{:message "autonomous.v1.LedgerEntry"
+ :wire :edn
+
+ :good
+ {;; a call entry: exactly one body arm (call)
+  :call
+  {:entry/target "todo" :entry/runtime "rt-1" :entry/at 1764000000000 :entry/seq 7
+   :entry/actor "agent-1"
+   :call {:tool "todo/add" :outcome "ok" :ms 12
+          :args {:text "buy milk"} :answer {:count 3}
+          :answer/truncated? false :approval {:decision "approve" :approver "<redacted>" :ms 1764000000000}
+          :caller {:chat-point {:run-id "run-1" :seq 4 :turn 2}
+                   :run/task-id "20261127170917-4749e21b" :run/attempt 1
+                   :trace/traceparent "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+                   :trace/tracestate "congo=t61rcWkgMzE"}}}
+
+  ;; a settled entry
+  :settled
+  {:entry/target "todo" :entry/runtime "rt-1" :entry/at 1764000001000 :entry/seq 8
+   :settled {:pending "op-1" :outcome "ok" :answer {:count 3}}}
+
+  ;; an app event
+  :app-event
+  {:entry/target "todo" :entry/runtime "rt-1" :entry/at 1764000002000 :entry/seq 9
+   :app-event {:event-id :todo/add :origin :agent :payload [{:text "buy milk"}]}}}
+
+ :bad
+ {;; unset body: refused on admission
+  :unset-body        {:entry/target "todo" :entry/runtime "rt-1" :entry/at 1 :entry/seq 1}
+  ;; both arms: refused on admission
+  :both-arms         {:entry/target "todo" :entry/runtime "rt-1" :entry/at 1 :entry/seq 1
+                      :call {:tool "t" :outcome "ok" :ms 1}
+                      :settled {:pending "op-1" :outcome "ok"}}
+  ;; the old EDN-string body under the reserved name
+  :reserved-body     {:entry/target "todo" :entry/runtime "rt-1" :entry/at 1 :entry/seq 1
+                      :entry/data "{:kind :autonomous/call}"}
+  ;; the derived key carried (it is reserved, never sent)
+  :reserved-key      {:entry/target "todo" :entry/runtime "rt-1" :entry/at 1 :entry/seq 1
+                      :entry/key "todo|rt-1|1|1" :call {:tool "t" :outcome "ok" :ms 1}}}
+
+ :cases
+ {:unset-envelope   :unset-body
+  :both-arms        :both-arms
+  ;; ORIGIN_UNSPECIFIED is a wire-only sentinel, refused on domain admission
+  :zero-vs-sentinel {:zero {:origin :agent} :sentinel {:origin "ORIGIN_UNSPECIFIED"}}
+  ;; a large int64: 2^53+1 = 9007199254740993 cannot be a JSON number
+  :large-int64-string {:as-string {:entry/at "9007199254740993"}
+                       :as-number 9007199254740993
+                       :rule "at/seq/ms beyond 2^53 travel as a string"}
+  :absent-vs-false  {:absent {} :present-false {:call {:tool "t" :outcome "ok" :ms 1 :answer/truncated? false}}}
+  :unknown-fields   {:note "an unknown field number is ignored on read; a relay keeps the original envelope"}}}

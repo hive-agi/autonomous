@@ -1,0 +1,49 @@
+;; proto/fixtures/v1/caller.edn
+;; Good and bad values for autonomous.v1.Caller and ChatPoint, as EDN (the flat
+;; S7 shape). Redacted.
+{:message "autonomous.v1.Caller"
+ :wire :edn
+
+ :good
+ {;; full coordinate, all keys present (flat)
+  :full
+  {:chat-point {:run-id "run-1" :seq 4 :turn 2}
+   :run/task-id "20261127170917-4749e21b"
+   :run/attempt 1
+   :trace/traceparent "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+   :trace/tracestate "congo=t61rcWkgMzE"}
+
+  ;; only the chat point (every field is optional)
+  :chat-point-only {:chat-point {:run-id "run-1" :seq 0 :turn 0}}
+
+  ;; only the trace context
+  :trace-only {:trace/traceparent "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"}
+
+  ;; attempt 0 is a valid non-negative attempt (not a sentinel)
+  :attempt-zero {:run/task-id "card-1" :run/attempt 0}
+
+  ;; an absent _meta reads as no caller
+  :none nil}
+
+ :bad
+ {;; a nested Correlation (the dropped shape) is not the flat shape
+  :nested-correlation {:correlation {:run/task-id "card-1" :run/attempt 1}}
+  ;; an invalid traceparent is dropped and named, never kept
+  :bad-traceparent {:trace/traceparent "not-a-traceparent"}
+  ;; a chat point that is not a ChatPoint
+  :bad-chat-point {:chat-point {:run-id 5 :seq -1 :turn 2}}
+  ;; a negative attempt
+  :negative-attempt {:run/attempt -1}}
+
+ :cases
+ {;; from-meta: the _meta wire keys (reverse-DNS for the hive coordinates,
+  ;; spec's own unprefixed keys for the trace context)
+  :meta-keys {"traceparent" "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+              "tracestate" "congo=t61rcWkgMzE"
+              "io.github.hive-agi/chat-point" {:run-id "run-1" :seq 4 :turn 2}
+              "io.github.hive-agi/run-task-id" "20261127170917-4749e21b"
+              "io.github.hive-agi/run-attempt" 1}
+  ;; from-meta names the fields it dropped
+  :dropped {"io.github.hive-agi/run-attempt" -1}
+  :absent-vs-false {:absent {} :present-false {:chat-point {:run-id "run-1" :seq 0 :turn 0}}}
+  :zero-vs-sentinel {:note "attempt 0 and seq 0 are real values, not sentinels; only Origin has an UNSPECIFIED sentinel"}}}

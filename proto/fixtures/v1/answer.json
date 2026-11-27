@@ -1,0 +1,33 @@
+{
+  "_comment": "proto/fixtures/v1/answer.json -- JSON twin of answer.edn, on the MCP JSON wire (Wire A). The refusal member's JSON key is \"error\" (proto member refusal, json_name error). Redacted.",
+  "message": "autonomous.v1.Answer",
+  "wire": "json",
+  "good": {
+    "ok-map": {"ok": {"count": 3, "items": ["a", "b"]}},
+    "ok-null": {"ok": null},
+    "ok-false": {"ok": false},
+    "ok-zero": {"ok": 0},
+    "ok-empty-map": {"ok": {}},
+    "pending": {"pending": "op-1"},
+    "refusal": {"error": {"type": "unknown-tool", "message": "no such tool"}},
+    "refusal-data": {"error": {"type": "invalid-args", "message": "bad args", "data": {"field": "q"}}},
+    "refusal-open": {"error": {"type": "todo/custom-refusal", "message": "app says no"}}
+  },
+  "bad": {
+    "unset": {},
+    "both-arms": {"ok": 1, "error": {"type": "x", "message": "y"}},
+    "both-ok-pending": {"ok": 1, "pending": "op-1"},
+    "spoofed-tag": {"answer": "ok"},
+    "nil-valued-key": {"ok": null, "pending": null},
+    "wrong-member": {"refusal": {"type": "x", "message": "y"}}
+  },
+  "cases": {
+    "unset-envelope": "unset",
+    "both-arms": "both-arms",
+    "spoofed-tag": "spoofed-tag",
+    "absent-vs-false": {"absent": {}, "present-false": {"ok": false}},
+    "zero-vs-sentinel": {"zero": {"ok": 0}, "sentinel": "Origin.ORIGIN_UNSPECIFIED (see ledger.json)"},
+    "large-int64-string": {"note": "int64 beyond 2^53 crosses as a string; see ledger.json cases"},
+    "unknown-fields": {"note": "an unknown field number is ignored on read; a relay keeps the original envelope"}
+  }
+}

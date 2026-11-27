@@ -1,0 +1,48 @@
+;; proto/fixtures/v1/answer.edn
+;; Good and bad values for autonomous.v1.Answer, as EDN (the runtime<->bridge
+;; websocket wire, and the domain shape the hand malli schema validates).
+;; Redacted: no real ids, tokens or payloads. See answer.json for the JSON twin.
+;;
+;; The Answer arm names are the DOMAIN keys: :ok, :pending, :error. The proto
+;; member for the third is `refusal` with json_name "error", so the EDN map is
+;; {:error {:type .. :message .. :data ..}} and the proto field is `refusal`.
+{:message "autonomous.v1.Answer"
+ :wire :edn
+
+ :good
+ {;; ok: a value (malli :any) carried as google.protobuf.Value
+  :ok-map        {:ok {:count 3 :items ["a" "b"]}}
+  :ok-null       {:ok nil}
+  :ok-false      {:ok false}
+  :ok-zero       {:ok 0}
+  :ok-empty-map  {:ok {}}
+  ;; pending: the id an async call parked under
+  :pending       {:pending "op-1"}
+  ;; refusal: {:error {:type :message :data?}}; type is an OPEN string/keyword
+  :refusal       {:error {:type :unknown-tool :message "no such tool"}}
+  :refusal-data  {:error {:type :invalid-args :message "bad args" :data {:field "q"}}}
+  ;; a refusal type an app invented (open set stays open)
+  :refusal-open  {:error {:type :todo/custom-refusal :message "app says no"}}}
+
+ :bad
+ {;; unset envelope: refused on admission
+  :unset            {}
+  ;; both arms: refused on admission
+  :both-arms        {:ok 1 :error {:type :x :message "y"}}
+  :both-ok-pending  {:ok 1 :pending "op-1"}
+  ;; a spoofed tag: a non-Answer map that carries a lookalike key
+  :spoofed-tag      {:answer :ok}
+  ;; an arm with a nil-valued key (presence policy forbids it)
+  :nil-valued-key   {:ok nil :pending nil}
+  ;; the third member spelled with the proto name instead of the wire key
+  :wrong-member     {:refusal {:type :x :message "y"}}}
+
+ ;; named cases (card): each maps to a value above or a proto-level check
+ :cases
+ {:unset-envelope      :unset
+  :both-arms           :both-arms
+  :spoofed-tag         :spoofed-tag
+  :absent-vs-false     {:absent {} :present-false {:ok false}}
+  :zero-vs-sentinel    {:zero {:ok 0} :sentinel "Origin.ORIGIN_UNSPECIFIED (see ledger.edn)"}
+  :large-int64-string  {:note "Call.ms / LedgerEntry.at cross as a string beyond 2^53; see ledger.edn :cases"}
+  :unknown-fields      {:note "an unknown field number is ignored on read; a relay keeps the original envelope"}}}

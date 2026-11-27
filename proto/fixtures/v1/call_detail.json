@@ -1,0 +1,23 @@
+{
+  "_comment": "proto/fixtures/v1/call_detail.json -- JSON twin of call_detail.edn. The flag keys keep their '?' (json_name args?/answers?/errors?). Redacted.",
+  "message": "autonomous.v1.CallDetail",
+  "wire": "json",
+  "good": {
+    "empty": {},
+    "args-on": {"args?": true},
+    "answers-on": {"answers?": true, "redact": [["answer", "token"]]},
+    "all-on": {"args?": true, "answers?": true, "errors?": true, "redact": [["args", "password"], ["args", 0, "secret"]]},
+    "present-false": {"args?": false}
+  },
+  "bad": {
+    "nil-valued": {"args?": null},
+    "unknown-flag": {"payloads?": true},
+    "bad-redact": {"redact": []}
+  },
+  "cases": {
+    "absent-vs-false": {"absent": {}, "present-false": {"args?": false}},
+    "zero-vs-sentinel": {"note": "the flags are bool; false is a real value, not a sentinel"},
+    "spoofed-tag": {"note": "CallDetail is a product with no tag"},
+    "unknown-fields": {"note": "an unknown field number is ignored on read"}
+  }
+}

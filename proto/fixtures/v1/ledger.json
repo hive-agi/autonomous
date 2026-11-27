@@ -1,0 +1,28 @@
+{
+  "_comment": "proto/fixtures/v1/ledger.json -- JSON twin of ledger.edn. The body arm keys are \"call\"/\"settled\"/\"app-event\"; the reserved key and body are refused. Redacted.",
+  "message": "autonomous.v1.LedgerEntry",
+  "wire": "json",
+  "good": {
+    "call": {
+      "entry/target": "todo", "entry/runtime": "rt-1", "entry/at": 1764000000000, "entry/seq": 7, "entry/actor": "agent-1",
+      "call": {"tool": "todo/add", "outcome": "ok", "ms": 12, "args": {"text": "buy milk"}, "answer": {"count": 3}, "answer/truncated?": false, "approval": {"decision": "approve", "approver": "<redacted>", "ms": 1764000000000},
+               "caller": {"chat-point": {"run-id": "run-1", "seq": 4, "turn": 2}, "run/task-id": "20261127170917-4749e21b", "run/attempt": 1, "trace/traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", "trace/tracestate": "congo=t61rcWkgMzE"}}
+    },
+    "settled": {"entry/target": "todo", "entry/runtime": "rt-1", "entry/at": 1764000001000, "entry/seq": 8, "settled": {"pending": "op-1", "outcome": "ok", "answer": {"count": 3}}},
+    "app-event": {"entry/target": "todo", "entry/runtime": "rt-1", "entry/at": 1764000002000, "entry/seq": 9, "app-event": {"event-id": "todo/add", "origin": "ORIGIN_AGENT", "payload": [{"text": "buy milk"}]}}
+  },
+  "bad": {
+    "unset-body": {"entry/target": "todo", "entry/runtime": "rt-1", "entry/at": 1, "entry/seq": 1},
+    "both-arms": {"entry/target": "todo", "entry/runtime": "rt-1", "entry/at": 1, "entry/seq": 1, "call": {"tool": "t", "outcome": "ok", "ms": 1}, "settled": {"pending": "op-1", "outcome": "ok"}},
+    "reserved-body": {"entry/target": "todo", "entry/runtime": "rt-1", "entry/at": 1, "entry/seq": 1, "entry/data": "{:kind :autonomous/call}"},
+    "reserved-key": {"entry/target": "todo", "entry/runtime": "rt-1", "entry/at": 1, "entry/seq": 1, "entry/key": "todo|rt-1|1|1", "call": {"tool": "t", "outcome": "ok", "ms": 1}}
+  },
+  "cases": {
+    "unset-envelope": "unset-body",
+    "both-arms": "both-arms",
+    "zero-vs-sentinel": {"zero": {"origin": "ORIGIN_AGENT"}, "sentinel": {"origin": "ORIGIN_UNSPECIFIED"}},
+    "large-int64-string": {"as-string": {"entry/at": "9007199254740993"}, "rule": "at/seq/ms beyond 2^53 travel as a string, never a JSON number"},
+    "absent-vs-false": {"absent": {}, "present-false": {"call": {"tool": "t", "outcome": "ok", "ms": 1, "answer/truncated?": false}}},
+    "unknown-fields": {"note": "an unknown field number is ignored on read; a relay keeps the original envelope"}
+  }
+}
