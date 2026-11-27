@@ -252,15 +252,19 @@
 
 (defn resolve-target
   "Ok of the target id that built-in argument `target` names among
-   `target-ids` (Ok nil when absent and not `required?`), or a refusal of
-   type :target/required or :target/unknown listing the known ids."
+   `target-ids` (the only id when absent and not `required?`), or a refusal
+   of type :target/required, :target/none or :target/unknown listing the
+   known ids."
   [target-ids target required?]
   (cond
     (and (nil? target) required?)
     (answer/refusal :target/required "this bridge serves several apps: pass target (autonomous_apps lists them)"
                     {:known (vec target-ids)})
 
-    (nil? target) (answer/ok nil)
+    (and (nil? target) (empty? target-ids))
+    (answer/refusal :target/none "this bridge serves no app" {:known []})
+
+    (nil? target) (answer/ok (first target-ids))
 
     (some #{(str target)} target-ids) (answer/ok (str target))
 

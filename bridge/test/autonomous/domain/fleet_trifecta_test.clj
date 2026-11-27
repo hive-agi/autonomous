@@ -145,3 +145,23 @@
                ["no fleet check" (fn [f e o d ds]
                                    (let [r (promote* f e o d ds)]
                                      (if (= "invalid fleet" (get-in r [:error :message])) {:ok {:targets []}} r)))]]})
+
+(def ^:private resolve-target* fleet/resolve-target)
+
+(defn- refusal-type [a] (get-in a [:error :type]))
+
+(deftrifecta resolve-target-trifecta
+  autonomous.domain.fleet/resolve-target
+  {:golden-path "test/golden/fleet/resolve-target.edn"
+   :apply? true
+   :cases {:one-app-no-target  [["backend"] nil false]
+           :no-app             [[] nil false]
+           :several-no-target  [["a" "b"] nil true]
+           :named              [["a" "b"] "b" true]
+           :unknown            [["a" "b"] "zz" true]}
+   :gen (gen/fmap (fn [ids] [ids nil (< 1 (count ids))])
+                  (gen/vector-distinct id-gen {:min-elements 1 :max-elements 4}))
+   ;; with no target, one app resolves to itself and several are refused
+   :pred (fn [a] (or (string? (:ok a)) (= :target/required (refusal-type a))))
+   :mutations [["absent target is nil" (fn [ids t r] (if (nil? t) {:ok nil} (resolve-target* ids t r)))]
+               ["never required" (fn [ids t _] (resolve-target* ids t false))]]})

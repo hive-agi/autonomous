@@ -98,6 +98,16 @@
       (is (= {:app "a" :tool "x" :runtime nil} (:ok (:answer (call srv ses "a__x" {})))))
       (is (= 2 (get-in (call srv ses "autonomous_runtimes" {:target "b"}) [:answer :ok :attached]))))))
 
+(deftest a-fleet-of-one-needs-no-target
+  (let [l   (ledger/open {:ledger/kind :memory})
+        srv (server/fleet-server
+             (bf/make [(member "backend" (app-responder "backend" ["todos_add"]) l)]
+                      {:mode :fleet :probe-ms 150}))]
+    (is (= [{:runtime/id 1} {:runtime/id 2}]
+           (get-in (call srv rw "autonomous_runtimes" {}) [:answer :ok :runtimes]))
+        "the only app is addressed when target is omitted")
+    (is (= {"backend" 2} (:session/runtimes (:session (call srv rw "autonomous_attach" {:runtime_id 2})))))))
+
 (deftest the-ledger-names-each-entry's-target
   (let [srv (fleet-srv [["a" (app-responder "a" ["x"])] ["b" (app-responder "b" ["y"])]])]
     (call srv rw "a__x" {})

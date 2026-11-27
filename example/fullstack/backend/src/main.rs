@@ -17,6 +17,8 @@
 //!   AUTONOMOUS_BACKEND_TOKEN_FILE  a file holding it instead (wins; one
 //!                              trailing newline is dropped), so the token
 //!                              never sits in the process environment
+//!   TODO_MAX_BRIDGE_SILENT_SECS  /healthz answers 503 once the bridge has
+//!                              sent nothing for this long          [180]
 //!   AUTONOMOUS_FRONTEND_TOKEN  runtime token of target "frontend", handed
 //!                              to the browser by /config.json (a local demo;
 //!                              a real app gets it from its own login)
@@ -32,6 +34,7 @@
 //!   PLAYGROUND_AGENT_TOKEN_FILE  the same, read from a file (wins)
 
 mod agent_tools;
+mod health;
 mod statics;
 mod store;
 
@@ -42,7 +45,8 @@ use std::thread;
 use std::time::Duration;
 
 use agent_tools::agent_tools;
-use autonomous::{json, Dial, Runtime, Value};
+use health::health;
+use autonomous::{json, Dial, Link, Runtime, Value};
 use statics::Statics;
 use store::{added, removed, toggled, Limits, Store};
 use tiny_http::{Header, Method, Request, Response, Server};
@@ -57,6 +61,8 @@ struct Shared {
     store: Arc<Mutex<Store>>,
     streams: Arc<Mutex<Vec<Sender<String>>>>,
     journal: Sender<Value>,
+    link: Link,
+    max_silent: Duration,
 }
 
 impl Shared {
@@ -214,6 +220,10 @@ fn handle(mut req: Request, shared: &Shared, statics: &Statics, config: &Value) 
         (Method::Get, ["config.json"]) => {
             req.respond(json_response(config)).ok();
         }
+        (Method::Get, ["healthz"]) => {
+            let (code, body) = health(shared.link.silent_for(), shared.max_silent);
+            req.respond(json_response(&body).with_status_code(code)).ok();
+        }
         (Method::Get, _) => serve_static(req, statics, &path),
         _ => {
             req.respond(text_response(404, "not found")).ok();
@@ -292,6 +302,8 @@ fn main() {
         store: Arc::new(Mutex::new(Store::new(limits))),
         streams: Arc::default(),
         journal: journal_tx,
+        link: Link::default(),
+        max_silent: Duration::from_secs(env_num("TODO_MAX_BRIDGE_SILENT_SECS", 180) as u64),
     };
     if reset_secs > 0 {
         shared.store.lock().unwrap().reset();
@@ -330,7 +342,8 @@ fn main() {
     }
     let dial = Dial::new(&ws_url, &backend_token)
         .runtime_id("backend-1")
-        .label("todo backend (Rust)");
+        .label("todo backend (Rust)")
+        .link(shared.link.clone());
     rt.serve(&dial, |rt| {
         while let Ok(entry) = journal_rx.try_recv() {
             rt.journal(&entry);
