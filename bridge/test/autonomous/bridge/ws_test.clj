@@ -129,6 +129,39 @@
           "under the same runtime id, it opens again")
       (finally (rt/disconnect! h) (stop!)))))
 
+(defn- mute-bridge
+  "A socket that accepts TCP connections and never answers the websocket
+   upgrade: a hung or SIGSTOPped bridge as the dialing runtime sees it.
+   Answers [port stop!]."
+  []
+  (let [ss    (java.net.ServerSocket. 0)
+        conns (atom [])]
+    (future
+      (try
+        (loop []
+          (swap! conns conj (.accept ss))
+          (recur))
+        (catch Exception _closed nil)))
+    [(.getLocalPort ss) (fn [] (.close ss) (doseq [^java.net.Socket c @conns] (.close c)))]))
+
+(deftest a-bridge-that-never-answers-the-upgrade-is-redialed
+  (let [[port stop!] (mute-bridge)
+        seen (atom [])
+        t0   (System/currentTimeMillis)
+        h    (rt/connect! {:url (str "ws://127.0.0.1:" port "/autonomous/ws") :token "aut_x"
+                           :dial-ms 300
+                           :backoff {:base-ms 50 :max-ms 50}
+                           :on-status (fn [st info] (swap! seen conj [st info (System/currentTimeMillis)]))})]
+    (try
+      (is (= 10000 (:dial-ms (rt/normalize {:url "ws://x" :token "t"}))) "the default dial timeout")
+      (is (wait-until 2000 #(some (fn [[st]] (= :reconnecting st)) @seen))
+          "a dial stuck in the upgrade fails and is redialed")
+      (let [[_ info at] (first (filter (comp #{:reconnecting} first) @seen))]
+        (is (< (- at t0) 2000) "within the dial timeout, not the OS one")
+        (is (= 1006 (:code info))))
+      (is (not-any? (comp #{:hello :open} first) @seen) "it never opened")
+      (finally (rt/disconnect! h) (stop!)))))
+
 ;; -----------------------------------------------------------------------------
 ;; Channel contract against fake sockets: a fake runtime answers through rpc-str
 
