@@ -150,7 +150,10 @@
    hive ask only ties the prompts for one request together, and anyone who
    knows the hash can print it beside a different request. Throws
    :invalid-approval, printing nothing, when `lines` is not a function or
-   renders no line, so the caller never asks without the console."
+   renders no line, and after printing when `out` is a PrintWriter that
+   reports an error (checkError: stderr closed, a broken pipe), so the
+   caller never asks without the console. A console that accepts the text
+   and discards it (/dev/null) cannot be told apart from a working one."
   [out lines nonce request request-sha256]
   (let [rows (when (ifn? lines) (seq (lines request request-sha256)))]
     (when-not rows
@@ -161,7 +164,10 @@
         (println (str "[" (subs (str nonce) 0 (min 8 (count (str nonce)))) "] waiting for a signed approval;"
                       " this console is the request; the prefix only matches it to the other prompt"))
         (run! println rows)
-        (flush)))))
+        (flush))
+      (when (and (instance? java.io.PrintWriter out) (.checkError ^java.io.PrintWriter out))
+        (throw (ex-info "the gate console cannot be written, so the request is not asked"
+                        {:autonomous/error :invalid-approval}))))))
 
 (defn hive-solicit-with
   "L1 adapter (clj): `hive-solicit` over the hive-cloak functions it is

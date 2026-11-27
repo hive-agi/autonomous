@@ -184,6 +184,18 @@ event and read any app-db path. They require `:admin`, so an agent without it
 neither sees nor calls them. Still, install them only in development builds
 (the example passes `goog.DEBUG`).
 
+## The signed approval gate's console
+
+`autonomous.approval.signed` prints each request on the gate's own console
+(`:console`, stderr by default) before it asks anyone, and the operator
+reads the request there (hive-cloak `doc/signed-approval.md`). When the
+console is a `PrintWriter` that reports an error after the flush (stderr
+closed, a broken pipe), the request is denied and nothing is asked. A
+console that accepts the text and throws it away cannot be detected: with
+stderr redirected to `/dev/null` the ask still goes out and the operator
+sees nothing. Run the gate with its stderr on a terminal or a log the
+operator reads.
+
 ## What to check before exposing an app
 
 - The nREPL port is bound to localhost and not forwarded anywhere.

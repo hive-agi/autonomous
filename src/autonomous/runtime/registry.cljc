@@ -378,14 +378,28 @@
   [id a]
   (settle-with! id a #(journal/settled-entry id a (:call-detail %))))
 
+(defn- journaled?
+  "Does state `st` journal an :autonomous/settled entry for parked `id`?"
+  [st id]
+  (boolean (some #(and (= :autonomous/settled (:kind %)) (= id (:pending %)))
+                 (get-in st [:journal :entries]))))
+
 (defn settle-unrecorded!
   "Record fallback Answer `a` of parked `id` and its literal
    journal/unrecorded-entry in one swap. Reads no CallDetail and redacts
-   nothing, so it does not throw on what made settle! throw. Answers the
-   entry's sequence number."
+   nothing, so it does not throw on what made settle! throw. An id whose
+   :autonomous/settled entry is already journaled (a settle! that
+   committed, then threw from a watch) is left as it is: no second entry,
+   its answer kept, no swap. Answers the entry's sequence number, or nil
+   when it left the id alone."
   [id a]
-  (let [entry (journal/unrecorded-entry id a)]
-    (settle-with! id a (constantly entry))))
+  (let [ref   (state-ref)
+        entry (journal/unrecorded-entry id a)
+        now   (now-ms)]
+    (when-not (journaled? @ref id)
+      (let [[before after] (swap-vals! ref #(if (journaled? % id) % (settled % id a (constantly entry) now)))]
+        (when-not (journaled? before id)
+          (get-in after [:journal :seq]))))))
 
 (defn take-settled!
   "Answer for parked `id`: the settled answer (removed once taken), Pending

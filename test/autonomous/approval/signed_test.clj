@@ -165,7 +165,22 @@
         (is (= :invalid-approval
                (try (signed/console! (java.io.StringWriter.) nil "n" request "h") nil
                     (catch clojure.lang.ExceptionInfo e (:autonomous/error (ex-data e)))))
-            "console! itself throws rather than print nothing")))))
+            "console! itself throws rather than print nothing"))
+      (testing "a dead console (a PrintWriter that swallowed an I/O error) is refused after the flush, before the ask"
+        (let [dead    (doto (java.io.PrintWriter. (java.io.StringWriter.)) (.close))
+              lines   (fn [req _] [(str "tool " (:tool req))])
+              solicit (signed/hive-solicit-with {:statement statement :lines lines}
+                                                {:ask! ask! :agent-id "ling-1" :console dead})]
+          (reset! asked 0)
+          (is (= :invalid-approval
+                 (try (signed/console! dead lines "n" request "h") nil
+                      (catch clojure.lang.ExceptionInfo e (:autonomous/error (ex-data e))))))
+          (is (= :invalid-approval (error-of (solicit pending))) "the solicit fails instead of answering")
+          (is (zero? @asked) "the hive ask never went out")))
+      (testing "a live PrintWriter console passes"
+        (let [w (java.io.StringWriter.)]
+          (signed/console! (java.io.PrintWriter. w) (fn [_ _] ["row"]) "n" request "h")
+          (is (str/includes? (str w) "row")))))))
 
 (deftest a-valid-signature-approves-and-the-approver-is-the-pin
   (with-keys
