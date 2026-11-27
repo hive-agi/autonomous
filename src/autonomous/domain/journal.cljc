@@ -135,32 +135,36 @@
    so the call joins the :autonomous/settled entry that says how it ended.
    `detail` is the app's CallDetail, nil for none: with it the entry carries
    the grant's session; with :args? the args as sent, bounded, :redact paths
-   replaced; with :answers? an Ok answer's value, bounded, :redact paths under
-   :answer masked, :answer/truncated? when cut; with :errors? a refusal's
-   :error."
+   replaced, :args/truncated? true when the bound cut them; with :answers? an
+   Ok answer's value, bounded, :redact paths under :answer masked,
+   :answer/truncated? when cut; with :errors? a refusal's :error."
   [tool-name args grant ans ms detail]
-  (cond-> {:kind    :autonomous/call
-           :actor   (:actor grant)
-           :tool    tool-name
-           :outcome (answer/outcome ans)
-           :ms      ms}
-    (answer/pending? ans)
-    (assoc :pending (:pending ans))
+  (let [[bounded cut?] (when (:args? detail) (bounded-detail (or args {})))]
+    (cond-> {:kind    :autonomous/call
+             :actor   (:actor grant)
+             :tool    tool-name
+             :outcome (answer/outcome ans)
+             :ms      ms}
+      (answer/pending? ans)
+      (assoc :pending (:pending ans))
 
-    (and detail (:session grant))
-    (assoc :session (:session grant))
+      (and detail (:session grant))
+      (assoc :session (:session grant))
 
-    (:args? detail)
-    (assoc :args (redact-paths (first (bounded-detail (or args {}))) (:redact detail)))
+      (:args? detail)
+      (assoc :args (redact-paths bounded (:redact detail)))
 
-    (and (:answers? detail) (answer/ok? ans))
-    (with-answer ans detail)
+      (and (:args? detail) cut?)
+      (assoc :args/truncated? true)
 
-    (and (:errors? detail) (answer/refused? ans))
-    (assoc :error (:error ans))
+      (and (:answers? detail) (answer/ok? ans))
+      (with-answer ans detail)
 
-    :always
-    (with-approval ans detail)))
+      (and (:errors? detail) (answer/refused? ans))
+      (assoc :error (:error ans))
+
+      :always
+      (with-approval ans detail))))
 
 (defn settled-entry
   "The entry saying how the async call parked as `id` ended: Answer `ans`.

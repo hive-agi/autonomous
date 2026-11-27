@@ -165,7 +165,8 @@
                              {:answers? true :redact [[:answer :token]]}]
            :answer-and-args ["todo_add" {:text "x"} {:actor "a"} {:ok 1} 1
                              {:args? true :answers? true}]
-           :answer-refused  ["todo_add" {} {:actor "a"} refused 1 {:answers? true}]}
+           :answer-refused  ["todo_add" {} {:actor "a"} refused 1 {:answers? true}]
+           :args-truncated  ["t" {:text (apply str (repeat 1001 "x"))} {:actor "a"} {:ok 1} 1 {:args? true}]}
    :gen (gen/tuple (gen/elements ["t" "u"])
                    (gen/one-of [(gen/return nil) (gen/map gen/keyword gen/small-integer {:max-elements 3})])
                    (gen/hash-map :actor (gen/elements ["a" "b"]) :session (gen/elements [nil "s"]))
@@ -179,6 +180,7 @@
    :pred (fn [e] (and (= :autonomous/call (:kind e)) (keyword? (:outcome e))
                       (or (nil? (:args e)) (map? (:args e)))
                       (or (not (contains? e :answer)) (= :ok (:outcome e)))
+                      (or (not (contains? e :args/truncated?)) (contains? e :args))
                       (= (= :pending (:outcome e)) (contains? e :pending))))
    :mutations [["ignores detail" (fn [t a g ans ms _] (call-entry* t a g ans ms nil))]
                ["session without detail" (fn [t a g ans ms d] (call-entry* t a g ans ms (or d {})))]
@@ -188,7 +190,8 @@
                ["answers even refused" (fn [t a g ans ms d]
                                          (let [e (call-entry* t a g ans ms d)]
                                            (if (:answers? d) (assoc e :answer (:ok ans)) e)))]
-               ["pending id dropped" (fn [t a g ans ms d] (dissoc (call-entry* t a g ans ms d) :pending))]]})
+               ["pending id dropped" (fn [t a g ans ms d] (dissoc (call-entry* t a g ans ms d) :pending))]
+               ["args never truncated" (fn [t a g ans ms d] (dissoc (call-entry* t a g ans ms d) :args/truncated?))]]})
 
 (def ^:private settled-entry* journal/settled-entry)
 
@@ -244,6 +247,18 @@
       (testing "a small answer is not marked"
         (is (not (contains? (journal/call-entry "t" {} {:actor "a"} {:ok {:id 7}} 1 {:answers? true})
                             :answer/truncated?))))))
+  (testing "the size bound cuts long args and marks them, symmetric with :answer"
+    (let [long (journal/call-entry "t" {:text (apply str (repeat 5000 "x"))} {:actor "a"} {:ok 1} 1 {:args? true})
+          wide (journal/call-entry "t" {:items (vec (range 20000))} {:actor "a"} {:ok 1} 1 {:args? true})]
+      (is (:args/truncated? long))
+      (is (= (+ journal/max-detail-chars (count journal/cut-marker)) (count (:text (:args long)))))
+      (is (:args/truncated? wide))
+      (is (= journal/max-detail-items (count (:items (:args wide))))))
+    (testing "small args and unrecorded args are not marked"
+      (is (not (contains? (journal/call-entry "t" {:text "x"} {:actor "a"} {:ok 1} 1 {:args? true})
+                          :args/truncated?)))
+      (is (not (contains? (journal/call-entry "t" {:text (apply str (repeat 5000 "x"))} {:actor "a"} {:ok 1} 1 nil)
+                          :args/truncated?)))))
   (testing "the CallDetail schema takes :answers? and stays closed"
     (is (m/validate s/CallDetail {:answers? true}))
     (is (not (m/validate s/CallDetail {:answers? "yes"})))))
