@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package autonomous.v1;
+
+import "google/protobuf/struct.proto";
+
+// Answer is a runtime's reply to one request: exactly one of ok, pending or a
+// refusal, so a bridge never has to guess which. Closed sum -> defadt.
+//
+// DRAFT and UNPINNED: field numbers and wrapper types may change once the
+// proto -> hive-dsl.adt transform design note lands.
+//
+// Mirrors autonomous.domain.answer and autonomous.domain.schema (Ok, Pending,
+// Refusal, Answer). The wire key of the refusal member is "error", not
+// "refusal": the internal map is {:error {:type .. :message .. :data ..}}.
+message Answer {
+  oneof answer {
+    // {:ok v}. The value is arbitrary data (malli :any), carried as a
+    // google.protobuf.Value so the published contract is portable to every
+    // language and matches today's JSON wire. EDN-only scalars (keyword,
+    // symbol, uuid, set) are an ACL concern; the current JSON wire already
+    // stringifies them.
+    google.protobuf.Value ok = 1;
+
+    // {:pending id}. The id an async call parked under; collect it later.
+    string pending = 2;
+
+    // {:error {:type .. :message .. :data ..}}.
+    // json_name "error" so a codec matches the current wire.
+    Refusal refusal = 3 [json_name = "error"];
+  }
+}
+
+// Refusal is why a request was refused, written for the agent.
+// Mirrors autonomous.domain.schema/Refusal.
+message Refusal {
+  // The refusal type: an OPEN keyword set (:invalid-args, :unknown-tool,
+  // :tool-threw, :forbidden, :leased, ...). A string, not an enum, because
+  // applications invent their own types (open sets stay open).
+  string type = 1;
+
+  // A message written for the agent.
+  string message = 2;
+
+  // Optional data that says what to change (malli :any).
+  google.protobuf.Value data = 3;
+}

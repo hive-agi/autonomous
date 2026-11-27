@@ -1,0 +1,36 @@
+syntax = "proto3";
+
+package autonomous.v1;
+
+import "google/protobuf/struct.proto";
+
+// CallDetail is what an application lets the journal keep about each tool
+// call, beyond actor, tool, outcome and duration. Every flag is off by
+// default, so an entry is minimal until the app opts in.
+//
+// DRAFT and UNPINNED.
+//
+// Mirrors autonomous.domain.schema/CallDetail (a closed map):
+//   [:map {:closed true}
+//    [:args? {:optional true} :boolean]
+//    [:answers? {:optional true} :boolean]
+//    [:errors? {:optional true} :boolean]
+//    [:redact {:optional true} [:sequential [:vector {:min 1} :any]]]]
+message CallDetail {
+  // :args? keep the args as sent, with :redact paths replaced.
+  optional bool args = 1 [json_name = "args?"];
+
+  // :answers? keep an Ok answer's value, bounded, :redact paths under :answer
+  // masked, with :answer/truncated? when the bound cut it. (S6, branch
+  // feat/journal-answers.)
+  optional bool answers = 2 [json_name = "answers?"];
+
+  // :errors? keep a refusal's :error.
+  optional bool errors = 3 [json_name = "errors?"];
+
+  // :redact paths whose value is replaced by "<redacted>". Each path is a
+  // vector of keys or indices into the args (or into :answer / :approval).
+  // Carried as a list of ListValue so it stays portable and matches the
+  // existing [:sequential [:vector :any]] shape.
+  repeated google.protobuf.ListValue redact = 4;
+}

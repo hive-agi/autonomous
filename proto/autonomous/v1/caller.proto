@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package autonomous.v1;
+
+// Caller is the coordinate that joins the agent trace to the app trace: the
+// agent's chat point, the task/attempt correlation, and the W3C trace context.
+// Recorded on a call entry when the MCP request carries it in `_meta`; off by
+// default, so goldens do not change without it.
+//
+// DRAFT and UNPINNED: the MCP `_meta` wire spelling is still to be fixed in
+// the plan pass (card 20261127155655-4ebda860), so json_name here is the
+// EXISTING Clojure/EDN key and may change.
+//
+// Mirrors hive-agent.loop.chat-point/ChatPoint, hive-spi.agent.run-control/
+// Correlation, and the W3C trace-context header pair.
+message Caller {
+  // The agent step that issued the call.
+  ChatPoint chat_point = 1 [json_name = "chat-point"];
+
+  // The task and attempt, when the run carries them.
+  optional Correlation correlation = 2;
+
+  // W3C trace context (traceparent, tracestate). Optional: an invalid
+  // traceparent is dropped and counted, never an error.
+  optional string traceparent = 3;
+  optional string tracestate = 4;
+}
+
+// ChatPoint is one position in one conversation, however many branches lie
+// beneath it: the run id and the lineage coordinates seq and turn.
+// Mirrors hive-agent.loop.chat-point/ChatPoint
+// [:map [:run-id :string] [:seq Seq] [:turn Seq]].
+message ChatPoint {
+  // :run-id
+  string run_id = 1 [json_name = "run-id"];
+
+  // :seq, the position in the lineage.
+  int64 seq = 2;
+
+  // :turn, the agent turn the position belongs to.
+  int64 turn = 3;
+}
+
+// Correlation is the caller coordinates a scheduler joins a run to its task
+// with. Mirrors hive-spi.agent.run-control/Correlation
+// [:map [:run/task-id {:optional true} :string]
+//       [:run/attempt {:optional true} [:int {:min 0}]]].
+message Correlation {
+  // :run/task-id, for example the kanban card.
+  optional string task_id = 1 [json_name = "run/task-id"];
+
+  // :run/attempt.
+  optional int64 attempt = 2 [json_name = "run/attempt"];
+}

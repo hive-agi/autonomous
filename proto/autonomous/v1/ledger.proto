@@ -1,0 +1,145 @@
+syntax = "proto3";
+
+package autonomous.v1;
+
+import "autonomous/v1/answer.proto";
+import "autonomous/v1/caller.proto";
+import "google/protobuf/struct.proto";
+
+// LedgerEntry is one journal entry drained from a runtime into the durable,
+// queryable ledger: where it came from (target, runtime), when and in what
+// order (at, seq), who did it (actor), and a typed body that says what kind
+// of entry it is (call, settled, or an app event).
+//
+// DRAFT and UNPINNED: field numbers and wrapper types may change once the
+// proto -> hive-dsl.adt transform design note lands.
+//
+// Mirrors autonomous.bridge.ledger/->ledger-entry (the durable record) and
+// /->view (the reader projection). The body is a oneof because :entry/kind
+// (:autonomous/call, :autonomous/settled, :re-frame/event) is a closed sum;
+// today the durable record carries that body as an EDN string under
+// :entry/data, which this draft replaces with a structured oneof.
+message LedgerEntry {
+  // :entry/target, the runtime's target (an nREPL endpoint, or in-process).
+  string target = 1 [json_name = "entry/target"];
+
+  // :entry/runtime, the runtime id as a string.
+  string runtime = 2 [json_name = "entry/runtime"];
+
+  // :entry/at, epoch millis.
+  int64 at = 3 [json_name = "entry/at"];
+
+  // :entry/seq, the journal sequence number.
+  int64 seq = 4 [json_name = "entry/seq"];
+
+  // :entry/actor, when the entry names one.
+  optional string actor = 5 [json_name = "entry/actor"];
+
+  // The entry's own body; the tag is the old :entry/kind.
+  oneof body {
+    Call call = 6;
+    Settled settled = 7;
+    AppEvent app_event = 8 [json_name = "app-event"];
+  }
+}
+
+// Call is a tool call: actor, tool, outcome and duration, plus the CallDetail
+// the app opted into. Mirrors autonomous.domain.journal/call-entry.
+message Call {
+  // :tool.
+  string tool = 1;
+
+  // :outcome, from autonomous.domain.answer/outcome: "ok", "pending", or a
+  // refusal type. A string, not an enum: refusal types are an open set.
+  string outcome = 2;
+
+  // :ms, the call's duration in milliseconds.
+  int64 ms = 3;
+
+  // :pending, the id an async call parked under (kept so the call joins the
+  // settled entry that says how it ended).
+  optional string pending = 4;
+
+  // :session, the grant's session, when the app kept detail and had one.
+  optional string session = 5;
+
+  // :args as sent, wire-form, with :redact paths replaced.
+  optional google.protobuf.Value args = 6;
+
+  // :answer, an Ok answer's value, bounded, with :redact paths under
+  // :answer masked. (S6, branch feat/journal-answers.)
+  optional google.protobuf.Value answer = 7;
+
+  // :answer/truncated? true when the journal's size bound cut the answer.
+  optional bool answer_truncated = 8 [json_name = "answer/truncated?"];
+
+  // :error, a refusal's type, message and data, when the call was refused.
+  optional Refusal error = 9;
+
+  // :approval, a human Decision the answer carries.
+  optional Approval approval = 10;
+
+  // :caller, the agent<->app join key (S7, card 20261127155655-4ebda860).
+  optional Caller caller = 11;
+}
+
+// Settled is how an async call parked as `pending` ended.
+// Mirrors autonomous.domain.journal/settled-entry.
+message Settled {
+  // :pending, the id of the call this settles.
+  string pending = 1;
+
+  // :outcome, as in Call.
+  string outcome = 2;
+
+  // :answer, an Ok answer's value, bounded, redacted, as in Call.
+  optional google.protobuf.Value answer = 3;
+
+  // :error, as in Call.
+  optional Refusal error = 4;
+
+  // :approval, as in Call.
+  optional Approval approval = 5;
+}
+
+// AppEvent is a re-frame event observed in the app.
+// Mirrors autonomous.re-frame.model/event-entry.
+message AppEvent {
+  // :event-id, the event's id (the first element of the event vector).
+  string event_id = 1 [json_name = "event-id"];
+
+  // :origin, who caused the event.
+  Origin origin = 2;
+
+  // :payload, the rest of the event vector, kept only when payloads? is on
+  // (it may carry what the human typed).
+  optional google.protobuf.Value payload = 3;
+}
+
+// Origin is who caused a re-frame event: the agent (dispatched through a
+// tool) or the app (the human, a timer, a server push). Closed set.
+// Mirrors autonomous.re-frame.model/event-entry :origin.
+enum Origin {
+  // Unspecified origin.
+  ORIGIN_UNSPECIFIED = 0;
+
+  // Dispatched by the agent.
+  ORIGIN_AGENT = 1;
+
+  // Dispatched by the app itself.
+  ORIGIN_APP = 2;
+}
+
+// Approval is a human Decision kept on an entry.
+// Mirrors autonomous.domain.journal/with-approval and
+// /unrecorded-decision: {:decision :approver :ms}.
+message Approval {
+  // :decision, a keyword decision (:approve, :reject, ...) as a string.
+  optional string decision = 1;
+
+  // :approver, always the "<redacted>" marker.
+  optional string approver = 2;
+
+  // :ms, when the decision was made.
+  optional int64 ms = 3;
+}
