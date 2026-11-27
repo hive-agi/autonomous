@@ -195,20 +195,70 @@ Mirrors `autonomous.domain.schema/CallDetail` (a `{:closed true}` map).
 
 ## `caller.proto`
 
-### `Caller`
-Mirrors the join key of S7 (card `20261127155655-4ebda860`): the MCP `_meta`
-carries `chat-point`, `correlation`, `traceparent`, `tracestate`.
+### Caller reconcile (S7 landed)
 
-| proto field | json_name | existing Clojure key | owner | status |
+S7 landed on branch `feat/caller-coordinate` @ `633ece9` (card
+`20261127155655-4ebda860`). The EDN shape there is **FLAT**:
+`autonomous.domain.schema/Caller` is
+
+```clojure
+[:map
+ [:chat-point {:optional true} ChatPoint]
+ [:run/task-id {:optional true} :string]
+ [:run/attempt {:optional true} [:int {:min 0}]]
+ [:trace/traceparent {:optional true} Traceparent]
+ [:trace/tracestate {:optional true} :string]]
+```
+
+and `autonomous.domain.caller/from-meta` reads exactly those keys. The MCP
+`_meta` wire keys (`autonomous.domain.caller/wire-keys`, MCP 2026-07-28,
+SEP-414) are:
+
+| `_meta` wire key | EDN key | value |
+|---|---|---|
+| `traceparent` | `:trace/traceparent` | W3C traceparent (spec's own unprefixed key) |
+| `tracestate` | `:trace/tracestate` | W3C tracestate (unprefixed) |
+| `io.github.hive-agi/chat-point` | `:chat-point` | `{:run-id :seq :turn}` |
+| `io.github.hive-agi/run-task-id` | `:run/task-id` | the task |
+| `io.github.hive-agi/run-attempt` | `:run/attempt` | the try |
+
+**Decision: the proto mirrors the FLAT EDN shape.** The earlier draft nested a
+`Correlation` message; that is dropped and its two fields are inlined. Reasons:
+
+1. The EDN shape the drift test compares against is flat. A nested proto would
+   force the ACL to invent a `:correlation` key that no Clojure code produces.
+2. `Caller` is a **product**, not a sum: nothing about it selects between
+   alternatives, so nesting buys no exhaustiveness (the "Cardinality Decides
+   the Construct" rule generates an ADT only for a real oneof or enum). A
+   product stays a product.
+3. The host-neutral run-control interface (the hive-spi side) is a *type* the
+   autonomous domain deliberately does not require at the wire: the schema
+   copies the two key names, not the type. Mirroring the EDN keeps that seam:
+   the names are what matter, and they are carried whole.
+
+### `Caller`
+| proto field | json_name (EDN key) | `_meta` wire key | owner | status |
 |---|---|---|---|---|
-| `chat_point` | `chat-point` | `:chat-point` | S7 | **new** |
-| `correlation` | `correlation` | `:correlation` | S7 / `hive-spi.agent.run-control/Correlation` | **new** |
-| `traceparent` | `traceparent` | `:traceparent` | S7 (W3C) | **new** |
-| `tracestate` | `tracestate` | `:tracestate` | S7 (W3C) | **new** |
+| `chat_point` | `chat-point` | `io.github.hive-agi/chat-point` | S7 | **new** |
+| `run_task_id` | `run/task-id` | `io.github.hive-agi/run-task-id` | S7 | **new** |
+| `run_attempt` | `run/attempt` | `io.github.hive-agi/run-attempt` | S7 | **new** |
+| `traceparent` | `trace/traceparent` | `traceparent` | S7 (W3C, SEP-414) | **new** |
+| `tracestate` | `trace/tracestate` | `tracestate` | S7 (W3C, SEP-414) | **new** |
+
+- **json_name is the EDN key**, not the `_meta` key, for the hive coordinates:
+  a proto-to-EDN codec emits `run/task-id` (namespaced), while the MCP JSON
+  codec (`autonomous.mcp.json`) emits `io.github.hive-agi/run-task-id` from the
+  same value. Both spellings are pinned in the table so neither is guessed. The
+  trace keys are identical in both wires (`traceparent` / `tracestate`), so
+  their json_name is `trace/traceparent` / `trace/tracestate` for the EDN side
+  and the plain spec key for the `_meta` side.
+- `traceparent` here carries the EDN key `:trace/traceparent`; the `_meta` side
+  uses the W3C spec's unprefixed `traceparent` (SEP-414). A `Caller` value is
+  validated by `autonomous.domain.trace/parse-traceparent` on admission.
 
 ### `ChatPoint`
-Mirrors `hive-agent.loop.chat-point/ChatPoint`
-`[:map [:run-id :string] [:seq Seq] [:turn Seq]]`.
+Mirrors `autonomous.domain.schema/ChatPoint` (S7) and the chat-point type
+`[:map [:run-id :string] [:seq [:int {:min 0}]] [:turn [:int {:min 0}]]]`.
 
 | proto field | json_name | existing Clojure key | owner | status |
 |---|---|---|---|---|
@@ -218,20 +268,12 @@ Mirrors `hive-agent.loop.chat-point/ChatPoint`
 
 - `run_id` keeps the kebab spelling from ChatPoint (`:run-id`), **not** the
   snake `run_id` the ledger's `->view` would suggest. The join key uses the
-  existing hive-spi/chat-point names (Pedro's correction on the card), so the
-  ChatPoint spelling wins.
-
-### `Correlation`
-Mirrors `hive-spi.agent.run-control/Correlation`
-`[:map [:run/task-id {:optional true} :string] [:run/attempt {:optional true} [:int {:min 0}]]]`.
-
-| proto field | json_name | existing Clojure key | owner | status |
-|---|---|---|---|---|
-| `task_id` | `run/task-id` | `:run/task-id` | `hive-spi.agent.run-control` | mirrored |
-| `attempt` | `run/attempt` | `:run/attempt` | `hive-spi.agent.run-control` | mirrored |
-
-- The namespaced keys `:run/task-id` / `:run/attempt` are kept whole; the proto
-  field name is snake and the `json_name` restores the namespaced wire key.
+  existing chat-point names (Pedro's correction on the card), so the ChatPoint
+  spelling wins.
+- **`Correlation` message is REMOVED** from this draft; its two fields are
+  inlined as `Caller.run_task_id` and `Caller.run_attempt`. Field numbers 2 and
+  3 are reserved below so the removed nested message can never be reintroduced
+  at a colliding number.
 
 ---
 

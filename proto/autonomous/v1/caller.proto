@@ -4,32 +4,45 @@ package autonomous.v1;
 
 // Caller is the coordinate that joins the agent trace to the app trace: the
 // agent's chat point, the task/attempt correlation, and the W3C trace context.
-// Recorded on a call entry when the MCP request carries it in `_meta`; off by
-// default, so goldens do not change without it.
+// It is read from the MCP tools/call request `_meta` and recorded on the call
+// entry as :caller, so the agent trace and the app trace join.
 //
-// DRAFT and UNPINNED: the MCP `_meta` wire spelling is still to be fixed in
-// the plan pass (card 20261127155655-4ebda860), so json_name here is the
-// EXISTING Clojure/EDN key and may change.
+// SHAPE: FLAT, mirroring the EDN shape of S7 (branch feat/caller-coordinate,
+// autonomous.domain.schema/Caller and autonomous.domain.caller). The EDN map
+// is flat (:chat-point, :run/task-id, :run/attempt, :trace/traceparent,
+// :trace/tracestate), so this proto is flat too. The earlier draft nested a
+// Correlation message; that nesting is dropped (see MAPPING.md, "Caller
+// reconcile"). Correlation's two fields are inlined here. A product is not a
+// sum: no oneof, and no message for what the EDN carries inline.
 //
-// Mirrors hive-agent.loop.chat-point/ChatPoint, hive-spi.agent.run-control/
-// Correlation, and the W3C trace-context header pair.
+// Every field is optional; an absent _meta reads as no caller, and an invalid
+// field is dropped and named, never an error (autonomous.domain.caller/
+// from-meta).
 message Caller {
-  // The agent step that issued the call.
+  // :chat-point. The agent step that issued the call.
   ChatPoint chat_point = 1 [json_name = "chat-point"];
 
-  // The task and attempt, when the run carries them.
-  optional Correlation correlation = 2;
+  // :run/task-id. The task (for example the kanban card), when the run names
+  // one.
+  optional string run_task_id = 2 [json_name = "run/task-id"];
 
-  // W3C trace context (traceparent, tracestate). Optional: an invalid
-  // traceparent is dropped and counted, never an error.
-  optional string traceparent = 3;
-  optional string tracestate = 4;
+  // :run/attempt. The try, when the run names one.
+  optional int64 run_attempt = 3 [json_name = "run/attempt"];
+
+  // :trace/traceparent. The W3C traceparent. Optional: an invalid traceparent
+  // is dropped and named, never an error. The _meta wire key is the spec's
+  // own UNPREFIXED "traceparent" (SEP-414); the EDN key is :trace/traceparent.
+  optional string traceparent = 4 [json_name = "trace/traceparent"];
+
+  // :trace/tracestate. The W3C tracestate. _meta key "tracestate".
+  optional string tracestate = 5 [json_name = "trace/tracestate"];
 }
 
 // ChatPoint is one position in one conversation, however many branches lie
 // beneath it: the run id and the lineage coordinates seq and turn.
-// Mirrors hive-agent.loop.chat-point/ChatPoint
-// [:map [:run-id :string] [:seq Seq] [:turn Seq]].
+// Mirrors hive-agent.loop.chat-point/ChatPoint and
+// autonomous.domain.schema/ChatPoint
+// [:map [:run-id :string] [:seq [:int {:min 0}]] [:turn [:int {:min 0}]]].
 message ChatPoint {
   // :run-id
   string run_id = 1 [json_name = "run-id"];
@@ -39,16 +52,4 @@ message ChatPoint {
 
   // :turn, the agent turn the position belongs to.
   int64 turn = 3;
-}
-
-// Correlation is the caller coordinates a scheduler joins a run to its task
-// with. Mirrors hive-spi.agent.run-control/Correlation
-// [:map [:run/task-id {:optional true} :string]
-//       [:run/attempt {:optional true} [:int {:min 0}]]].
-message Correlation {
-  // :run/task-id, for example the kanban card.
-  optional string task_id = 1 [json_name = "run/task-id"];
-
-  // :run/attempt.
-  optional int64 attempt = 2 [json_name = "run/attempt"];
 }
