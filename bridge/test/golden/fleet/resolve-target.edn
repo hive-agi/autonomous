@@ -1,0 +1,18 @@
+{:named {:ok "b"},
+ :no-app
+ {:error
+  {:type :target/none,
+   :message "this bridge serves no app",
+   :data {:known []}}},
+ :one-app-no-target {:ok "backend"},
+ :several-no-target
+ {:error
+  {:type :target/required,
+   :message
+   "this bridge serves several apps: pass target (autonomous_apps lists them)",
+   :data {:known ["a" "b"]}}},
+ :unknown
+ {:error
+  {:type :target/unknown,
+   :message "no app \"zz\" in this fleet",
+   :data {:known ["a" "b"]}}}}

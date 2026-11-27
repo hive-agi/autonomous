@@ -75,6 +75,60 @@
   (is (= 30000 (rt/backoff-ms 20 rt/default-backoff 1.0)))
   (is (= 250 (rt/backoff-ms 0 rt/default-backoff 0.1)) "jitter never halves below 0.5"))
 
+(deftest a-quiet-link-is-pinged-and-a-silent-one-is-dead
+  (let [hb {:ping-ms 20 :idle-ms 60}]
+    (is (= :idle (rt/idle-action 19 0 0 hb)))
+    (is (= :ping (rt/idle-action 20 0 0 hb)))
+    (is (= :idle (rt/idle-action 39 0 20 hb)) "one ping per interval")
+    (is (= :dead (rt/idle-action 60 0 40 hb)) "pings alone do not keep it alive")
+    (is (= :idle (rt/idle-action 60 50 40 hb)) "a frame heard does")))
+
+(defn- silent-bridge
+  "A socket that accepts websocket upgrades and then never sends a frame or
+   answers a ping: a half-open link as the runtime sees it. Answers
+   [port stop!]."
+  []
+  (let [ss    (java.net.ServerSocket. 0)
+        conns (atom [])]
+    (future
+      (try
+        (loop []
+          (let [s      (.accept ss)
+                in     (java.io.BufferedReader. (java.io.InputStreamReader. (.getInputStream s)))
+                k      (loop [k nil]
+                         (let [l (.readLine in)]
+                           (if (or (nil? l) (= "" l))
+                             k
+                             (recur (if (.startsWith (.toLowerCase ^String l) "sec-websocket-key:")
+                                      (.trim (subs l (count "sec-websocket-key:")))
+                                      k)))))
+                accept (.encodeToString (java.util.Base64/getEncoder)
+                                        (.digest (java.security.MessageDigest/getInstance "SHA-1")
+                                                 (.getBytes (str k "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))))
+                out    (.getOutputStream s)]
+            (.write out (.getBytes (str "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
+                                        "Connection: Upgrade\r\nSec-WebSocket-Accept: " accept "\r\n\r\n")))
+            (.flush out)
+            (swap! conns conj s)
+            (recur)))
+        (catch Exception _closed nil)))
+    [(.getLocalPort ss) (fn [] (.close ss) (doseq [^java.net.Socket c @conns] (.close c)))]))
+
+(deftest a-silent-bridge-is-redialed
+  (let [[port stop!] (silent-bridge)
+        seen (atom [])
+        h    (rt/connect! {:url (str "ws://127.0.0.1:" port "/autonomous/ws") :token "aut_x"
+                           :heartbeat {:ping-ms 100 :idle-ms 400}
+                           :backoff {:base-ms 50 :max-ms 50}
+                           :on-status (fn [st info] (swap! seen conj [st info]))})]
+    (try
+      (is (wait-until 3000 #(some (fn [[st info]] (and (= :reconnecting st) (= "bridge silent" (:reason info))))
+                                  @seen))
+          "a link that stops answering is closed and redialed")
+      (is (wait-until 3000 #(<= 2 (count (filter (comp #{:hello} first) @seen))))
+          "under the same runtime id, it opens again")
+      (finally (rt/disconnect! h) (stop!)))))
+
 ;; -----------------------------------------------------------------------------
 ;; Channel contract against fake sockets: a fake runtime answers through rpc-str
 
