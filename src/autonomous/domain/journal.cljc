@@ -5,7 +5,8 @@
 
    CallEntry  the entry of one tool call: actor, tool, outcome and duration,
               plus the CallDetail the app opted into: the session, the args
-              as sent with redacted paths, the refusal."
+              as sent with redacted paths, an Ok call's answer (bounded),
+              the refusal."
   (:require [autonomous.domain.answer :as answer]
             [autonomous.domain.wire :as wire]))
 
@@ -66,6 +67,58 @@
   ([m paths replacement]
    (reduce (partial mask-path replacement) m paths)))
 
+(def max-detail-items
+  "The most items a journaled detail value (:args or :answer) keeps in any
+   sequence or set; shared by both, so neither can blow up an entry (the
+   ledger prints the whole entry as one string)."
+  wire/max-items)
+
+(def max-detail-chars
+  "The longest string kept in a journaled detail value (:args or :answer);
+   the rest is cut and cut-marker appended. Shared by both."
+  1000)
+
+(def cut-marker
+  "L0: what a string the journal's size bound cut ends with."
+  "<cut>")
+
+(defn- bounded-detail
+  "L0 Promote: wire-form `v` bounded for the journal, the one definition
+   shared by :args and :answer: any sequence or set keeps its first
+   max-detail-items, any string its first max-detail-chars (cut-marker
+   appended). Answers [bounded cut?]; cut? is true when anything was cut,
+   at any depth. Never throws."
+  [v]
+  (let [cut? (atom false)]
+    (letfn [(walk [x]
+              (cond
+                (map? x)        (into {} (map (fn [[k y]] [k (walk y)])) x)
+                (set? x)        (do (when (> (count x) max-detail-items) (reset! cut? true))
+                                    (into #{} (comp (take max-detail-items) (map walk)) x))
+                (sequential? x) (do (when (> (count x) max-detail-items) (reset! cut? true))
+                                    (into [] (comp (take max-detail-items) (map walk)) x))
+                (string? x)     (if (> (count x) max-detail-chars)
+                                  (do (reset! cut? true)
+                                      (str (subs x 0 max-detail-chars) cut-marker))
+                                  x)
+                :else           x))]
+      [(wire/->wire (walk v)) @cut?])))
+
+(defn- with-answer
+  "L0 Promote: `entry` with the Ok value of Answer `ans` kept as :answer, in
+   wire form, bounded by the shared detail bound (bounded-detail), with the
+   :redact paths that start at :answer masked inside it, and
+   :answer/truncated? true when the bound cut it. An Ok answers only: a
+   Pending or a refusal leaves the entry unchanged. Total: never throws."
+  [entry ans detail]
+  (if (answer/ok? ans)
+    (let [redact       (:redact detail)
+          paths        (into [] (comp (filter #(= :answer (first %))) (map rest)) redact)
+          [value cut?] (bounded-detail (:ok ans))]
+      (cond-> (assoc entry :answer (redact-paths value paths))
+        cut? (assoc :answer/truncated? true)))
+    entry))
+
 (defn- with-approval
   "L0 Promote: `entry` with the human Decision Answer `ans` carries as
    :autonomous/approval metadata, as :approval {:decision :approver :ms},
@@ -80,9 +133,11 @@
   "The CallEntry of a call of `tool-name` with `args` by `grant` that ended in
    Answer `ans` after `ms`. A Pending answer's id is always kept as :pending,
    so the call joins the :autonomous/settled entry that says how it ended.
-   `detail` is the app's CallDetail (nil: none): with it the entry carries the
-   grant's session; with :args? the args as sent, :redact paths replaced; with
-   :errors? a refusal's :error."
+   `detail` is the app's CallDetail, nil for none: with it the entry carries
+   the grant's session; with :args? the args as sent, bounded, :redact paths
+   replaced; with :answers? an Ok answer's value, bounded, :redact paths under
+   :answer masked, :answer/truncated? when cut; with :errors? a refusal's
+   :error."
   [tool-name args grant ans ms detail]
   (cond-> {:kind    :autonomous/call
            :actor   (:actor grant)
@@ -96,7 +151,10 @@
     (assoc :session (:session grant))
 
     (:args? detail)
-    (assoc :args (redact-paths (wire/->wire (or args {})) (:redact detail)))
+    (assoc :args (redact-paths (first (bounded-detail (or args {}))) (:redact detail)))
+
+    (and (:answers? detail) (answer/ok? ans))
+    (with-answer ans detail)
 
     (and (:errors? detail) (answer/refused? ans))
     (assoc :error (:error ans))
@@ -107,12 +165,17 @@
 (defn settled-entry
   "The entry saying how the async call parked as `id` ended: Answer `ans`.
    With the app's CallDetail :errors? on, a refusal's :error is kept, as
-   call-entry keeps it for a call refused at once. A human approval
+   call-entry keeps it for a call refused at once; with :answers? on, an Ok
+   answer's value is kept, bounded, :redact paths under :answer masked,
+   :answer/truncated? when cut, as call-entry keeps it. A human approval
    Decision the answer carries is kept as :approval (see call-entry)."
   [id ans detail]
   (cond-> {:kind    :autonomous/settled
            :pending id
            :outcome (answer/outcome ans)}
+    (and (:answers? detail) (answer/ok? ans))
+    (with-answer ans detail)
+
     (and (:errors? detail) (answer/refused? ans))
     (assoc :error (:error ans))
 

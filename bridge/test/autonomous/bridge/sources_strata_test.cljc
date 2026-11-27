@@ -5,6 +5,7 @@
   (:require [autonomous.bridge.eval-source :as src]
             [autonomous.bridge.ledger :as ledger]
             [autonomous.bridge.ledger.memory]
+            [autonomous.domain.journal :as journal]
             #?@(:bb [[autonomous.bridge.nrepl-wire]]
                 :clj [[autonomous.bridge.ledger.datahike :as dh]
                       [autonomous.bridge.nrepl]])
@@ -98,6 +99,17 @@
     (is (= {:source {:target "app" :runtime "7"} :seq 2 :at 200 :kind :k} (ledger/->view bare)))
     (is (= {:actor ":a" :tool "t" :outcome :ok :data {:x 1}}
            (select-keys (ledger/->view entry) [:actor :tool :outcome :data])))))
+
+(deftest a-journaled-answer-reaches-the-view-data
+  (testing "CallDetail :answers? carries the Ok value into the ledger view"
+    (let [e (journal/call-entry "t" {} {:actor "a"} {:ok {:id 7 :title "milk"}} 3 {:answers? true})
+          view (ledger/->view (ledger/->ledger-entry "app" 7 (assoc e :seq 1 :at 100)))]
+      (is (= {:id 7 :title "milk"} (get-in view [:data :answer])))
+      (is (= 3 (get-in view [:data :ms])))))
+  (testing "off by default, the view carries no answer"
+    (let [e (journal/call-entry "t" {} {:actor "a"} {:ok {:id 7}} 1 nil)
+          view (ledger/->view (ledger/->ledger-entry "app" 7 (assoc e :seq 1 :at 100)))]
+      (is (not (contains? (:data view) :answer))))))
 
 (deftest every-query-clause-filters-on-its-own
   (testing "absent clauses match"

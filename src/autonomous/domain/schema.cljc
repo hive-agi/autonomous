@@ -152,6 +152,7 @@
    outcome and duration. Every flag is off by default."
   [:map {:closed true}
    [:args? {:optional true} :boolean]
+   [:answers? {:optional true} :boolean]
    [:errors? {:optional true} :boolean]
    [:redact {:optional true} [:sequential [:vector {:min 1} :any]]]])
 

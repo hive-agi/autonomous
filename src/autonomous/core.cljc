@@ -100,12 +100,14 @@
 
    detail (autonomous.domain.schema/CallDetail), or nil to turn it off:
      :args?    the args as the agent sent them              [default false]
+     :answers? an Ok call's value, bounded                  [default false]
      :errors?  a refusal's type, message and data           [default false]
-     :redact   paths into the args whose values are replaced by \"<redacted>\"
+     :redact   paths whose values are replaced by \"<redacted>\": into the
+               args, and (a path that starts with :answer) into the answer
 
-   Any detail also records the caller's session. Turn :args? on only when
-   the journal may hold what agents send: redact secrets and personal data.
-   Throws ex-info on an invalid detail."
+   Any detail also records the caller's session. Turn :args? or :answers? on
+   only when the journal may hold what agents send or get back: redact
+   secrets and personal data. Throws ex-info on an invalid detail."
   [detail]
   (registry/set-call-detail! detail))
 
