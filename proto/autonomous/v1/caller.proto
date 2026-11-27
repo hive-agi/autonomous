@@ -2,6 +2,12 @@ syntax = "proto3";
 
 package autonomous.v1;
 
+// NOTE: the nested Correlation message the pre-freeze draft carried is removed
+// and its two fields are inlined on Caller below (run_task_id, run_attempt).
+// Proto has no file-scope reserved for a message NAME, so the removal is pinned
+// in MAPPING.md (section "Caller reconcile") and by the frozen field numbers;
+// a future Caller field starts at 6.
+
 // Caller is the coordinate that joins the agent trace to the app trace: the
 // agent's chat point, the task/attempt correlation, and the W3C trace context.
 // It is read from the MCP tools/call request `_meta` and recorded on the call

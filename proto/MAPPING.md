@@ -22,6 +22,103 @@ The source of truth is the code, not this table: `src/autonomous/domain/*.cljc`,
 
 ---
 
+## FREEZE: field numbers, presence, default and unknown policy (v1)
+
+**Frozen 2026-11-27.** Field numbers below are final for `autonomous.v1`. No
+renumbering; a deleted name or number is `reserved` in the `.proto` so it can
+never be reused. The wire is pinned by the descriptor in
+`proto/fixtures/v1/`, and a change to any number, name, presence or arm is a
+`buf breaking` failure (rollout step 6) and demands a new version.
+
+### Field numbers (final)
+
+| message | field | number | label |
+|---|---|---|---|
+| `Answer` | `ok` / `pending` / `refusal` | 1 / 2 / 3 | oneof `answer` |
+| `Refusal` | `type` / `message` / `data` | 1 / 2 / 3 | |
+| `LedgerEntry` | `target` / `runtime` / `at` / `seq` / `actor` | 1 / 2 / 3 / 4 / 5 | |
+| `LedgerEntry` | `call` / `settled` / `app_event` | 6 / 7 / 8 | oneof `body` |
+| `LedgerEntry` | (reserved) | 9 to 19 | names `entry_key`, `entry_data` |
+| `Call` | `tool` / `outcome` / `ms` / `pending` / `session` | 1 / 2 / 3 / 4 / 5 | |
+| `Call` | `args` / `answer` / `answer_truncated` / `error` / `approval` / `caller` | 6 / 7 / 8 / 9 / 10 / 11 | |
+| `Settled` | `pending` / `outcome` / `answer` / `error` / `approval` | 1 / 2 / 3 / 4 / 5 | |
+| `AppEvent` | `event_id` / `origin` / `payload` | 1 / 2 / 3 | |
+| `Origin` | `ORIGIN_UNSPECIFIED` / `ORIGIN_AGENT` / `ORIGIN_APP` | 0 / 1 / 2 | enum |
+| `Approval` | `decision` / `approver` / `ms` | 1 / 2 / 3 | |
+| `CallDetail` | `args` / `answers` / `errors` / `redact` | 1 / 2 / 3 / 4 | |
+| `Caller` | `chat_point` / `run_task_id` / `run_attempt` / `traceparent` / `tracestate` | 1 / 2 / 3 / 4 / 5 | |
+| `ChatPoint` | `run_id` / `seq` / `turn` | 1 / 2 / 3 | |
+
+### Reserved
+
+- `LedgerEntry`: numbers **9 to 19** and names **`entry_key`**, **`entry_data`**.
+  `entry_key` is derived (`"<target>|<runtime>|<at>|<seq>"`) and `entry_data` is
+  the EDN-string body the `body` oneof replaces. Reserving the range keeps a
+  future envelope field above the frozen numbers.
+- `autonomous.v1` file scope: the message name **`Correlation`** is removed (its
+  fields are inlined on `Caller`). Proto has no file-scope `reserved` for a
+  message *name*, so the removal is pinned here and by the frozen numbers; a
+  future `Caller` field starts at 6.
+
+### Presence policy
+
+1. **Explicit optional and singular messages use key absence, never a
+   nil-valued key.** A field is absent from the map when it has no value; it is
+   never present with `nil`. `Caller.run_task_id`, `Caller.run_attempt`,
+   `Caller.traceparent`, `Caller.tracestate`, `LedgerEntry.actor`,
+   `Call.args`, `Call.answer`, `Call.answer_truncated`, `Call.error`,
+   `Call.approval`, `Call.caller`, `Settled.answer`, `Settled.error`,
+   `Settled.approval`, `AppEvent.payload`, `Approval.decision`,
+   `Approval.approver`, `Approval.ms`, `CallDetail.args`, `CallDetail.answers`,
+   `CallDetail.errors`, `CallDetail.redact`, `Refusal.data` are all `optional`
+   and absent when unset. `Caller.chat_point` is a singular message, so its
+   absence is key absence too (an absent chat point is no key, not
+   `{:chat_point nil}`).
+2. **Implicit proto3 scalars normalize to their wire default.** A scalar with
+   no presence bit (`ChatPoint.run_id`, `ChatPoint.seq`, `ChatPoint.turn`,
+   `Refusal.type`, `Refusal.message`, `Call.tool`, `Call.outcome`, `Call.ms`,
+   `Settled.pending`, `Settled.outcome`, `AppEvent.event_id`,
+   `LedgerEntry.target`, `LedgerEntry.runtime`, `LedgerEntry.at`,
+   `LedgerEntry.seq`) reads as `""` / `0` when absent on the wire. A codec
+   emits the domain's value, which for these is always present; it does not
+   invent a sentinel.
+3. **Exactly one arm for `Answer` and `LedgerEntry`.** `Answer` carries exactly
+   one of `ok` / `pending` / `refusal`; `LedgerEntry` carries exactly one of
+   `call` / `settled` / `app_event`. An **unset envelope is refused on
+   admission** (`:contract/unset-answer` / `:contract/unset-body`) and so is a
+   map that carries **two arms** (`:contract/both-arms`). The bridge already
+   enforces the Answer half: `autonomous.bridge.ws/answer-shape?` is
+   `(= 1 (count (select-keys a [:ok :pending :error])))`.
+4. **An unknown future arm or number gives an explicit unsupported result.**
+   There is no silent fallback to `ok` or `0`. A oneof case the reader does not
+   know, or a field number it does not know, yields
+   `{:error {:type :contract/unsupported ...}}` carrying the raw input for
+   relay. The design note's rule: "Unknown future numbers/arms are not new
+   domain variants: return an explicit unsupported result with raw input for
+   relay if needed."
+5. **Open sets stay strings.** `Refusal.type` (the `:invalid-args`,
+   `:unknown-tool`, `:tool-threw`, `:forbidden`, `:leased`, `:ledger/unavailable`
+   family and any type an app invents), `Call.outcome` / `Settled.outcome`
+   (`:ok` / `:pending` / a refusal type), tool names and sources are **strings**,
+   never enums. The transform emits a `defadt` only for a **real oneof** and for
+   **enums** (fa8f9f, card answer Q2), so these stay open.
+6. **`ORIGIN_UNSPECIFIED` is a wire-only sentinel.** `Origin` is a closed enum
+   whose `= 0` value is `ORIGIN_UNSPECIFIED`; it is recorded on the wire but
+   **refused on domain admission** rather than admitted as a business value
+   (`:contract/unspecified-enum`). `AppEvent.origin` in the domain is only ever
+   `:agent` or `:app`.
+
+### Unknown-field policy
+
+- **A reader ignores unknown field numbers** (proto3 semantics) but a reader
+  that promises to **relay** an unknown arm keeps the **original wire
+  envelope** and tests that separately; it does not decode and re-encode.
+- **A generator or admission refuses an unsupported shape by name** (the
+  qualified location), never with `:any` by accident.
+- No renumber, no reuse. Deleting a field means `reserved`, above.
+
+---
+
 ## `answer.proto`
 
 ### `Answer` (oneof `answer`)

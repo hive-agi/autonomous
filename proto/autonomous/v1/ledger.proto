@@ -20,6 +20,14 @@ import "google/protobuf/struct.proto";
 // today the durable record carries that body as an EDN string under
 // :entry/data, which this draft replaces with a structured oneof.
 message LedgerEntry {
+  // The durable record's :entry/key and :entry/data are NOT carried: the key
+  // is derived (a codec recomputes "<target>|<runtime>|<at>|<seq>"), and the
+  // EDN-string body is replaced by the `body` oneof below. The names and a
+  // number range are reserved so neither is reintroduced at a colliding
+  // number, and so a future envelope field starts above the frozen range.
+  reserved 9 to 19;
+  reserved "entry_key", "entry_data";
+
   // :entry/target, the runtime's target (an nREPL endpoint, or in-process).
   string target = 1 [json_name = "entry/target"];
 
