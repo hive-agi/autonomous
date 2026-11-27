@@ -232,14 +232,17 @@
 
 (defn call!
   "Answer of calling exposed tool `exposed` with `args` as `session`, from
-   the owning target. A Pending id comes back qualified by the target."
-  [f session exposed args]
-  (let [r (route-tool f session exposed)]
-    (if (answer/refused? r)
-      r
-      (let [{:keys [target local]} (:ok r)]
-        (fleet/qualify (:view f) target
-                       (client/call! (member f target) (on f session target) local args))))))
+   the owning target. A Pending id comes back qualified by the target.
+   `caller` is the optional agent coordinate of the issuing step, sent with
+   the request so the runtime records it on the call entry; nil for none."
+  ([f session exposed args] (call! f session exposed args nil))
+  ([f session exposed args caller]
+   (let [r (route-tool f session exposed)]
+     (if (answer/refused? r)
+       r
+       (let [{:keys [target local]} (:ok r)]
+         (fleet/qualify (:view f) target
+                        (client/call! (member f target) (on f session target) local args caller)))))))
 
 (defn read-resource
   "Answer of reading exposed resource `uri` as `session`."

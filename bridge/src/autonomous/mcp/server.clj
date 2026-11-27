@@ -10,6 +10,7 @@
             [autonomous.bridge.session :as s]
             [autonomous.domain.affordance :as affordance]
             [autonomous.domain.answer :as answer]
+            [autonomous.domain.caller :as caller]
             [autonomous.domain.decision :as decision]
             [autonomous.domain.manifest :as manifest]
             [autonomous.mcp.builtins :as builtins]
@@ -72,20 +73,25 @@
 
 (defn- call-builtin
   "L2 Pipeline: {:answer :session} of planning and running builtin
-   `tool-name`; the domain refuses scope and argument errors."
-  [srv session tool-name args]
-  (let [plan (decision/plan-call (builtin-snapshot srv) tool-name args (s/grant session) 0)]
-    (case (:plan/action plan)
-      :refuse {:answer (:refusal plan) :session session}
-      :invoke ((get-in plan [:tool :run]) (:fleet srv) session (:args plan)))))
+   `tool-name`; the domain refuses scope and argument errors. `caller` is the
+   optional agent coordinate of the issuing step, journaled on the call entry."
+  ([srv session tool-name args] (call-builtin srv session tool-name args nil))
+  ([srv session tool-name args caller]
+   (let [plan (decision/plan-call (builtin-snapshot srv) tool-name args (s/grant session) 0)]
+     (case (:plan/action plan)
+       :refuse {:answer (:refusal plan) :session session}
+       :invoke ((get-in plan [:tool :run]) (:fleet srv) session (:args plan))))))
 
 (defn call-tool
   "L2 Pipeline: Answer and next session of calling `tool-name` with
-   `args`: a built-in, or the app tool of the target that owns the name."
-  [srv session tool-name args]
-  (if (contains? (:builtins srv) tool-name)
-    (call-builtin srv session tool-name args)
-    {:answer (fleet/call! (:fleet srv) session tool-name args) :session session}))
+   `args`: a built-in, or the app tool of the target that owns the name.
+   `caller` is the optional agent coordinate of the issuing step (read from
+   the MCP tools/call _meta), recorded on the call entry; nil for none."
+  ([srv session tool-name args] (call-tool srv session tool-name args nil))
+  ([srv session tool-name args caller]
+   (if (contains? (:builtins srv) tool-name)
+     (call-builtin srv session tool-name args caller)
+     {:answer (fleet/call! (:fleet srv) session tool-name args caller) :session session})))
 
 ;; =============================================================================
 ;; JSON-RPC methods
@@ -127,7 +133,8 @@
   (reply session id {:tools (list-tools srv session)}))
 
 (defmethod handle-method "tools/call" [srv session {:keys [id params]}]
-  (let [{:keys [answer session]} (call-tool srv session (:name params) (:arguments params))]
+  (let [{:keys [caller]} (caller/from-meta params)
+        {:keys [answer session]} (call-tool srv session (:name params) (:arguments params) caller)]
     (call-response session id answer)))
 
 (defmethod handle-method "resources/list" [srv session {:keys [id]}]
