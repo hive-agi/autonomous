@@ -8,7 +8,9 @@
             [autonomous.domain.schema :as s]
             [autonomous.domain.scope :as scope]
             [autonomous.domain.wire :as wire]
+            [clojure.test :refer [deftest is testing]]
             [clojure.test.check.generators :as gen]
+            [malli.core :as m]
             [hive-schemas.test :refer [deftrifecta-from-schema]]
             [hive-test.trifecta :refer [deftrifecta]]))
 
@@ -156,7 +158,14 @@
            :refusal-kept   ["todo_add" {} {:actor "a"} refused 1 {:errors? true}]
            :refusal-quiet  ["todo_add" {} {:actor "a"} refused 1 {:args? true}]
            :ok-no-error    ["todo_add" {:text "x"} {:actor "a"} {:ok 1} 1 {:errors? true}]
-           :pending-id     ["todo_slow" {} {:actor "a"} {:pending "p7"} 2 nil]}
+           :pending-id     ["todo_slow" {} {:actor "a"} {:pending "p7"} 2 nil]
+           :answer-kept     ["todo_add" {:text "x"} {:actor "a"} {:ok {:id 7 :title "milk"}} 3
+                             {:answers? true}]
+           :answer-redacted ["login" {:user "u"} {:actor "a"} {:ok {:token "s" :user "u"}} 2
+                             {:answers? true :redact [[:answer :token]]}]
+           :answer-and-args ["todo_add" {:text "x"} {:actor "a"} {:ok 1} 1
+                             {:args? true :answers? true}]
+           :answer-refused  ["todo_add" {} {:actor "a"} refused 1 {:answers? true}]}
    :gen (gen/tuple (gen/elements ["t" "u"])
                    (gen/one-of [(gen/return nil) (gen/map gen/keyword gen/small-integer {:max-elements 3})])
                    (gen/hash-map :actor (gen/elements ["a" "b"]) :session (gen/elements [nil "s"]))
@@ -164,14 +173,21 @@
                                 (gen/fmap answer/pending gen/string-alphanumeric)
                                 (gen/fmap #(answer/refusal % "m") gen/keyword)])
                    gen/nat
-                   (gen/one-of [(gen/return nil) (gen/hash-map :args? gen/boolean :errors? gen/boolean)]))
+                   (gen/one-of [(gen/return nil)
+                                (gen/hash-map :args? gen/boolean :errors? gen/boolean
+                                              :answers? gen/boolean)]))
    :pred (fn [e] (and (= :autonomous/call (:kind e)) (keyword? (:outcome e))
                       (or (nil? (:args e)) (map? (:args e)))
+                      (or (not (contains? e :answer)) (= :ok (:outcome e)))
                       (= (= :pending (:outcome e)) (contains? e :pending))))
    :mutations [["ignores detail" (fn [t a g ans ms _] (call-entry* t a g ans ms nil))]
                ["session without detail" (fn [t a g ans ms d] (call-entry* t a g ans ms (or d {})))]
                ["no redaction" (fn [t a g ans ms d] (call-entry* t a g ans ms (some-> d (dissoc :redact))))]
                ["errors always" (fn [t a g ans ms d] (call-entry* t a g ans ms (some-> d (assoc :errors? true))))]
+               ["answers always" (fn [t a g ans ms d] (call-entry* t a g ans ms (some-> d (assoc :answers? true))))]
+               ["answers even refused" (fn [t a g ans ms d]
+                                         (let [e (call-entry* t a g ans ms d)]
+                                           (if (:answers? d) (assoc e :answer (:ok ans)) e)))]
                ["pending id dropped" (fn [t a g ans ms d] (dissoc (call-entry* t a g ans ms d) :pending))]]})
 
 (def ^:private settled-entry* journal/settled-entry)
@@ -184,15 +200,53 @@
            :threw-no-detail  ["p2" {:error {:type :tool-threw :message "boom"}} nil]
            :threw-kept       ["p3" {:error {:type :tool-threw :message "boom" :data {:at "db"}}} {:errors? true}]
            :threw-args-only  ["p4" {:error {:type :tool-threw :message "boom"}} {:args? true}]
-           :ok-errors-on     ["p5" {:ok 1} {:errors? true}]}
+           :ok-errors-on     ["p5" {:ok 1} {:errors? true}]
+           :ok-answer        ["p6" {:ok {:id 7}} {:answers? true}]
+           :answer-redacted  ["p7" {:ok {:token "s" :id 7}} {:answers? true :redact [[:answer :token]]}]
+           :threw-answer-off ["p8" {:error {:type :tool-threw :message "boom"}} {:answers? true}]}
    :gen (gen/tuple gen/string-alphanumeric
                    (gen/one-of [(gen/fmap answer/ok gen/small-integer)
                                 (gen/fmap #(answer/refusal % "m") gen/keyword)])
-                   (gen/one-of [(gen/return nil) (gen/hash-map :args? gen/boolean :errors? gen/boolean)]))
-   :pred (fn [e] (and (= :autonomous/settled (:kind e)) (keyword? (:outcome e)) (contains? e :pending)))
+                   (gen/one-of [(gen/return nil)
+                                (gen/hash-map :args? gen/boolean :errors? gen/boolean
+                                              :answers? gen/boolean)]))
+   :pred (fn [e] (and (= :autonomous/settled (:kind e)) (keyword? (:outcome e))
+                      (contains? e :pending)
+                      (or (not (contains? e :answer)) (= :ok (:outcome e)))))
    :mutations [["ignores detail" (fn [id a _] (settled-entry* id a nil))]
                ["errors always" (fn [id a d] (settled-entry* id a (assoc d :errors? true)))]
+               ["answers always" (fn [id a d] (settled-entry* id a (some-> d (assoc :answers? true))))]
                ["id dropped" (fn [id a d] (dissoc (settled-entry* id a d) :pending))]]})
+
+(deftest the-answer-is-opt-in-bounded-and-redacted
+  (testing "off by default: no detail, no answer"
+    (is (not (contains? (journal/call-entry "t" {} {:actor "a"} {:ok 1} 1 nil) :answer)))
+    (is (not (contains? (journal/call-entry "t" {} {:actor "a"} {:ok 1} 1 {}) :answer))))
+  (testing "an Ok call and its settled entry carry :answer; a refusal does not"
+    (is (= {:id 7} (:answer (journal/call-entry "t" {} {:actor "a"} {:ok {:id 7}} 1 {:answers? true}))))
+    (is (= {:id 7} (:answer (journal/settled-entry "p1" {:ok {:id 7}} {:answers? true}))))
+    (is (not (contains? (journal/call-entry "t" {} {:actor "a"}
+                                           {:error {:type :invalid-args :message "bad"}}
+                                           1 {:answers? true})
+                        :answer))))
+  (testing "a path under :answer is masked inside it"
+    (is (= {:token journal/redacted :user "u"}
+           (:answer (journal/call-entry "t" {} {:actor "a"} {:ok {:token "s" :user "u"}} 1
+                                        {:answers? true :redact [[:answer :token]]})))))
+  (testing "the size bound cuts a long answer and marks it"
+    (let [long (journal/call-entry "t" {} {:actor "a"} {:ok (apply str (repeat 5000 "x"))} 1 {:answers? true})
+          wide (journal/call-entry "t" {} {:actor "a"} {:ok (vec (range 20000))} 1 {:answers? true})]
+      (is (:answer/truncated? long))
+      (is (= (+ journal/max-detail-chars (count journal/cut-marker)) (count (:answer long))))
+      (is (:answer/truncated? wide))
+      (is (= journal/max-detail-items (count (:answer wide))))
+      (is (= wire/max-items journal/max-detail-items))
+      (testing "a small answer is not marked"
+        (is (not (contains? (journal/call-entry "t" {} {:actor "a"} {:ok {:id 7}} 1 {:answers? true})
+                            :answer/truncated?))))))
+  (testing "the CallDetail schema takes :answers? and stays closed"
+    (is (m/validate s/CallDetail {:answers? true}))
+    (is (not (m/validate s/CallDetail {:answers? "yes"})))))
 
 ;; -----------------------------------------------------------------------------
 ;; wire values
