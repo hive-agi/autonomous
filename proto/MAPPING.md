@@ -119,6 +119,125 @@ never be reused. The wire is pinned by the descriptor in
 
 ---
 
+## The two wires
+
+`json_name` alone cannot fix an envelope, a discriminator, or an EDN-vs-JSON
+mismatch. There are **two** wires, and a codec must be chosen per peer and
+release. The proto is the shared vocabulary; the wire is the encoding.
+
+### Wire A: MCP JSON, agent <-> bridge
+
+- **Who:** agents speak MCP JSON to the bridge (`autonomous.mcp.server`,
+  `autonomous.mcp.json`, `autonomous.mcp.stdio`, `autonomous.mcp.http`). A
+  tools/call request's `params._meta` carries the Caller coordinate.
+- **Codec:** JSON, shaped by `autonomous.mcp.json/->json-data`: keywords keep
+  their namespace (`:todo/add` -> `"todo/add"`), **sets and seqs become
+  vectors, uuids and insts become strings, non-finite numbers become strings**.
+  Object keys are strings; `read-json` returns keyword keys.
+- **json_name:** every proto field's `json_name` is the exact JSON key this
+  wire emits, so a codec can be derived from the descriptor. The `_meta` Caller
+  keys are the reverse-DNS spellings (`io.github.hive-agi/chat-point`,
+  `io.github.hive-agi/run-task-id`, `io.github.hive-agi/run-attempt`) plus the
+  W3C spec's own unprefixed `traceparent` / `tracestate`.
+- **Release note:** the JSON wire is **v1 today** and stays v1. A codec derived
+  from `json_name` must reproduce today's keys byte-for-byte, or the change is a
+  v2 wire with v1 readers kept (design note R3).
+
+### Wire B: runtime <-> bridge websocket, EDN with `:ws/type`
+
+- **Who:** a runtime (`autonomous.ws`, `.cljc`: browser, node, JVM, bb) dials
+  the bridge (`autonomous.bridge.ws`, `autonomous.ws.ring`,
+  `autonomous.ws.server`). One **EDN map per text frame**.
+- **Codec:** **EDN, not JSON.** `autonomous.ws/read-frame` reads text with
+  `autonomous.domain.wire/read-edn` and keeps it only when it is a map with a
+  keyword `:ws/type`. `autonomous.ws/answer!` writes a reply with
+  `autonomous.domain.wire/print-edn`. The bridge mirrors it:
+  `autonomous.bridge.ws/read-frame` and `/frame-text` are `wire/read-edn` and
+  `wire/print-edn`. **Reading EDN evaluates nothing** (the reader never evals).
+- **Envelope (the four frames, doc/websocket.md and `autonomous.bridge.ws`):**
+
+  ```
+  runtime -> bridge  {:ws/type :hello    :token "aut_.." :runtime/id .. :runtime/kind .. :runtime/label ..}
+                     {:ws/type :response :id n :answer "<EDN Answer>"}
+  bridge  -> runtime {:ws/type :welcome  :target .. :runtime/id ..}
+                     {:ws/type :refused  :error {:type .. :message ..}}   then close
+                     {:ws/type :request  :id n :request "<EDN Request>"}
+  ```
+
+  Close codes: 1000 normal, 4400 bad-frame, 4401 unauthorized, 4404
+  unknown-target, 4408 hello-timeout, 4409 replaced.
+- **The `:ws/type` envelope is NOT a proto message.** It is EDN with a keyword
+  discriminator. `json_name` cannot express it; a JSON codec cannot read it.
+  This is why the frame protos (hello/welcome/request/reply/refused/fatal) are
+  **out of scope** for this freeze (card: "frames and telemetry protos" not in
+  scope) and land in a later step with their own codec decision.
+- **Embedded payloads are EDN text, not JSON.** `:request` and `:answer` are
+  **strings of EDN** (`wire/print-edn`), so the inner Answer/Request keeps
+  keyword values, symbols, uuids and sets that the outer frame carries
+  verbatim. The proto `Answer` describes that inner value's *vocabulary*; the
+  bridge reads it back with `read-edn` (`autonomous.bridge.ws/as-answer`,
+  which enforces `answer-shape?` = exactly one arm).
+- **Release note:** the websocket wire is **EDN v1** and stays v1. A runtime
+  and a bridge must agree on the codec; a JSON frame on this socket fails
+  `read-frame` (it is not a map with a keyword `:ws/type`) and is refused as
+  `:ws/bad-frame`.
+
+### Which peer, which codec
+
+| peer / direction | release | codec | envelope | Caller spelling |
+|---|---|---|---|---|
+| agent -> bridge (MCP tools/call) | v1 | JSON | MCP JSON-RPC, `params._meta` | `io.github.hive-agi/*` + `traceparent` |
+| bridge -> runtime (websocket) | v1 | EDN | `{:ws/type :request :request "<EDN>"}` | inside the EDN Request |
+| runtime -> bridge (websocket) | v1 | EDN | `{:ws/type :response :answer "<EDN>"}` | inside the EDN Answer |
+| bridge ledger (durable) | v1 | EDN string in `:entry/data` today | durable record | n/a |
+
+### The admitted JSON subset for opaque payloads
+
+Opaque payloads are `Answer.ok`, `Refusal.data`, `Call.args`, `Call.answer`,
+`Settled.answer`, `AppEvent.payload`, `CallDetail.redact` (the `:any` fields).
+They are carried as `google.protobuf.Value`, which maps to JSON data. The
+**admitted subset** is exactly what JSON can represent, plus the mappings
+`autonomous.mcp.json/->json-data` already applies:
+
+| EDN | admitted JSON | rule |
+|---|---|---|
+| `nil` | `null` | Value null |
+| string | string | |
+| number (finite) | number | `int64` > 2^53 crosses as a **string** (see below) |
+| boolean | boolean | |
+| keyword | string | namespace kept: `:todo/add` -> `"todo/add"` |
+| symbol | string | `str` |
+| uuid | string | `str` |
+| inst | string | ISO-8601 |
+| set | array | order not significant; a codec must not promise order |
+| vector / seq / list | array | |
+| map | object | keys stringified |
+
+**The ACL REFUSES what JSON cannot represent; it never stringifies silently**
+(fa8f9f, card answer Q1). On the **proto/JSON** wire:
+
+- **A keyword in VALUE position is refused** (`:contract/edn-only-value`,
+  `:what :keyword`). A keyword as a *map key* is fine (stringified); a keyword
+  as a *value* has no JSON type and is refused, not coerced.
+- **A uuid is refused** (`:what :uuid`).
+- **A set is refused** (`:what :set`). (Note: `autonomous.mcp.json` today DOES
+  stringify these for the legacy JSON wire; that is the v1 MCP behaviour and is
+  kept for MCP, but the **proto** ACL refuses them rather than repeat a silent
+  coercion. The two rules are named so neither is guessed.)
+- **`int64` beyond 2^53 is refused as a number and must travel as a string**
+  (`:what :int64-range`); a JSON reader must not silently narrow it to a
+  double. `Call.ms`, `LedgerEntry.at`, `LedgerEntry.seq`, `ChatPoint.seq`,
+  `ChatPoint.turn` are `int64`.
+- **bytes** are canonical base64 in the portable/JSON view.
+
+When one field truly needs EDN fidelity, the per-field option is a oneof
+`{google.protobuf.Value json = 1; bytes edn = 2;}` whose `edn` arm is marked
+**Clojure-only**. That is **never the default**, because bytes-EDN breaks Rust,
+TS and Elm. On the **EDN websocket** wire (Wire B) there is no such refusal:
+the payload is EDN text and carries keywords, uuids and sets natively.
+
+---
+
 ## `answer.proto`
 
 ### `Answer` (oneof `answer`)
