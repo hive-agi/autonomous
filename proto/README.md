@@ -1,11 +1,11 @@
 # autonomous protobuf contracts (`autonomous.v1`)
 
-**STATUS: DRAFT and UNPINNED.** These `.proto` files are the first autonomous
-contracts written proto-first (Pedro, 2026-11-27, decision
-`20261127161621-4586b84e`). Field numbers and wrapper types **may change**:
-they are pinned only after the design note of the proto -> `hive-dsl.adt`
-transform lands. Do not generate code from them yet, and do not treat them as
-a frozen wire.
+**STATUS: FROZEN for v1 (2026-11-27).** These `.proto` files are autonomous's
+first contracts written proto-first (Pedro, 2026-11-27, decision
+`20261127161621-4586b84e`). Field numbers, names, presence and the arm policy
+are frozen (card `20261127170917-4749e21b`): see the FREEZE section of
+`MAPPING.md`. No renumbering; a deleted name or number is `reserved`. A change
+to any of them is a `buf breaking` failure and demands a new version.
 
 ## Ownership
 
@@ -23,12 +23,21 @@ brief `20261127161621-4586b84e` and the precedent recipe
 | `autonomous/v1/answer.proto` | `Answer` (oneof ok / pending / refusal), `Refusal` | `autonomous.domain.answer`, `autonomous.domain.schema` (`Ok`, `Pending`, `Refusal`) |
 | `autonomous/v1/ledger.proto` | `LedgerEntry` (oneof call / settled / app_event), `Call`, `Settled`, `AppEvent`, `Origin`, `Approval` | `autonomous.bridge.ledger/->ledger-entry`, `autonomous.domain.journal/call-entry` + `settled-entry`, `autonomous.re-frame.model/event-entry` |
 | `autonomous/v1/call_detail.proto` | `CallDetail` | `autonomous.domain.schema/CallDetail` |
-| `autonomous/v1/caller.proto` | `Caller`, `ChatPoint`, `Correlation` | `hive-agent.loop.chat-point/ChatPoint`, `hive-spi.agent.run-control/Correlation` |
+| `autonomous/v1/caller.proto` | `Caller` (flat, S7), `ChatPoint` | `autonomous.domain.schema/Caller` + `ChatPoint` (S7, card `20261127155655-4ebda860`) |
+
+## Fixtures
+
+`fixtures/v1/` holds a redacted good/bad twin (EDN and JSON) per message, plus
+`json_name.edn` (the toolchain evidence that slash, kebab and `?` survive in
+`json_name`). The named cases (unset envelope, both arms, a spoofed tag,
+absent vs present false, zero vs sentinel, a large int64 as a string, unknown
+fields) are listed per fixture. `autonomous.contracts.v1.drift-test` loads the
+Answer twin and checks it against the hand malli schema; its generator half is
+`^:integration` until the transform lands.
 
 The source of truth is the **existing code**. `MAPPING.md` lists, one row per
 proto field, the Clojure key it mirrors and whether it is mirrored, renamed,
-new or omitted. That table is what the later derivation-drift test checks
-against.
+new or omitted, plus the two wires and the admitted JSON subset.
 
 ## Linting
 
