@@ -35,7 +35,7 @@
   (answer/ok (manifest/project (registry/snapshot) grant)))
 
 (defmethod handle :call [req grant]
-  (invoke/call! (:tool req) (or (:args req) {}) grant))
+  (invoke/call! (:tool req) (or (:args req) {}) grant (:caller req)))
 
 (defmethod handle :read [req grant]
   (invoke/read! (:uri req) grant))

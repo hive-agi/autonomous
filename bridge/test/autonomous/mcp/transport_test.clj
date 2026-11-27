@@ -69,6 +69,40 @@
     (is (true? (get-in wipe [:result :isError])))
     (is (= -32700 (get-in bad [:error :code])))))
 
+(deftest a-tools-call-with-_meta-records-the-caller-coordinate
+  (let [l     (ledger/open {:ledger/kind :memory})
+        ctx   (client/context {:target {:target/kind :local :target/id "todo"}
+                               :channel (local/channel) :ledger l :drain :inline})
+        srv   (server/server ctx)
+        ses   (autonomous.bridge.session/open-session "s" {:actor "agent-1" :scopes #{:read :write}})
+        call! (fn [params]
+                (server/handle srv ses (rpc 7 "tools/call" params))
+                (ledger/->view (first (:ok (port/-query l {})))))
+        tp    "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"]
+    (testing "_meta's traceparent and hive keys reach the ledger view :data :caller"
+      (let [v (call! {:name "todo_add" :arguments {:text "milk"}
+                      :_meta {"traceparent" tp
+                              "tracestate" "rojo=00f067aa0ba902b7"
+                              "io.github.hive-agi/chat-point" {"run-id" "r1" "seq" 5 "turn" 3}
+                              "io.github.hive-agi/run-task-id" "card-7"
+                              "io.github.hive-agi/run-attempt" 2}})]
+        (is (= {:trace/traceparent tp
+                :trace/tracestate "rojo=00f067aa0ba902b7"
+                :chat-point {:run-id "r1" :seq 5 :turn 3}
+                :run/task-id "card-7"
+                :run/attempt 2}
+               (get-in v [:data :caller])))))
+    (testing "off by default: without _meta no caller is recorded"
+      (let [v (call! {:name "todo_add" :arguments {:text "no-meta"}})]
+        (is (not (contains? (:data v) :caller)))))
+    (testing "an invalid traceparent is dropped, never an error; the call still runs"
+      (let [v (call! {:name "todo_add" :arguments {:text "bad-tp"}
+                      :_meta {"traceparent" "not-a-traceparent"
+                              "io.github.hive-agi/chat-point" {"run-id" "r1" "seq" 0 "turn" 0}}})]
+        (is (= :ok (:outcome v)))
+        (is (= {:chat-point {:run-id "r1" :seq 0 :turn 0}} (get-in v [:data :caller])))
+        (is (not (contains? (get-in v [:data :caller]) :trace/traceparent)))))))
+
 ;; -----------------------------------------------------------------------------
 ;; HTTP security pipeline
 

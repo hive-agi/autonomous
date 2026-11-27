@@ -147,6 +147,51 @@
    [:seq [:int {:min 0}]]
    [:entries [:vector Entry]]])
 
+(def Traceparent
+  "A W3C Trace Context traceparent, as the MCP spec carries it in params._meta
+   (SEP-414, unprefixed). The pattern is version-traceid-spanid-flags: 55
+   lowercase hex characters, version and flags 2 each, trace id 32, span id 16,
+   with a non-zero trace id and span id. Validated by
+   autonomous.domain.trace/parse-traceparent, the one parser; this is only the
+   shape a Caller may hold."
+  [:re #"^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"])
+
+(def ChatPoint
+  "The agent step that issued a call: mirrors hive-agent.loop.chat-point/ChatPoint
+   ({:run-id :seq :turn}). :seq is the position in the LINEAGE, not the run, so a
+   resumed or forked agent is located exactly; hive-spi.agent.run-control's Cursor
+   {:turn} alone loses that lineage, which is why the caller coordinate carries the
+   chat point rather than a bare TranscriptRef."
+  [:map
+   [:run-id :string]
+   [:seq [:int {:min 0}]]
+   [:turn [:int {:min 0}]]])
+
+(def RunCorrelation
+  "The task coordinates of a run, mirroring hive-spi.agent.run-control/Correlation
+   (hive-spi.agent.run-control, the host-neutral copy of
+   hive-agent.ports.run-control): :run/task-id names the task (for example the
+   kanban card) and :run/attempt the try. Both optional; echoed unchanged."
+  [:map
+   [:run/task-id {:optional true} :string]
+   [:run/attempt {:optional true} [:int {:min 0}]]])
+
+(def Caller
+  "The coordinate of the agent step that issued a tool call, recorded on the
+   call entry (CallDetail :caller). Key names mirror hive-spi.agent.run-control
+   and hive-agent.loop.chat-point exactly, so a later card can depend on hive-spi
+   and reuse the schemas rather than copy them (copying is not allowed):
+   :chat-point is hive-agent.loop.chat-point/ChatPoint, :run/task-id and
+   :run/attempt are hive-spi.agent.run-control/Correlation, and :trace/* are the
+   W3C trace context. Every field is optional; an invalid one is dropped, never
+   an error. It is coordinates, not content: bounded and redacted like the args."
+  [:map
+   [:chat-point {:optional true} ChatPoint]
+   [:run/task-id {:optional true} :string]
+   [:run/attempt {:optional true} [:int {:min 0}]]
+   [:trace/traceparent {:optional true} Traceparent]
+   [:trace/tracestate {:optional true} :string]])
+
 (def CallDetail
   "What an app lets the journal keep about each tool call, beyond actor, tool,
    outcome and duration. Every flag is off by default."
@@ -154,6 +199,7 @@
    [:args? {:optional true} :boolean]
    [:answers? {:optional true} :boolean]
    [:errors? {:optional true} :boolean]
+   [:caller {:optional true} [:maybe Caller]]
    [:redact {:optional true} [:sequential [:vector {:min 1} :any]]]])
 
 ;; =============================================================================
@@ -172,7 +218,8 @@
   [:multi {:dispatch :op}
    (op :ping)
    (op :manifest)
-   (op :call [:tool :string] [:args {:optional true} [:maybe [:map-of :any :any]]])
+   (op :call [:tool :string] [:args {:optional true} [:maybe [:map-of :any :any]]]
+       [:caller {:optional true} [:maybe Caller]])
    (op :read [:uri :string])
    (op :poll [:id :string])
    (op :journal [:since {:optional true} [:maybe :int]] [:limit {:optional true} [:maybe :int]])
